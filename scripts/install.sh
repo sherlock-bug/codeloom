@@ -56,7 +56,11 @@ else
     esac
 
     echo "Downloading codeloom for $OS/$ARCH..."
-    curl -sSL "$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom"
+    # Try direct first, fall back to ghproxy mirror
+    if ! curl -sSL --connect-timeout 10 --max-time 60 "$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom" 2>/dev/null; then
+        echo "Direct download slow, trying ghproxy mirror..."
+        curl -sSL "https://ghproxy.net/$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom"
+    fi
 fi
 
 chmod +x "$INSTALL_DIR/codeloom"
