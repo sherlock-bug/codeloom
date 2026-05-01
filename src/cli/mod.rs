@@ -289,6 +289,14 @@ fn do_update() {
     // Verify and replace
     match std::fs::metadata(&tmp) {
         Ok(meta) if meta.len() > 1_000_000 => {
+            // Validate: must be an ELF binary (not an HTML error page)
+            if let Ok(buf) = std::fs::read(&tmp) {
+                if buf.len() < 4 || &buf[..4] != b"\x7fELF" {
+                    eprintln!("Download corrupt (not an ELF binary). Aborting.");
+                    let _ = std::fs::remove_file(&tmp);
+                    return;
+                }
+            }
             // Set executable permission
             #[cfg(unix)] { let _ = std::process::Command::new("chmod").args(["+x"]).arg(&tmp).status(); }
             if let Err(e) = std::fs::rename(&tmp, &current_exe) {
