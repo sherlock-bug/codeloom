@@ -60,6 +60,9 @@ pub enum Command {
     /// 管理分支惯用叫法映射
     #[command(subcommand)]
     Branch(BranchCmd),
+
+    /// 自动更新到最新 GitHub Release 版本
+    Update,
 }
 
 /// 分支别名管理
@@ -162,6 +165,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             println!("CodeLoom v{}", env!("CARGO_PKG_VERSION"));
             println!("Binary: {:?}", std::env::current_exe().unwrap_or_default());
         }
+        Command::Update => do_update(),
     }
     Ok(())
 }
@@ -212,4 +216,116 @@ pub fn index_includes(conn: &rusqlite::Connection, dir: &str, repo: &str) -> usi
     }
     if count > 0 { println!("  Includes: {} edges", count); }
     count
+}
+
+// ── Self-update ────────────────────────────────────────────────────────
+
+const GITHUB_RELEASES_API: &str = "https://api.github.com/repos/sherlock-bug/codeloom/releases/latest";
+const GITHUB_DOWNLOAD: &str = "https://github.com/sherlock-bug/codeloom/releases/download";
+const GHPROXY_DOWNLOAD: &str = "https://ghproxy.net/https://github.com/sherlock-bug/codeloom/releases/download";
+
+fn do_update() {
+    let current_ver = env!("CARGO_PKG_VERSION");
+    let current_exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("Cannot determine binary path: {}", e); return; }
+    };
+
+    println!("CodeLoom v{} — checking for updates...", current_ver);
+
+    // Query GitHub API for latest release
+    let latest_tag = match get_latest_tag() {
+        Some(t) => t,
+        None => { eprintln!("Failed to check GitHub. Check network or try again later."); return; }
+    };
+
+    let latest_ver = latest_tag.trim_start_matches('v');
+    if latest_ver == current_ver {
+        println!("Already up to date (v{})", current_ver);
+        return;
+    }
+    println!("New version: {} → upgrading from v{}", latest_tag, current_ver);
+
+    // Detect platform
+    let platform = match detect_platform() {
+        Some(p) => p,
+        None => { eprintln!("Unsupported platform. Use --from-source install instead."); return; }
+    };
+
+    let binary_name = format!("codeloom-{}", platform);
+    let download_url = format!("{}/{}/{}", GITHUB_DOWNLOAD, latest_tag, binary_name);
+    let mirror_url = format!("{}/{}/{}", GHPROXY_DOWNLOAD, latest_tag, binary_name);
+
+    // Download via ghproxy, fallback to direct
+    let tmp = match current_exe.parent() {
+        Some(dir) => dir.join(".codeloom.tmp"),
+        None => { eprintln!("Cannot determine install path"); return; }
+    };
+
+    println!("Downloading {}...", binary_name);
+    let mut downloaded = false;
+    for (name, url) in [("ghproxy", &mirror_url), ("direct", &download_url)] {
+        let status = std::process::Command::new("curl")
+            .args(["-sSL", "--connect-timeout", "10", "--max-time", "300", "-o"])
+            .arg(&tmp)
+            .arg(url)
+            .status();
+        if let Ok(s) = status {
+            if s.success() {
+                downloaded = true;
+                if name == "direct" { println!("  Downloaded via direct (ghproxy unavailable)"); }
+                break;
+            }
+        }
+        eprintln!("  {} failed, trying {}...", name, if name=="ghproxy" {"direct"}else{""});
+    }
+
+    if !downloaded {
+        eprintln!("Download failed. Try manually:");
+        eprintln!("  curl -sSL {} -o codeloom", mirror_url);
+        return;
+    }
+
+    // Verify and replace
+    match std::fs::metadata(&tmp) {
+        Ok(meta) if meta.len() > 1_000_000 => {
+            // Set executable permission
+            #[cfg(unix)] { let _ = std::process::Command::new("chmod").args(["+x"]).arg(&tmp).status(); }
+            if let Err(e) = std::fs::rename(&tmp, &current_exe) {
+                eprintln!("Cannot replace binary: {}. Try: mv {} {}", e, tmp.display(), current_exe.display());
+            } else {
+                println!("Updated to {} ✓", latest_tag);
+                println!("Run 'codeloom check' to verify.");
+            }
+        }
+        Ok(meta) => {
+            eprintln!("Download too small ({} bytes). Aborting.", meta.len());
+        }
+        Err(e) => {
+            eprintln!("Download verification failed: {}", e);
+        }
+    }
+}
+
+fn get_latest_tag() -> Option<String> {
+    let output = std::process::Command::new("curl")
+        .args(["-sS", "--connect-timeout", "10", "--max-time", "15",
+               "-H", "Accept: application/vnd.github+json",
+               GITHUB_RELEASES_API])
+        .output().ok()?;
+    if !output.status.success() { return None; }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    json.get("tag_name")?.as_str().map(|s| s.to_string())
+}
+
+fn detect_platform() -> Option<String> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    match (os, arch) {
+        ("linux", "x86_64") => Some("linux-x86_64".into()),
+        ("linux", "aarch64") => Some("linux-arm64".into()),
+        ("macos", "x86_64") => Some("darwin-x86_64".into()),
+        ("macos", "aarch64") => Some("darwin-arm64".into()),
+        _ => None,
+    }
 }
