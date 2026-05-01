@@ -2,6 +2,8 @@
 mod cli; mod config; mod doc; mod embedding; mod ignore; mod indexer; mod linking;
 mod mcp; mod query; mod storage;
 use clap::Parser;
+use clap::CommandFactory;
+use clap_complete::{generate, shells};
 
 #[derive(Parser)]
 #[command(
@@ -19,6 +21,8 @@ use clap::Parser;
   codeloom mcp                            # 启动 MCP 服务
   codeloom branch set-alias 23B release/2023-B --repo myrepo
 
+Tab 补全: source <(codeloom completion bash)
+
 项目: https://github.com/sherlock-bug/codeloom"
 )]
 struct Cli { #[command(subcommand)] command: Option<cli::Command> }
@@ -26,10 +30,23 @@ struct Cli { #[command(subcommand)] command: Option<cli::Command> }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    match Cli::parse().command {
-        Some(cmd) => cli::run(cmd).await,
-        None => mcp::serve().await,
+    let cli = Cli::parse();
+    match cli.command {
+        Some(cli::Command::Completion { shell }) => {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            let name = cmd.get_name().to_string();
+            match shell.as_str() {
+                "bash" => generate(shells::Bash, &mut cmd, &name, &mut std::io::stdout()),
+                "zsh" => generate(shells::Zsh, &mut cmd, &name, &mut std::io::stdout()),
+                "fish" => generate(shells::Fish, &mut cmd, &name, &mut std::io::stdout()),
+                "powershell" => generate(shells::PowerShell, &mut cmd, &name, &mut std::io::stdout()),
+                s => { eprintln!("Unknown shell: {}. Supported: bash, zsh, fish, powershell", s); }
+            }
+        }
+        Some(cmd) => cli::run(cmd).await?,
+        None => mcp::serve().await?,
     }
+    Ok(())
 }
 #[test]
 fn dump_template_method_ast() {

@@ -61,10 +61,19 @@ pub enum Command {
     #[command(subcommand)]
     Branch(BranchCmd),
 
+    /// 生成 Shell 补全脚本（bash/zsh/fish）
+    ///
+    /// 用法: source <(codeloom completion bash)
+    Completion {
+        /// Shell 类型
+        shell: String,
+    },
+
     /// 自动更新到最新 GitHub Release 版本
     Update,
 
     /// 清理索引数据：删除指定仓库/分支/全部数据
+    /// ...
     ///
     /// 示例:
     ///   codeloom clean --all                 # 清空所有数据
@@ -203,6 +212,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
         }
         Command::Update => do_update(),
         Command::Clean { all, repo, branch } => do_clean(all, repo, branch),
+        _ => {}, // Completion handled in main.rs
     }
     Ok(())
 }
