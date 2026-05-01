@@ -56,23 +56,33 @@ else
     esac
 
     echo "Downloading codeloom for $OS/$ARCH..."
-    # Try direct first, fall back to ghproxy mirror
-    if ! curl -sSL --connect-timeout 10 --max-time 60 "$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom" 2>/dev/null; then
-        echo "Direct download slow, trying ghproxy mirror..."
-        curl -sSL "https://ghproxy.net/$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom"
+    # Try ghproxy first (faster from China), fall back to direct
+    if ! curl -sSL --connect-timeout 10 --max-time 120 "https://ghproxy.net/$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom" 2>/dev/null; then
+        echo "Mirror failed, trying direct download..."
+        curl -sSL "$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom"
     fi
 fi
 
 chmod +x "$INSTALL_DIR/codeloom"
 
 # ── 添加到 PATH ──────────────────────────────────────────
+# Detect the user's shell to pick the right config file
 SHELL_CONFIG=""
-if [ -f "$HOME/.bashrc" ]; then SHELL_CONFIG="$HOME/.bashrc"; fi
-if [ -f "$HOME/.zshrc" ]; then SHELL_CONFIG="$HOME/.zshrc"; fi
+case "$(basename "$SHELL")" in
+    zsh)  SHELL_CONFIG="$HOME/.zshrc" ;;
+    bash) SHELL_CONFIG="$HOME/.bashrc" ;;
+    *)    # Fallback: use first existing
+          for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+              if [ -f "$f" ]; then SHELL_CONFIG="$f"; break; fi
+          done ;;
+esac
 if [ -n "$SHELL_CONFIG" ]; then
     if ! grep -q "codeloom/bin" "$SHELL_CONFIG" 2>/dev/null; then
         echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_CONFIG"
+        echo "→ Added to $SHELL_CONFIG"
     fi
+else
+    echo "→ Add to PATH manually: export PATH=\"$INSTALL_DIR:\$PATH\""
 fi
 
 echo ""
