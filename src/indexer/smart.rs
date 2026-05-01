@@ -61,8 +61,14 @@ fn _smart_index(conn: &Connection, repo_root: &str, repo_name: &str, branch: &st
 
 fn full_scan(conn: &Connection, repo_root: &str, repo_name: &str, branch: &str, result: &mut IndexResult) -> anyhow::Result<()> {
     let files: Vec<String> = tree_sitter::collect_files(repo_root).into_iter().map(|f| f.path).collect();
-    result.files_changed = files.len(); result.files_scanned = files.len();
-    for fp in &files { match index_one(conn, fp, repo_root, repo_name, branch) { Ok(c) => result.symbols_new += c, Err(e) => eprintln!("Warning: {}: {}", fp, e) } }
+    let total = files.len();
+    result.files_changed = total; result.files_scanned = total;
+    for (i, fp) in files.iter().enumerate() {
+        if total > 20 && (i % 20 == 0 || i == total - 1) {
+            eprintln!("  [{:>3}/{}] parsing...", i + 1, total);
+        }
+        match index_one(conn, fp, repo_root, repo_name, branch) { Ok(c) => result.symbols_new += c, Err(e) => eprintln!("Warning: {}: {}", fp, e) }
+    }
     conn.execute("INSERT OR IGNORE INTO branches (symbol_id,repo,branch_name,override_def,override_hash) SELECT id,repo,?1,NULL,NULL FROM symbols WHERE repo=?2", rusqlite::params![branch, repo_name])?;
     Ok(())
 }
