@@ -1,4 +1,5 @@
 use clap::Subcommand;
+use crate::embedding::Embedder;
 #[derive(Subcommand)]
 pub enum Command {
     Index { #[arg(default_value=".")] path: String, #[arg(long)] branch: Option<String>, #[arg(long)] repo: Option<String>, #[arg(long)] parent: Option<String> },
@@ -32,8 +33,14 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             println!("Done: {} files, {} symbols", result.files_scanned, result.symbols_new);
             if result.symbols_inherited > 0 { println!("  {} inherited from {}", result.symbols_inherited, result.inherited_from.as_deref().unwrap_or("parent")); }
             if let Some(ref from) = result.from_commit { println!("  delta: {}..{}", &from[..8.min(from.len())], result.head_commit.as_deref().map(|h|&h[..8]).unwrap_or("?")); }
-            // also index docs
+            // also index docs + link to code
             index_docs(&conn, &path, &repo);
+            index_includes(&conn, &path, &repo);
+            let embedder = crate::embedding::TextEmbedder;
+            match crate::embedding::link_docs_to_symbols(&conn, &embedder, &repo, 0.05) {
+                Ok(n) => println!("  Linked: {} doc-symbol pairs", n),
+                Err(e) => eprintln!("  Link warning: {}", e),
+            }
         }
         Command::Branch { cmd } => match cmd {
             BranchCmd::SetAlias { alias, branch, desc, repo } => {
@@ -89,4 +96,27 @@ fn index_docs(conn: &rusqlite::Connection, dir: &str, repo: &str) {
         }
     }
     if doc_count > 0 { println!("  Docs: {} sections from {}", doc_count, dir); }
+}
+
+/// Extract #include relations from source files and store as edges
+pub fn index_includes(conn: &rusqlite::Connection, dir: &str, repo: &str) -> usize {
+    let re = regex::Regex::new(r#"#include\s*[<"]([^>"]+)[>"]"#).unwrap();
+    let mut count = 0;
+    for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
+        let p = entry.path();
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !["h","hpp","hxx","cpp","cxx","cc","c"].contains(&ext) { continue; }
+        if let Ok(content) = std::fs::read_to_string(p) {
+            for cap in re.captures_iter(&content) {
+                let included = cap[1].to_string();
+                conn.execute(
+                    "INSERT OR IGNORE INTO edges (source_id, target_id, edge_type, source_repo) VALUES (0, 0, ?1, ?2)",
+                    rusqlite::params![format!("includes:{}", included), repo],
+                ).ok();
+                count += 1;
+            }
+        }
+    }
+    if count > 0 { println!("  Includes: {} edges", count); }
+    count
 }
