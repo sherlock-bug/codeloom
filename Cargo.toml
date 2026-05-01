@@ -1,0 +1,60 @@
+[package]
+name = "codeloom"
+version = "0.1.0"
+edition = "2021"
+description = "团队代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱"
+
+[[bin]]
+name = "codeloom"
+path = "src/main.rs"
+
+[dependencies]
+# 命令行解析
+clap = { version = "4", features = ["derive"] }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# 数据库
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# 哈希
+sha2 = "0.10"
+
+# 语法解析
+tree-sitter = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.23"
+
+# MCP 协议
+rmcp = { version = "0.7", features = ["server"] }
+
+# 异步运行时（MCP 需要）
+tokio = { version = "1", features = ["full"] }
+
+# 路径处理
+walkdir = "2"
+
+# 时间
+chrono = "0.4"
+
+# 日志
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1.0.102"
+dirs = "6.0.0"
+regex = "1.12.3"
+
+[build-dependencies]
+# 编译时不需要特殊依赖（ONNX 模型通过 include_bytes! 嵌入）
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

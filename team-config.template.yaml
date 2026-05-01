@@ -1,0 +1,18 @@
+# CodeLoom 团队配置模板
+# 将此文件分享给团队成员，他们可以用 /codeloom:smart-setup 自动完成配置
+
+project: my-project
+
+# 项目需要的所有代码仓
+repos_required:
+  - backend
+  - frontend
+  - shared-lib
+  # - admin        # 可选：取消注释以添加
+  # - mobile-api   # 可选：取消注释以添加
+
+# 团队共享知识库地址
+base_db: s3://team-rag/my-project.rag.db
+
+# 文档-代码自动关联阈值（可选，默认 0.75）
+# similarity_threshold: 0.75

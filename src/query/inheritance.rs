@@ -1,0 +1,1 @@
+// inheritance chain — stub
