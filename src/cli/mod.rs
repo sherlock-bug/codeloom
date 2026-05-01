@@ -63,6 +63,24 @@ pub enum Command {
 
     /// 自动更新到最新 GitHub Release 版本
     Update,
+
+    /// 清理索引数据：删除指定仓库/分支/全部数据
+    ///
+    /// 示例:
+    ///   codeloom clean --all                 # 清空所有数据
+    ///   codeloom clean --repo myrepo         # 删除某仓库
+    ///   codeloom clean --repo myrepo --branch feature-x  # 删除某分支
+    Clean {
+        /// 清空所有仓库的所有数据（需确认）
+        #[arg(long)]
+        all: bool,
+        /// 目标仓库名
+        #[arg(long)]
+        repo: Option<String>,
+        /// 目标分支名（需同时指定 --repo）
+        #[arg(long, requires = "repo")]
+        branch: Option<String>,
+    },
 }
 
 /// 分支别名管理
@@ -176,6 +194,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             println!("Binary: {:?}", std::env::current_exe().unwrap_or_default());
         }
         Command::Update => do_update(),
+        Command::Clean { all, repo, branch } => do_clean(all, repo, branch),
     }
     Ok(())
 }
@@ -345,5 +364,79 @@ fn detect_platform() -> Option<String> {
         ("macos", "x86_64") => Some("darwin-x86_64".into()),
         ("macos", "aarch64") => Some("darwin-arm64".into()),
         _ => None,
+    }
+}
+
+// ── Clean / Reset ──────────────────────────────────────────────────────
+
+fn do_clean(all: bool, repo: Option<String>, branch: Option<String>) {
+    let dd = match crate::config::Config::data_dir() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("Error: {}", e); return; }
+    };
+
+    if all {
+        // ── Nuke everything ──────────────────────────────────────
+        let mut count = 0;
+        if let Ok(entries) = std::fs::read_dir(&dd) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                if name.ends_with(".rag.db") || name.ends_with(".rag.db-wal") || name.ends_with(".rag.db-shm")
+                    || name.ends_with(".rag.overlay.db")
+                {
+                    if std::fs::remove_file(&p).is_ok() { count += 1; }
+                }
+            }
+        }
+        println!("Cleaned all data: {} file(s) removed from {}", count, dd.display());
+        return;
+    }
+
+    let repo = match repo {
+        Some(r) => r,
+        None => {
+            eprintln!("Specify --all, --repo, or --repo --branch. See: codeloom clean --help");
+            return;
+        }
+    };
+
+    let db_path = dd.join(format!("{}.rag.db", repo));
+    if !db_path.exists() {
+        println!("No data for repo '{}' ({} not found)", repo, db_path.display());
+        return;
+    }
+
+    if let Some(ref branch) = branch {
+        // ── Remove specific branch ────────────────────────────────
+        let conn = match crate::storage::open(&db_path.to_string_lossy()) {
+            Ok(c) => c,
+            Err(e) => { eprintln!("Error opening DB: {}", e); return; }
+        };
+        // Delete branch-specific data from all tables that have branch_name
+        let mut total = 0;
+        for (table, col) in [
+            ("branches", "branch_name"),
+            ("git_index_state", "branch_name"),
+            ("branch_glossary", "branch_name"),
+            ("doc_nodes", "branch_name"),
+        ] {
+            let sql = format!("DELETE FROM {} WHERE {} = ?1 AND (repo = ?2 OR repo IS NULL OR repo = '')", table, col);
+            if let Ok(n) = conn.execute(&sql, rusqlite::params![branch, repo]) {
+                total += n;
+            }
+        }
+        println!("Repo '{}', branch '{}': removed {} row(s)", repo, branch, total);
+    } else {
+        // ── Remove entire repo ────────────────────────────────────
+        let mut removed = 0;
+        for suffix in ["", "-wal", "-shm"] {
+            let p = dd.join(format!("{}.rag.db{}", repo, suffix));
+            if p.exists() && std::fs::remove_file(&p).is_ok() { removed += 1; }
+        }
+        // Also remove overlay
+        let overlay = dd.join(format!("{}.rag.overlay.db", repo));
+        if overlay.exists() && std::fs::remove_file(&overlay).is_ok() { removed += 1; }
+        println!("Repo '{}': removed {} file(s)", repo, removed);
     }
 }
