@@ -1,1 +1,20 @@
+# Rust build artifacts
 /target
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CodeLoom runtime data
+~/.codeloom/
+*.rag.db
+*.rag.db-wal
+*.rag.db-shm
+*.rag.overlay.db
