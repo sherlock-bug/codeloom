@@ -4,7 +4,23 @@ mod mcp; mod query; mod storage;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "codeloom", version, about = "团队代码知识管理工具")]
+#[command(
+    name = "codeloom",
+    version,
+    about = "团队代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱",
+    long_about = "CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的知识图谱，
+
+让 OpenCode/Claude Code 等 AI 编码助手中的 LLM 能理解百万行级别的多代码仓项目。
+
+纯本地运行，零外部 API 依赖，代码不出内网。",
+    after_help = "示例:
+  codeloom index .                        # 索引当前目录
+  codeloom status --repo myrepo           # 查看状态
+  codeloom mcp                            # 启动 MCP 服务
+  codeloom branch set-alias 23B release/2023-B --repo myrepo
+
+项目: https://github.com/sherlock-bug/codeloom"
+)]
 struct Cli { #[command(subcommand)] command: Option<cli::Command> }
 
 #[tokio::main]

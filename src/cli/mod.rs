@@ -1,19 +1,89 @@
 use clap::Subcommand;
 use crate::embedding::Embedder;
+
+/// 团队代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 #[derive(Subcommand)]
 pub enum Command {
-    Index { #[arg(default_value=".")] path: String, #[arg(long)] branch: Option<String>, #[arg(long)] repo: Option<String>, #[arg(long)] parent: Option<String> },
-    Status { #[arg(long)] repo: Option<String> },
-    Pull { source: String },
-    Push { #[arg(default_value="auto")] source: String },
-    SwitchBranch { name: String },
-    Mcp, Check,
-    Branch { #[command(subcommand)] cmd: BranchCmd },
+    /// 索引代码库：扫描 C++/Python/Java/TS/Go 代码，提取符号和边
+    ///
+    /// 示例:
+    ///   codeloom index .                    # 索引当前目录
+    ///   codeloom index /path/to/repo --repo myrepo
+    ///   codeloom index . --branch feature-x --parent main
+    Index {
+        /// 要索引的目录或文件路径
+        #[arg(default_value=".")]
+        path: String,
+        /// Git 分支名（默认自动检测）
+        #[arg(long)]
+        branch: Option<String>,
+        /// 仓库标识名（默认取目录名）
+        #[arg(long)]
+        repo: Option<String>,
+        /// 从指定分支继承符号（替代自动检测 merge-base）
+        #[arg(long)]
+        parent: Option<String>,
+    },
+
+    /// 查看索引状态：符号数、边数、文档数、DB 大小
+    Status {
+        /// 仓库标识名（默认 "default"）
+        #[arg(long)]
+        repo: Option<String>,
+    },
+
+    /// 拉取团队共享知识库（需要配置 remote 地址）
+    Pull {
+        /// 远程 DB 路径或 URL
+        source: String,
+    },
+
+    /// 推送本地知识库到团队共享存储
+    Push {
+        /// 目标路径（默认 "auto"）
+        #[arg(default_value="auto")]
+        source: String,
+    },
+
+    /// 切换活跃分支
+    SwitchBranch {
+        /// 目标分支名
+        name: String,
+    },
+
+    /// 启动 MCP JSON-RPC 服务（供 OpenCode 等 AI 编码助手调用）
+    Mcp,
+
+    /// 检查运行环境：显示版本号和二进制路径
+    Check,
+
+    /// 管理分支惯用叫法映射
+    #[command(subcommand)]
+    Branch(BranchCmd),
 }
+
+/// 分支别名管理
 #[derive(Subcommand)]
 pub enum BranchCmd {
-    SetAlias { alias: String, branch: String, #[arg(long)] desc: Option<String>, #[arg(long)] repo: Option<String> },
-    ListAliases { #[arg(long)] repo: Option<String> },
+    /// 添加分支别名映射（如 23B → release/2023-B）
+    SetAlias {
+        /// 惯用叫法
+        alias: String,
+        /// 实际分支名
+        branch: String,
+        /// 可选描述
+        #[arg(long)]
+        desc: Option<String>,
+        /// 仓库标识名
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// 列出当前仓库的所有分支别名
+    ListAliases {
+        /// 仓库标识名
+        #[arg(long)]
+        repo: Option<String>,
+    },
 }
 pub async fn run(cmd: Command) -> anyhow::Result<()> {
     match cmd {
@@ -42,7 +112,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 Err(e) => eprintln!("  Link warning: {}", e),
             }
         }
-        Command::Branch { cmd } => match cmd {
+        Command::Branch(cmd) => match cmd {
             BranchCmd::SetAlias { alias, branch, desc, repo } => {
                 let repo = repo.unwrap_or("default".into());
                 let dd = crate::config::Config::data_dir()?;
