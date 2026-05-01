@@ -286,7 +286,7 @@ fn get_call_graph(name: &str, repo: &str, direction: &str, max_depth: usize) -> 
     };
 
     if sym_ids.is_empty() {
-        // Fallback: LIKE search
+        // Fallback: LIKE search → auto-use first match
         let like = format!("%{}%", name);
         let similar: Vec<(i64, String)> = match conn.prepare("SELECT id, name FROM symbols WHERE repo=?1 AND name LIKE ?2 LIMIT 10") {
             Ok(mut stmt) => stmt.query_map(rusqlite::params![repo, like], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -297,8 +297,18 @@ fn get_call_graph(name: &str, repo: &str, direction: &str, max_depth: usize) -> 
         if similar.is_empty() {
             return format!("Symbol '{}' not found in {}", name, repo);
         }
-        let mut out = format!("'{}' not found. Similar: {}\nUse get_definition for exact match, then retry call_graph with the correct name.", name,
-            similar.iter().map(|(_, n)| n.as_str()).take(5).collect::<Vec<_>>().join(", "));
+        // Auto-use the first match instead of just listing
+        let (first_id, ref first_name) = similar[0];
+        let tail = if similar.len() > 1 {
+            format!(". Also found: {}", similar.iter().skip(1).take(5).map(|(_,n)| n.as_str()).collect::<Vec<_>>().join(", "))
+        } else { String::new() };
+        let mut out = format!("Call graph for '{}' → auto-matched '{}' ({}):\n", name, first_name, direction);
+        out.push_str(&tail);
+        out.push('\n');
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(first_id);
+        out.push_str(&format!("  ● {} (id={})\n", first_name, first_id));
+        traverse_calls(&conn, first_id, direction, max_depth, 1, &mut visited, &mut out);
         return out;
     }
 
