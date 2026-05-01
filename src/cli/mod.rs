@@ -78,12 +78,14 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
 }
 fn index_docs(conn: &rusqlite::Connection, dir: &str, repo: &str) {
     let mut doc_count = 0;
+    let ignore_patterns = crate::ignore::load_patterns(dir);
     for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
         let p = entry.path();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !["md","rst"].contains(&ext) { continue; }
         let ps = p.to_string_lossy();
-        if ps.contains("/tests/")||ps.contains("/build/")||ps.contains("/.git/") { continue; }
+        if ps.contains("/.git/") { continue; }
+        if crate::ignore::is_ignored(&ps, &ignore_patterns) { continue; }
         if let Ok(content) = std::fs::read_to_string(ps.as_ref()) {
             // Store branch glossary entries
             let entries = crate::doc::glossary::parse_branch_glossary(&content);
@@ -102,10 +104,12 @@ fn index_docs(conn: &rusqlite::Connection, dir: &str, repo: &str) {
 pub fn index_includes(conn: &rusqlite::Connection, dir: &str, repo: &str) -> usize {
     let re = regex::Regex::new(r#"#include\s*[<"]([^>"]+)[>"]"#).unwrap();
     let mut count = 0;
+    let ignore_patterns = crate::ignore::load_patterns(dir);
     for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
         let p = entry.path();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !["h","hpp","hxx","cpp","cxx","cc","c"].contains(&ext) { continue; }
+        if crate::ignore::is_ignored(&p.to_string_lossy(), &ignore_patterns) { continue; }
         if let Ok(content) = std::fs::read_to_string(p) {
             for cap in re.captures_iter(&content) {
                 let included = cap[1].to_string();

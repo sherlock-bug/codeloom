@@ -25,10 +25,12 @@ pub fn detect_language(fp: &str) -> Option<&'static str> {
 
 pub fn collect_files(root: &str) -> Vec<FileInfo> {
     let git_files = get_git(root);
-    let mut files = Vec::new(); let mut skipped = 0usize;
+    let ignore_patterns = crate::ignore::load_patterns(root);
+    let mut files = Vec::new(); let mut skipped = 0usize; let mut loom_skipped = 0usize;
     for e in WalkDir::new(root).into_iter().filter_map(|r| r.ok()).filter(|e| e.file_type().is_file()) {
         let ps = e.path().to_string_lossy().to_string();
         if ps.contains("/.git/") { continue; }
+        if crate::ignore::is_ignored(&ps, &ignore_patterns) { loom_skipped+=1; continue; }
         if let Some(ref gf) = git_files { if !gf.contains(&ps) && !gf.iter().any(|g| ps.ends_with(g)) { skipped+=1; continue; } }
         if let Some(lang) = detect_language(&ps) {
             if let Ok(meta) = e.metadata() { if let Ok(modified) = meta.modified() {
@@ -36,6 +38,7 @@ pub fn collect_files(root: &str) -> Vec<FileInfo> {
             }}
         }
     }
+    if loom_skipped>0 { println!("  Skipped {} files (matched .codeloomignore)", loom_skipped); }
     if skipped>0 { println!("  Skipped {} gitignored files", skipped); }
     files
 }
