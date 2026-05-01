@@ -64,7 +64,26 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 if n==0 { println!("No aliases. Add: codeloom branch set-alias <alias> <branch> --repo <repo>"); }
             }
         },
-        Command::Status {..} => println!("Status..."),
+        Command::Status { repo } => {
+            let repo = repo.as_deref().unwrap_or("default");
+            let dd = crate::config::Config::data_dir()?;
+            let dbp = dd.join(format!("{}.rag.db", repo));
+            if !dbp.exists() {
+                println!("No index found for repo '{}'. Run: codeloom index <path> --repo {}", repo, repo);
+                return Ok(());
+            }
+            let conn = crate::storage::open(&dbp.to_string_lossy())?;
+            let syms: i64 = conn.query_row("SELECT COUNT(*) FROM symbols WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
+            let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
+            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM doc_nodes WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
+            let links: i64 = conn.query_row("SELECT COUNT(*) FROM doc_code_links WHERE doc_node_id IN (SELECT id FROM doc_nodes WHERE repo=?1)", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
+            let resolved: i64 = conn.query_row("SELECT COUNT(*) FROM edges WHERE target_id!=0", [], |r| r.get(0)).unwrap_or(0);
+            let meta = std::fs::metadata(&dbp).ok();
+            println!("Repo: {}", repo);
+            println!("  Symbols: {}  |  Edges: {} (resolved: {} / {:.0}%)  |  Docs: {}", syms, edges, resolved, if edges>0 {resolved as f64/edges as f64*100.0}else{0.0}, docs);
+            println!("  Doc-code links: {}", links);
+            if let Some(m) = meta { println!("  DB size: {:.1} MB", m.len() as f64 / 1_048_576.0); }
+        }
         Command::Pull {..} => println!("Pull..."),
         Command::Push {..} => println!("Push..."),
         Command::SwitchBranch {..} => println!("Switch..."),
