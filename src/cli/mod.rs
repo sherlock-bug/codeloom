@@ -92,7 +92,17 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
     match cmd {
         Command::Index { path, branch, repo, parent } => {
             let branch = branch.unwrap_or_else(|| crate::indexer::git::current_branch(&path).unwrap_or_else(|| "unknown".into()));
-            let repo = repo.unwrap_or_else(|| std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or("default".into()));
+            let repo = repo.unwrap_or_else(|| {
+                // When path is ".", use actual current directory name
+                let p = if path == "." || path == "./" {
+                    std::env::current_dir().ok().map(|d| d.to_string_lossy().to_string()).unwrap_or(path.clone())
+                } else {
+                    path.clone()
+                };
+                std::path::Path::new(&p).file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "default".into())
+            });
             println!("Indexing {} (branch={}, repo={})...", path, branch, repo);
             let data_dir = crate::config::Config::data_dir()?;
             let db_path = data_dir.join(format!("{}.rag.db", repo));
