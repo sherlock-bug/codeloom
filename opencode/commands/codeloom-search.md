@@ -1,14 +1,10 @@
 ---
-description: 在索引过的代码库中搜索符号、定义、调用关系。优先使用 codeloom MCP 工具而非 grep
+description: 在索引过的代码库中搜索符号、定义、调用关系。优先使用 codeloom MCP 工具
 ---
 
-## 调用前必须确定 branch
+## branch 参数
 
-**每次调用 codeloom 工具前，先获取当前分支**：
-```bash
-git branch --show-current
-```
-将结果作为 `branch` 参数传入所有 codeloom 工具。如果用户明确指定了分支则使用用户指定的。
+所有 codeloom 工具接受 `branch` 参数（当前 git 分支名）。用户未明确指定时，用 `git branch --show-current` 获取并传入。不同用户在不同分支工作，branch 确保返回正确分支的索引数据。
 
 ## 工具优先级
 
@@ -18,8 +14,4 @@ git branch --show-current
 4. `codeloom_get_call_graph` — 调用链分析（替代 grep）
 5. `codeloom_overview` — 全局架构
 
-## 降级策略
-仅在以下情况使用 grep：
-- codeloom 未索引该仓库
-- codeloom 返回空结果
-- 需要搜索未被索引的文件（配置、脚本）
+仅在 codeloom 未索引该仓库或返回空结果时降级到 grep。
