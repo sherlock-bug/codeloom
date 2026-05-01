@@ -1,7 +1,7 @@
 // Embedding module: vector embeddings + text-based similarity for code-doc linking
 // When ONNX model (bge-small-zh) is integrated, swap TextEmbedder for OrtEmbedder.
 use rusqlite::Connection;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Embedding vector (768-dim for bge-small-zh, 384-dim placeholder)
 pub type Embedding = Vec<f32>;
@@ -84,7 +84,8 @@ static STOP_WORDS: &[&str] = &[
 
 // ── Code-Doc Linking ─────────────────────────────────────────────────
 
-/// Link documents to symbols by text similarity.
+/// Link documents to symbols by text similarity with token-based pre-filtering.
+/// Only pairs sharing at least one token are compared (inverted index optimization).
 /// Stores doc_code_links entries when Jaccard similarity > threshold.
 pub fn link_docs_to_symbols(
     conn: &Connection,
@@ -92,8 +93,6 @@ pub fn link_docs_to_symbols(
     repo: &str,
     threshold: f64,
 ) -> anyhow::Result<usize> {
-    let mut count = 0;
-
     // Get all doc_nodes
     let mut doc_stmt = conn.prepare(
         "SELECT id, title, section_path, content FROM doc_nodes WHERE repo=?1"
@@ -102,6 +101,8 @@ pub fn link_docs_to_symbols(
         rusqlite::params![repo],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
     )?.filter_map(|r| r.ok()).collect();
+
+    if docs.is_empty() { return Ok(0); }
 
     // Get all symbols with definitions
     let mut sym_stmt = conn.prepare(
@@ -112,42 +113,66 @@ pub fn link_docs_to_symbols(
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
     )?.filter_map(|r| r.ok()).collect();
 
-    // Embed all docs and symbols
-    let doc_embs: Vec<(i64, Embedding)> = docs.iter()
+    // Tokenize all docs
+    let doc_tokens: Vec<(i64, HashSet<u64>)> = docs.iter()
         .map(|(id, title, section, content)| {
             let text = if !section.is_empty() {
-                format!("{}: {}", title, section)
+                format!("{}: {}\n{}", title, section, content)
             } else {
-                title.clone()
+                format!("{}\n{}", title, content)
             };
-            let text = format!("{} {}", text, content);
-            let emb = embedder.embed(&text).unwrap_or_default();
-            (*id, emb)
+            let tokens: HashSet<u64> = embedder.embed(&text).unwrap_or_default()
+                .into_iter().map(|x| x as u64).collect();
+            (*id, tokens)
         })
         .collect();
 
-    let sym_embs: Vec<(i64, Embedding)> = symbols.iter()
+    // Tokenize all symbols
+    let sym_tokens: Vec<(i64, HashSet<u64>)> = symbols.iter()
         .map(|(id, name, kind, def)| {
             let text = format!("{} {} {}", kind, name, def);
-            let emb = embedder.embed(&text).unwrap_or_default();
-            (*id, emb)
+            let tokens: HashSet<u64> = embedder.embed(&text).unwrap_or_default()
+                .into_iter().map(|x| x as u64).collect();
+            (*id, tokens)
         })
         .collect();
 
-    // Clear existing links for this repo
-    conn.execute("DELETE FROM doc_code_links WHERE doc_node_id IN (SELECT id FROM doc_nodes WHERE repo=?1)",
-        rusqlite::params![repo])?;
+    // Build inverted index: token → symbol indices
+    let mut token_index: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (si, (_, tokens)) in sym_tokens.iter().enumerate() {
+        for token in tokens {
+            token_index.entry(*token).or_default().push(si);
+        }
+    }
 
-    // Compute similarities and store links
+    // Clear existing links for this repo
+    conn.execute(
+        "DELETE FROM doc_code_links WHERE doc_node_id IN (SELECT id FROM doc_nodes WHERE repo=?1)",
+        rusqlite::params![repo],
+    )?;
+
     let mut ins = conn.prepare(
         "INSERT OR REPLACE INTO doc_code_links (doc_node_id, symbol_id, link_type, strength, source) VALUES (?1, ?2, 'semantic', ?3, 'text')"
     )?;
 
-    for (doc_id, doc_emb) in &doc_embs {
-        for (sym_id, sym_emb) in &sym_embs {
-            let sim = embedder.similarity(doc_emb, sym_emb) as f64;
-            if sim >= threshold {
-                ins.execute(rusqlite::params![doc_id, sym_id, sim])?;
+    let mut count = 0;
+    // For each doc, find candidate symbols via shared tokens
+    for (doc_id, doc_tok) in &doc_tokens {
+        let mut candidates: HashSet<usize> = HashSet::new();
+        for token in doc_tok {
+            if let Some(sym_indices) = token_index.get(token) {
+                candidates.extend(sym_indices);
+            }
+        }
+        // Only compute Jaccard for candidates
+        for &si in &candidates {
+            let (sym_id, sym_tok) = &sym_tokens[si];
+            let intersection = doc_tok.intersection(sym_tok).count();
+            let union = doc_tok.union(sym_tok).count();
+            if union == 0 { continue; }
+            let jaccard = intersection as f64 / union as f64;
+            if jaccard >= threshold {
+                ins.execute(rusqlite::params![doc_id, sym_id, jaccard])?;
                 count += 1;
             }
         }
