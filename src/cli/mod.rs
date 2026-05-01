@@ -166,8 +166,16 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             }
         },
         Command::Status { repo } => {
-            let repo = repo.as_deref().unwrap_or("default");
             let dd = crate::config::Config::data_dir()?;
+            let repo = repo.unwrap_or_else(|| {
+                // Try current directory name, then "default"
+                let cwd = std::env::current_dir().ok()
+                    .and_then(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| "default".into());
+                if dd.join(format!("{}.rag.db", cwd)).exists() { cwd }
+                else if dd.join("default.rag.db").exists() { "default".into() }
+                else { cwd } // Return cwd anyway for a better error message
+            });
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() {
                 println!("No index found for repo '{}'. Run: codeloom index <path> --repo {}", repo, repo);
