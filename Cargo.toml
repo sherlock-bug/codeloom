@@ -1,6 +1,6 @@
 [package]
 name = "codeloom"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "团队代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱"
 
