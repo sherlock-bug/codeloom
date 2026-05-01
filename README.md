@@ -45,8 +45,10 @@ codeloom check                              # 检查环境
 codeloom index /path/to/your/cpp/repo       # 索引代码库
 codeloom status                             # 查看状态
 
-# 注册到 OpenCode
-opencode mcp add codeloom --command "codeloom mcp"
+# 注册到 OpenCode（交互式，依次输入 name 和 command）
+opencode mcp add
+#   Enter MCP server name → codeloom
+#   Enter command → codeloom mcp
 ```
 
 然后在 OpenCode 里直接用：
