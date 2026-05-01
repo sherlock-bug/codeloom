@@ -2,6 +2,7 @@
 // When ONNX model (bge-small-zh) is integrated, swap TextEmbedder for OrtEmbedder.
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
+pub mod onnx;
 
 /// Embedding vector (768-dim for bge-small-zh, 384-dim placeholder)
 pub type Embedding = Vec<f32>;
