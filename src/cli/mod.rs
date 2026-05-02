@@ -52,7 +52,11 @@ pub enum Command {
     },
 
     /// 启动 MCP JSON-RPC 服务（供 OpenCode 等 AI 编码助手调用）
-    Mcp,
+    /// --http :8080 启动 HTTP 远程模式
+    Mcp {
+        #[arg(long)]
+        http: Option<String>,
+    },
 
     /// 检查运行环境：显示版本号和二进制路径
     Check,
@@ -205,7 +209,14 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
         Command::Pull {..} => println!("Pull..."),
         Command::Push {..} => println!("Push..."),
         Command::SwitchBranch {..} => println!("Switch..."),
-        Command::Mcp => crate::mcp::serve().await?,
+        Command::Mcp { http } => {
+            if let Some(addr) = http {
+                let addr = if addr.starts_with(':') { format!("0.0.0.0{}", addr) } else { addr };
+                crate::mcp::serve_http(&addr).await?;
+            } else {
+                crate::mcp::serve_stdio().await?;
+            }
+        }
         Command::Check => {
             println!("CodeLoom v{}", env!("CARGO_PKG_VERSION"));
             println!("Binary: {:?}", std::env::current_exe().unwrap_or_default());
