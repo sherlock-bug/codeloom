@@ -1,5 +1,4 @@
 use clap::Subcommand;
-use crate::embedding::Embedder;
 
 /// 团队代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 #[derive(Subcommand)]
@@ -30,25 +29,6 @@ pub enum Command {
         /// 仓库标识名（默认 "default"）
         #[arg(long)]
         repo: Option<String>,
-    },
-
-    /// 拉取团队共享知识库（需要配置 remote 地址）
-    Pull {
-        /// 远程 DB 路径或 URL
-        source: String,
-    },
-
-    /// 推送本地知识库到团队共享存储
-    Push {
-        /// 目标路径（默认 "auto"）
-        #[arg(default_value="auto")]
-        source: String,
-    },
-
-    /// 切换活跃分支
-    SwitchBranch {
-        /// 目标分支名
-        name: String,
     },
 
     /// 启动 MCP JSON-RPC 服务（供 OpenCode 等 AI 编码助手调用）
@@ -147,13 +127,13 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             println!("Done: {} files, {} symbols", result.files_scanned, result.symbols_new);
             if result.symbols_inherited > 0 { println!("  {} inherited from {}", result.symbols_inherited, result.inherited_from.as_deref().unwrap_or("parent")); }
             if let Some(ref from) = result.from_commit { println!("  delta: {}..{}", &from[..8.min(from.len())], result.head_commit.as_deref().map(|h|&h[..8]).unwrap_or("?")); }
-            // also index docs + link to code
+            // also index docs + vectors
             index_docs(&conn, &path, &repo);
             index_includes(&conn, &path, &repo);
-            let embedder = crate::embedding::TextEmbedder;
-            match crate::embedding::link_docs_to_symbols(&conn, &embedder, &repo, 0.05) {
-                Ok(n) => println!("  Linked: {} doc-symbol pairs", n),
-                Err(e) => eprintln!("  Link warning: {}", e),
+            let embedder = crate::embedding::get_embedder();
+            match crate::embedding::index_vectors(&conn, &repo, embedder.as_ref()) {
+                Ok((s, d)) => if s + d > 0 { println!("  Vectors: {} symbols + {} docs indexed", s, d); },
+                Err(e) => eprintln!("  Vector warning: {}", e),
             }
         }
         Command::Branch(cmd) => match cmd {
@@ -198,17 +178,12 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let syms: i64 = conn.query_row("SELECT COUNT(*) FROM symbols WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
             let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
             let docs: i64 = conn.query_row("SELECT COUNT(*) FROM doc_nodes WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
-            let links: i64 = conn.query_row("SELECT COUNT(*) FROM doc_code_links WHERE doc_node_id IN (SELECT id FROM doc_nodes WHERE repo=?1)", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
             let resolved: i64 = conn.query_row("SELECT COUNT(*) FROM edges WHERE target_id!=0", [], |r| r.get(0)).unwrap_or(0);
             let meta = std::fs::metadata(&dbp).ok();
             println!("Repo: {}", repo);
             println!("  Symbols: {}  |  Edges: {} (resolved: {} / {:.0}%)  |  Docs: {}", syms, edges, resolved, if edges>0 {resolved as f64/edges as f64*100.0}else{0.0}, docs);
-            println!("  Doc-code links: {}", links);
             if let Some(m) = meta { println!("  DB size: {:.1} MB", m.len() as f64 / 1_048_576.0); }
         }
-        Command::Pull {..} => println!("Pull..."),
-        Command::Push {..} => println!("Push..."),
-        Command::SwitchBranch {..} => println!("Switch..."),
         Command::Mcp { http } => {
             if let Some(addr) = http {
                 let addr = if addr.starts_with(':') { format!("0.0.0.0{}", addr) } else { addr };

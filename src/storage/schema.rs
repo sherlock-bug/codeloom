@@ -48,13 +48,6 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
             title TEXT, section_path TEXT, content TEXT, level INTEGER,
             file_path TEXT NOT NULL, file_format TEXT, branch_name TEXT
         );
-
-        CREATE TABLE IF NOT EXISTS doc_code_links (
-            doc_node_id INTEGER REFERENCES doc_nodes(id),
-            symbol_id INTEGER REFERENCES symbols(id),
-            link_type TEXT, strength REAL DEFAULT 0.0, source TEXT DEFAULT 'embedding',
-            PRIMARY KEY (doc_node_id, symbol_id)
-        );
     ")?;
     Ok(())
 }

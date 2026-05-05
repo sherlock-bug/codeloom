@@ -20,3 +20,27 @@ impl Config {
     }
     fn path() -> anyhow::Result<PathBuf> { Ok(Self::data_dir()?.join("config.yaml")) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default() {
+        let cfg = Config::default();
+        assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn test_data_dir_returns_path() {
+        let dir = Config::data_dir();
+        assert!(dir.is_ok());
+        let d = dir.unwrap();
+        assert!(d.to_string_lossy().contains(".codeloom"));
+    }
+
+    #[test]
+    fn test_dft_threshold() {
+        assert_eq!(dft(), 0.75);
+    }
+}

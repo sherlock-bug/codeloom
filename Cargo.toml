@@ -1,6 +1,6 @@
 [package]
 name = "codeloom"
-version = "0.1.2"
+version = "0.3.1"
 edition = "2021"
 description = "团队代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱"
 
@@ -18,7 +18,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 # 数据库
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "load_extension"] }
 
 # 哈希
 sha2 = "0.10"
@@ -51,8 +51,17 @@ dirs = "6.0.0"
 regex = "1.12.3"
 clap_complete = "4.6.3"
 
+# Embedding — candle (纯 Rust ML 框架，零 C 依赖)
+candle-core = "0.10"
+candle-nn = "0.10"
+candle-transformers = "0.10"
+tokenizers = "0.21"
+
 [build-dependencies]
 # 编译时不需要特殊依赖
+
+[dev-dependencies]
+mockall = "0.13"
 
 [profile.release]
 opt-level = 3

@@ -19,7 +19,7 @@ fn walk_children(
         match child.kind() {
             "function_definition" => extract_func(source, &child, file, repo, parent_class, symbols, edges),
             "class_specifier" | "struct_specifier" => extract_class(source, &child, file, repo, symbols, edges),
-            "enum_specifier" => extract_enum(source, &child, file, repo, symbols),
+            "enum_specifier" => extract_enum(source, &child, file, repo, symbols, edges),
             "field_declaration" => extract_field(source, &child, file, repo, parent_class, symbols, edges),
             "declaration" => {
                 let mut dc = child.walk();
@@ -51,7 +51,7 @@ fn walk_children(
                     match body.kind() {
                         "function_definition" => extract_func(source, &body, file, repo, parent_class, symbols, edges),
                         "class_specifier" | "struct_specifier" => extract_class(source, &body, file, repo, symbols, edges),
-                        "enum_specifier" => extract_enum(source, &body, file, repo, symbols),
+                        "enum_specifier" => extract_enum(source, &body, file, repo, symbols, edges),
                         "field_declaration" => extract_field(source, &body, file, repo, parent_class, symbols, edges),
                         "declaration" => {
                             let mut dc = body.walk();
@@ -204,7 +204,7 @@ fn extract_class(
     }
 }
 
-fn extract_enum(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols: &mut Vec<Symbol>) {
+fn extract_enum(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols: &mut Vec<Symbol>, edges: &mut Vec<(usize, usize, String)>) {
     let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(source.as_bytes()).ok()).unwrap_or("anonymous");
     let mut def = extract_text(source, node.start_position().row as u32+1, node.end_position().row as u32+1);
     let comment = collect_comments(source, node);
@@ -216,6 +216,34 @@ fn extract_enum(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols:
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: None, parent_class: None, namespace: None,
     });
+    let enum_idx = symbols.len() - 1;
+    // Extract enum values from enumerator_list
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "enumerator_list" {
+            let mut ec = child.walk();
+            for enumerator in child.children(&mut ec) {
+                if enumerator.kind() == "enumerator" {
+                    if let Some(vn) = enumerator.child_by_field_name("name") {
+                        if let Ok(vname) = vn.utf8_text(source.as_bytes()) {
+                            let full = format!("{}::{}", name, vname);
+                            symbols.push(Symbol {
+                                id: None, repo: repo.into(), name: full.clone(), kind: "enum_value".into(),
+                                definition: String::new(), content_hash: String::new(),
+                                file_path: file.path.clone(),
+                                line_start: enumerator.start_position().row as u32+1,
+                                line_end: enumerator.end_position().row as u32+1,
+                                language: Some("cpp".into()), signature: Some(full),
+                                parent_class: Some(name.to_string()), namespace: None,
+                            });
+                            let vi = symbols.len() - 1;
+                            edges.push((enum_idx, vi, format!("contains:{}", vname)));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Extract class member field (field_declaration in tree-sitter-cpp)
@@ -263,16 +291,24 @@ fn extract_field(
 }
 
 fn extract_decl(source: &str, node: &Node, file: &FileInfo, repo: &str, parent_class: Option<&str>, symbols: &mut Vec<Symbol>) {
+    // Detect static storage class
+    let is_static = {
+        let mut dc = node.walk();
+        let x = node.children(&mut dc).any(|c| c.kind() == "storage_class_specifier" && c.utf8_text(source.as_bytes()).map(|t| t.trim()=="static").unwrap_or(false));
+        x
+    };
+    let is_global = parent_class.is_none();
     if let Some(decl) = node.child_by_field_name("declarator") {
         if let Ok(name) = decl.utf8_text(source.as_bytes()) {
             let full = match parent_class {
                 Some(pc) => format!("{}::{}", pc, name),
                 None => name.to_string(),
             };
+            let kind = if is_static { "static_var" } else if is_global { "global" } else { "variable" };
             let def = extract_text(source, node.start_position().row as u32+1, node.end_position().row as u32+1);
             symbols.push(Symbol {
                 id: None, repo: repo.into(), name: full,
-                kind: "variable".into(),
+                kind: kind.into(),
                 definition: def.clone(), content_hash: dedup::hash_content(&def),
                 file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
                 line_end: node.end_position().row as u32+1, language: Some("cpp".into()),

@@ -2,6 +2,7 @@
 mod cli; mod config; mod doc; mod embedding; mod ignore; mod indexer; mod linking;
 mod mcp; mod query; mod storage;
 use clap::Parser;
+#[allow(unused_imports)]
 use clap::CommandFactory;
 use clap_complete::{generate, shells};
 
@@ -47,23 +48,4 @@ async fn main() -> anyhow::Result<()> {
         None => mcp::serve().await?,
     }
     Ok(())
-}
-#[test]
-fn dump_template_method_ast() {
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&tree_sitter_cpp::LANGUAGE.into()).unwrap();
-    let src = include_str!("/tmp/test_create.cpp");
-    let tree = parser.parse(src, None).unwrap();
-    let root = tree.root_node();
-    fn dump(node: tree_sitter::Node, src: &str, depth: usize) {
-        let kind = node.kind();
-        let text = node.utf8_text(src.as_bytes()).unwrap_or("");
-        let text = if text.len() > 60 { format!("{}...", &text[..57]) } else { text.to_string() };
-        println!("{:indent$}{} \"{}\"", " ", kind, text, indent=depth*2);
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            dump(child, src, depth+1);
-        }
-    }
-    dump(root, src, 0);
 }
