@@ -51,7 +51,7 @@ fn get_git(root: &str) -> Option<std::collections::HashSet<String>> {
 }
 
 pub fn parse_file(file: &FileInfo, parser: &mut Parser, repo: &str) -> anyhow::Result<(Vec<Symbol>, Vec<(usize,usize,String)>)> {
-    let source = std::fs::read_to_string(&file.path)?;
+    let source = crate::util::read_file_smart(&file.path)?;
     let tree = parser.parse(&source, None).ok_or_else(|| anyhow::anyhow!("parse: {}", file.path))?;
     let mut syms = Vec::new(); let mut edges: Vec<(usize,usize,String)> = Vec::new();
     match file.language {

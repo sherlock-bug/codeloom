@@ -212,7 +212,7 @@ fn index_docs(conn: &rusqlite::Connection, dir: &str, repo: &str) {
         let ps = p.to_string_lossy();
         if ps.contains("/.git/") { continue; }
         if crate::ignore::is_ignored(&ps, &ignore_patterns) { continue; }
-        if let Ok(content) = std::fs::read_to_string(ps.as_ref()) {
+        if let Ok(content) = crate::util::read_file_smart(ps.as_ref()) {
             // Store branch glossary entries
             let entries = crate::doc::glossary::parse_branch_glossary(&content);
             if !entries.is_empty() { println!("  Glossary: {} entries from {}", entries.len(), ps); }
@@ -236,7 +236,7 @@ pub fn index_includes(conn: &rusqlite::Connection, dir: &str, repo: &str) -> usi
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !["h","hpp","hxx","cpp","cxx","cc","c"].contains(&ext) { continue; }
         if crate::ignore::is_ignored(&p.to_string_lossy(), &ignore_patterns) { continue; }
-        if let Ok(content) = std::fs::read_to_string(p) {
+        if let Ok(content) = crate::util::read_file_smart(p) {
             for cap in re.captures_iter(&content) {
                 let included = cap[1].to_string();
                 conn.execute(

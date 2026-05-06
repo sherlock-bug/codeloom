@@ -13,6 +13,7 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 | 能力 | 说明 |
 |------|------|
 | **代码知识图谱** | tree-sitter 解析 C++/Python/Java/TypeScript/Go，提取符号定义、调用图、继承链、include 关系 |
+| **编码兼容** | UTF-8 / GB2312 / GBK / GB18030 自动检测，中文编码源码零配置索引 |
 | **本地语义嵌入** | candle + bge-small-zh（512 维，91MB），纯 CPU 推理，零外部 API。模型缺失时自动降级 Jaccard |
 | **Git 驱动增量** | 自动跟踪 commit，`git diff` 只扫变更文件；新分支从父分支继承符号 |
 | **分支过滤** | 所有 MCP 工具 `branch` 参数必传；`branch_name IS NULL` 的数据所有分支可见 |
@@ -125,6 +126,72 @@ OpenCode 里直接用：
 | `codeloom_index` | 触发增量索引 |
 
 分支过滤规则：`branch_name IS NULL` 的数据对所有分支可见；有值的仅匹配分支可见。代码和文档一视同仁。
+
+## OpenCode MCP 配置
+
+### 1. 注册 MCP Server
+
+安装后，在项目目录下注册 CodeLoom 到 OpenCode：
+
+```bash
+# 本地模式（二进制在本机）
+opencode mcp add codeloom -- codeloom mcp
+
+# 远程模式（MCP Server 部署在远端服务器，多人共享）
+opencode mcp add codeloom -- ssh user@host -- codeloom mcp
+```
+
+注册后重启 OpenCode，MCP 工具自动生效。
+
+### 2. 验证连接
+
+在 OpenCode 中执行：
+
+```
+/codeloom:check    # 检查环境
+/codeloom:status   # 查看索引状态
+```
+
+### 3. OpenCode 自定义命令
+
+| 命令 | 功能 |
+|------|------|
+| `/codeloom:index` | 增量索引当前项目 |
+| `/codeloom:status` | 查看索引状态和统计 |
+| `/codeloom:search` | 搜索符号、定义、调用关系 |
+| `/codeloom:branch` | 切换或查看当前索引分支 |
+| `/codeloom:check` | 检查安装状态和环境 |
+| `/codeloom:setup` | 交互式引导配置 |
+| `/codeloom:smart-setup` | 从团队配置模板导入 |
+| `/codeloom:export` | 导出团队配置模板 |
+
+### 4. 手动 MCP 配置
+
+也可以直接在 OpenCode 的 `.opencode/config.json` 中配置：
+
+```json
+{
+  "mcpServers": {
+    "codeloom": {
+      "command": "codeloom",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+远程部署：
+
+```json
+{
+  "mcpServers": {
+    "codeloom": {
+      "command": "ssh",
+      "args": ["user@host", "--", "codeloom", "mcp"]
+    }
+  }
+}
+```
 
 ## .codeloomignore
 

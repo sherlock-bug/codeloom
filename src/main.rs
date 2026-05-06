@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_variables)]
 mod cli; mod config; mod doc; mod embedding; mod ignore; mod indexer; mod linking;
-mod mcp; mod query; mod storage;
+mod mcp; mod query; mod storage; mod util;
 use clap::Parser;
 #[allow(unused_imports)]
 use clap::CommandFactory;

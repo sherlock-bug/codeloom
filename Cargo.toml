@@ -1,6 +1,6 @@
 [package]
 name = "codeloom"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 description = "团队代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱"
 
@@ -50,6 +50,9 @@ anyhow = "1.0.102"
 dirs = "6.0.0"
 regex = "1.12.3"
 clap_complete = "4.6.3"
+
+# 编码检测
+encoding_rs = "0.8"
 
 # Embedding — candle (纯 Rust ML 框架，零 C 依赖)
 candle-core = "0.10"
