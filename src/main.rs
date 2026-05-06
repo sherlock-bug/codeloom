@@ -1,6 +1,12 @@
 #![allow(dead_code, unused_variables)]
 mod cli; mod config; mod doc; mod embedding; mod ignore; mod indexer; mod linking;
 mod mcp; mod query; mod storage; mod util;
+
+extern "C" {
+    /// Register sqlite-vec extension via sqlite3_auto_extension.
+    /// Called once at startup, before any database connection is opened.
+    fn vec0_static_init();
+}
 use clap::Parser;
 #[allow(unused_imports)]
 use clap::CommandFactory;
@@ -31,6 +37,11 @@ struct Cli { #[command(subcommand)] command: Option<cli::Command> }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
+
+    // Register sqlite-vec extension (statically compiled, no .so needed)
+    // Must be called before any database connection is opened.
+    unsafe { vec0_static_init(); }
+
     let cli = Cli::parse();
     match cli.command {
         Some(cli::Command::Completion { shell }) => {

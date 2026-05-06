@@ -44,9 +44,11 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS doc_nodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT DEFAULT 'default',
+            id INTEGER PRIMARY KEY, repo TEXT DEFAULT 'default',
             title TEXT, section_path TEXT, content TEXT, level INTEGER,
-            file_path TEXT NOT NULL, file_format TEXT, branch_name TEXT
+            file_path TEXT NOT NULL, file_format TEXT, branch_name TEXT,
+            content_hash TEXT,
+            UNIQUE(repo, file_path, section_path)
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS fts5_sym USING fts5(name, file_path, signature);

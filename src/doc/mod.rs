@@ -48,18 +48,28 @@ pub fn index_markdown(conn: &Connection, path: &str, content: &str, repo: &str) 
         count += 1;
     }
     // Also store the full document
+    let hash = crate::storage::dedup::hash_content(&format!("{}:{}:{}", current_title, "", content));
     conn.execute(
-        "INSERT OR REPLACE INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format) VALUES (?1, ?2, '', ?3, 1, ?4, 'md')",
-        rusqlite::params![repo, current_title, content, path],
+        "INSERT INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format, content_hash)
+         VALUES (?1, ?2, '', ?3, 1, ?4, 'md', ?5)
+         ON CONFLICT(repo, file_path, section_path) DO UPDATE SET
+         title=excluded.title, content=excluded.content, level=excluded.level,
+         file_format=excluded.file_format, content_hash=excluded.content_hash",
+        rusqlite::params![repo, current_title, content, path, hash],
     )?;
     count += 1;
     Ok(count)
 }
 
 fn store_section(conn: &Connection, path: &str, repo: &str, title: &str, section: &str, level: i32, content: &str) -> anyhow::Result<()> {
+    let hash = crate::storage::dedup::hash_content(&format!("{}:{}:{}", title, section, content));
     conn.execute(
-        "INSERT OR REPLACE INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'md')",
-        rusqlite::params![repo, title, section, content, level, path],
+        "INSERT INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format, content_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'md', ?7)
+         ON CONFLICT(repo, file_path, section_path) DO UPDATE SET
+         title=excluded.title, content=excluded.content, level=excluded.level,
+         file_format=excluded.file_format, content_hash=excluded.content_hash",
+        rusqlite::params![repo, title, section, content, level, path, hash],
     )?;
     Ok(())
 }

@@ -20,12 +20,12 @@ pub enum HitType {
 
 /// Fill FTS5 symbol index from symbols table (filtered by repo)
 pub fn fill_symbols_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
-    // Clear old data for this repo first (FTS5 doesn't support WHERE DELETE on content tables)
+    // Clear old data first (FTS5 doesn't support WHERE DELETE on content tables)
     conn.execute("DELETE FROM fts5_sym", [])?;
 
     let count = conn.execute(
         "INSERT INTO fts5_sym(name, file_path, signature)
-         SELECT name, file_path, COALESCE(signature, '') FROM symbols WHERE repo=?1",
+         SELECT name, file_path, COALESCE(signature, '') FROM symbols WHERE repo=?1 ORDER BY rowid",
         rusqlite::params![repo],
     )?;
     Ok(count)
@@ -37,7 +37,7 @@ pub fn fill_docs_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
 
     let count = conn.execute(
         "INSERT INTO fts5_doc(title, section_path, content)
-         SELECT COALESCE(title, ''), COALESCE(section_path, ''), content FROM doc_nodes WHERE repo=?1",
+         SELECT COALESCE(title, ''), COALESCE(section_path, ''), content FROM doc_nodes WHERE repo=?1 ORDER BY rowid",
         rusqlite::params![repo],
     )?;
     Ok(count)

@@ -1,6 +1,8 @@
 // Embedding module: candle-based semantic embeddings with TextEmbedder fallback.
 use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::OnceLock;
+use rusqlite::Connection;
 
 /// Embedding vector (384-dim for bge-small-zh, variable-dim for Jaccard)
 pub type Embedding = Vec<f32>;
@@ -235,8 +237,10 @@ pub fn index_vectors(conn: &rusqlite::Connection, repo: &str, embedder: &dyn Emb
         }) {
             let all: Vec<_> = rows.flatten().collect();
             sym_total = all.len();
+            let mut processed = 0;
+            let report_every = if sym_total > 100 { sym_total / 10 } else { 10 };
             for row in all {
-                if existing_sym_ids.contains(&row.0) { sym_skipped += 1; continue; }
+                if existing_sym_ids.contains(&row.0) { sym_skipped += 1; processed += 1; continue; }
                 let text = format!("{} {} {}", row.2, row.1, row.3);
                 let emb = embedder.embed(&text).unwrap_or_default();
                 if !emb.is_empty() {
@@ -245,8 +249,15 @@ pub fn index_vectors(conn: &rusqlite::Connection, repo: &str, embedder: &dyn Emb
                 if batch.len() >= 50 {
                     sym_count += crate::storage::vector::insert_vectors(conn, &sym_table, &batch.iter().map(|(id, v)| (*id, v.as_slice())).collect::<Vec<_>>())?;
                     batch.clear();
-                    // progress logged at end
                 }
+                processed += 1;
+                if processed % report_every == 0 {
+                    eprint!("\r  Vectors: {}/{} symbols ({}%)...", processed, sym_total, processed * 100 / sym_total);
+                }
+            }
+            if sym_total > 0 {
+                eprint!("\r  Vectors: {}/{} symbols done.", processed, sym_total);
+                eprintln!();
             }
         }
         if !batch.is_empty() {
@@ -262,8 +273,11 @@ pub fn index_vectors(conn: &rusqlite::Connection, repo: &str, embedder: &dyn Emb
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
         }) {
             let all: Vec<_> = rows.flatten().collect();
+            let doc_total = all.len();
+            let mut doc_processed = 0;
+            let report_every = if doc_total > 10 { doc_total / 5 } else { 3 };
             for row in all {
-                if existing_doc_ids.contains(&row.0) { doc_skipped += 1; continue; }
+                if existing_doc_ids.contains(&row.0) { doc_skipped += 1; doc_processed += 1; continue; }
                 let text = if !row.2.is_empty() { format!("{}: {} {}", row.1, row.2, row.3) } else { format!("{} {}", row.1, row.3) };
                 let emb = embedder.embed(&text).unwrap_or_default();
                 if !emb.is_empty() {
@@ -273,6 +287,14 @@ pub fn index_vectors(conn: &rusqlite::Connection, repo: &str, embedder: &dyn Emb
                     doc_count += crate::storage::vector::insert_vectors(conn, &doc_table, &batch.iter().map(|(id, v)| (*id, v.as_slice())).collect::<Vec<_>>())?;
                     batch.clear();
                 }
+                doc_processed += 1;
+                if doc_processed % report_every == 0 {
+                    eprint!("\r  Vectors: {}/{} docs ({}%)...", doc_processed, doc_total, doc_processed * 100 / doc_total.max(1));
+                }
+            }
+            if doc_total > 0 {
+                eprint!("\r  Vectors: {}/{} docs done.", doc_processed, doc_total);
+                eprintln!();
             }
         }
         if !batch.is_empty() {
@@ -286,6 +308,163 @@ pub fn index_vectors(conn: &rusqlite::Connection, repo: &str, embedder: &dyn Emb
     }
     Ok((sym_count, doc_count))
 }
+
+/// Index only doc vectors (symbol vectors are done inline during parsing).
+/// Uses content_hash to detect changed docs; only re-embeds docs that are new or modified.
+/// Returns number of doc vectors created/updated.
+pub fn index_doc_vectors(
+    conn: &rusqlite::Connection,
+    repo: &str,
+    embedder: &dyn Embedder,
+) -> anyhow::Result<usize> {
+    if !crate::storage::vector::try_load(conn) {
+        return Ok(0);
+    }
+    let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
+
+    // Collect existing vec0 rowids for dedup
+    let existing_doc_ids: std::collections::HashSet<i64> = {
+        let mut s = std::collections::HashSet::new();
+        if let Ok(mut stmt) = conn.prepare(&format!("SELECT rowid FROM {doc_table}")) {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, i64>(0)) {
+                for r in rows.flatten() {
+                    s.insert(r);
+                }
+            }
+        }
+        s
+    };
+
+    // Collect (rowid → content_hash) from doc_nodes for change detection
+    let mut doc_hashes: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, content_hash FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name!='')",
+    ) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1).unwrap_or_default()))
+        }) {
+            for r in rows.flatten() {
+                doc_hashes.insert(r.0, r.1);
+            }
+        }
+    }
+
+    // Clean stale vec0 entries: rowids that no longer exist in doc_nodes
+    let stale_count = existing_doc_ids.iter().filter(|id| !doc_hashes.contains_key(id)).count();
+    if stale_count > 0 {
+        // vec0 doesn't support DELETE WHERE, so we DROP and rebuild (fast since no data)
+        // Better: just skip them, they won't match any real doc queries
+        eprintln!("  Vectors: {} stale doc vectors (docs removed)", stale_count);
+    }
+
+    let mut doc_count = 0;
+    let mut doc_skipped = 0;
+    let mut doc_updated = 0;
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, title, section_path, content FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name!='')",
+    ) {
+        let mut batch_new = Vec::new();    // New docs: INSERT OR IGNORE
+        let mut batch_update = Vec::new(); // Changed docs: INSERT OR REPLACE
+        if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+        }) {
+            let all: Vec<_> = rows.flatten().collect();
+            let doc_total = all.len();
+            let mut doc_processed = 0;
+            let report_every = if doc_total > 10 { doc_total / 5 } else { 3 };
+            for row in all {
+                let (id, title, section_path, content) = (row.0, &row.1, &row.2, &row.3);
+                let hash_text = format!("{}:{}:{}", title, section_path, content);
+                let new_hash = crate::storage::dedup::hash_content(&hash_text);
+                let stored_hash = doc_hashes.get(&id).map(|s| s.as_str()).unwrap_or("");
+
+                let has_vec = existing_doc_ids.contains(&id);
+                let hash_changed = stored_hash.is_empty() || stored_hash != new_hash;
+
+                if has_vec && !hash_changed {
+                    // Unchanged – skip
+                    doc_skipped += 1;
+                    doc_processed += 1;
+                } else {
+                    // New or changed – embed and insert/replace
+                    let text = format!("{}: {} {}", title, section_path, content);
+                    let emb = embedder.embed(&text).unwrap_or_default();
+                    if !emb.is_empty() {
+                        if has_vec {
+                            batch_update.push((id, emb));
+                        } else {
+                            batch_new.push((id, emb));
+                        }
+                    }
+                }
+
+                // Flush batches
+                if batch_new.len() >= 50 {
+                    doc_count += crate::storage::vector::insert_vectors(
+                        conn, &doc_table,
+                        &batch_new.iter().map(|(i, v)| (*i, v.as_slice())).collect::<Vec<_>>(),
+                    )?;
+                    batch_new.clear();
+                }
+                if batch_update.len() >= 50 {
+                    doc_updated += replace_vectors(conn, &doc_table, &batch_update)?;
+                    batch_update.clear();
+                }
+
+                doc_processed += 1;
+                if doc_processed % report_every == 0 {
+                    eprint!(
+                        "\r  Vectors: {}/{} docs ({}%)...",
+                        doc_processed, doc_total,
+                        doc_processed * 100 / doc_total.max(1)
+                    );
+                }
+            }
+            if doc_total > 0 {
+                eprint!("\r  Vectors: {}/{} docs done.", doc_processed, doc_total);
+                eprintln!();
+            }
+
+            // Flush remaining
+            if !batch_new.is_empty() {
+                doc_count += crate::storage::vector::insert_vectors(
+                    conn, &doc_table,
+                    &batch_new.iter().map(|(i, v)| (*i, v.as_slice())).collect::<Vec<_>>(),
+                )?;
+            }
+            if !batch_update.is_empty() {
+                doc_updated += replace_vectors(conn, &doc_table, &batch_update)?;
+            }
+        }
+    }
+
+    if doc_count > 0 || doc_skipped > 0 || doc_updated > 0 {
+        eprintln!(
+            "  Vectors: {} new + {} updated docs ({} skipped)",
+            doc_count, doc_updated, doc_skipped
+        );
+    }
+    Ok(doc_count + doc_updated)
+}
+
+/// Replace vectors for given rowids (used when doc content changed).
+/// vec0 INSERT OR REPLACE overwrites the existing embedding for the same rowid.
+fn replace_vectors(conn: &Connection, table: &str, rows: &[(i64, Vec<f32>)]) -> anyhow::Result<usize> {
+    let mut count = 0;
+    for (rowid, vec) in rows {
+        let json = format!(
+            "[{}]",
+            vec.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+        );
+        conn.execute(
+            &format!("INSERT OR REPLACE INTO {table} (rowid, embedding) VALUES (?1, ?2)"),
+            rusqlite::params![rowid, json],
+        )?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 // ── Embedder factory ──────────────────────────────────────────────────
 
 /// Returns the best available embedder: CandleEmbedder if model is present, TextEmbedder otherwise.

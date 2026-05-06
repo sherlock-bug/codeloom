@@ -1,5 +1,4 @@
-// build.rs — 编译时从 modelscope.cn 下载 bge-small-zh 嵌入模型到 models/ 目录
-// 下载失败不阻塞编译，运行时自动降级到 TextEmbedder (Jaccard)
+// build.rs — 编译 sqlite-vec（静态链接）+ 下载 bge-small-zh 嵌入模型
 
 use std::path::Path;
 
@@ -10,64 +9,26 @@ fn file_size(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
-
-
-// ── sqlite-vec extension ───────────────────────────────────────────────
-
-const VEC0_VERSION: &str = "v0.1.9";
-const VEC0_URL: &str = "https://github.com/asg017/sqlite-vec/releases/download";
-
-fn download_vec0() {
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("models")
-        .join("sqlite-vec");
-    let marker = out_dir.join("vec0.so");
-
-    if marker.exists() {
-        let sz = file_size(&marker);
-        if sz > 50_000 {
-            println!("cargo:warning=sqlite-vec vec0.so ready ({} KB)", sz / 1024);
-            return;
-        }
-        let _ = std::fs::remove_file(&marker);
-    }
-
-    println!("cargo:warning=Downloading sqlite-vec {} extension...", VEC0_VERSION);
-    std::fs::create_dir_all(&out_dir).ok();
-
-    let arch = if cfg!(target_arch = "x86_64") { "x86_64" } 
-               else if cfg!(target_arch = "aarch64") { "arm64" } 
-               else { "x86_64" }; // fallback
-    let url = format!(
-        "{}/{}/sqlite-vec-{}-loadable-linux-{}.tar.gz",
-        VEC0_URL, VEC0_VERSION, VEC0_VERSION, arch
-    );
-    
-    // Download and extract
-    let tarball = out_dir.join("vec0.tar.gz");
-    let status = std::process::Command::new("curl")
-        .args(["-sSL", "--connect-timeout", "10", "--max-time", "60", "-o"])
-        .arg(&tarball).arg(&url).status();
-    match status {
-        Ok(s) if s.success() => {
-            let _ = std::process::Command::new("tar")
-                .args(["-xzf"]).arg(&tarball).arg("-C").arg(&out_dir).status();
-            let _ = std::fs::remove_file(&tarball);
-            if marker.exists() {
-                println!("cargo:warning=sqlite-vec vec0.so ready");
-            } else {
-                println!("cargo:warning=sqlite-vec extraction failed, vector search will use fallback");
-            }
-        }
-        _ => {
-            let _ = std::fs::remove_file(&tarball);
-            println!("cargo:warning=sqlite-vec download failed, vector search will use fallback");
-        }
-    }
-}
-
 fn main() {
-    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("models").join("bge-small-zh");
+    // ── 1. 静态编译 sqlite-vec ────────────────────────────────────
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    cc::Build::new()
+        .files(&[
+            manifest_dir.join("vendor/sqlite-vec/sqlite-vec.c"),
+            manifest_dir.join("vendor/vec0_static.c"),
+        ])
+        .include(manifest_dir.join("vendor"))             // sqlite3.h
+        .include(manifest_dir.join("vendor/sqlite-vec"))  // sqlite-vec.h
+        .define("SQLITE_CORE", None)   // 使用 SQLite 核心 API，而非扩展 API
+        .opt_level(2)
+        .warnings(true)
+        .compile("sqlite_vec0");
+
+    println!("cargo:warning=sqlite-vec compiled and linked statically");
+
+    // ── 2. 下载 bge-small-zh 模型 ─────────────────────────────────
+    let out_dir = manifest_dir.join("models").join("bge-small-zh");
     let marker = out_dir.join("pytorch_model.bin");
 
     let existing = file_size(&marker);
@@ -98,7 +59,6 @@ fn main() {
         return;
     }
 
-    download_vec0();
     let size = file_size(&marker);
     if size < 50_000_000 {
         println!("cargo:warning=pytorch_model.bin too small ({} bytes), will use Jaccard fallback", size);

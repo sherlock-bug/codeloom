@@ -1,35 +1,15 @@
-// sqlite-vec vector storage — loadable extension for ANN vector search
+// sqlite-vec vector storage — statically compiled, no .so needed
 use rusqlite::Connection;
 
-/// Try to load the vec0 extension. Returns Ok(true) if loaded, Ok(false) if not found.
+/// Verify vec0 is available (statically compiled in).
+/// Returns true if vec0 virtual tables can be created.
 pub fn try_load(conn: &Connection) -> bool {
-    // Look for vec0.so in multiple locations: relative path, project dir, user data dir
-    let mut candidates = vec![
-        "models/sqlite-vec/vec0.so".to_string(),
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("models/sqlite-vec/vec0.so")
-            .to_string_lossy()
-            .to_string(),
-    ];
-    // Also check ~/.codeloom/models/ (release install location)
-    if let Ok(data_dir) = crate::config::Config::data_dir() {
-        let home_model = data_dir.join("models/sqlite-vec/vec0.so");
-        candidates.push(home_model.to_string_lossy().to_string());
-    }
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            // Enable extension loading via unsafe API
-            unsafe {
-                if conn.load_extension_enable().is_err() { return false; }
-                if conn.load_extension(path, None).is_ok() {
-                    return true;
-                }
-                let _ = conn.load_extension_disable();
-            }
-            return false;
-        }
-    }
-    false
+    // Quick verification: create and drop a test vec0 virtual table
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS _vec0_test_ USING vec0(embedding FLOAT[1]);
+         DROP TABLE IF EXISTS _vec0_test_;",
+    )
+    .is_ok()
 }
 
 /// Create vec0 virtual tables for this repo (symbol vectors + doc vectors)

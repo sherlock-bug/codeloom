@@ -6,7 +6,30 @@ pub fn open(path: &str) -> anyhow::Result<Connection> {
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     Ok(conn)
 }
-pub fn migrate(conn: &Connection) -> anyhow::Result<()> { schema::run(conn) }
+pub fn migrate(conn: &Connection) -> anyhow::Result<()> {
+    schema::run(conn)?;
+    migrate_doc_nodes(conn)?;
+    Ok(())
+}
+
+fn migrate_doc_nodes(conn: &Connection) -> anyhow::Result<()> {
+    // Add content_hash column (ignore error if already exists)
+    let _ = conn.execute_batch("ALTER TABLE doc_nodes ADD COLUMN content_hash TEXT");
+
+    // Dedup existing duplicates: keep the row with smallest id per (repo, file_path, section_path)
+    conn.execute_batch(
+        "DELETE FROM doc_nodes WHERE id NOT IN (
+            SELECT MIN(id) FROM doc_nodes GROUP BY repo, file_path, section_path
+        )",
+    )?;
+
+    // Add UNIQUE constraint via index (works for both new and existing DBs)
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_doc_unique ON doc_nodes(repo, file_path, section_path)",
+    )?;
+
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

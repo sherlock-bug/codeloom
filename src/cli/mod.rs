@@ -212,7 +212,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             println!("Done: {} files, {} symbols", result.files_scanned, result.symbols_new);
             if result.symbols_inherited > 0 { println!("  {} inherited from {}", result.symbols_inherited, result.inherited_from.as_deref().unwrap_or("parent")); }
             if let Some(ref from) = result.from_commit { println!("  delta: {}..{}", &from[..8.min(from.len())], result.head_commit.as_deref().map(|h|&h[..8]).unwrap_or("?")); }
-            // also index docs + vectors
+            // also index docs
             index_docs(&conn, &path, &repo);
             index_includes(&conn, &path, &repo);
             // FTS5 full-text index for BM25 keyword search
@@ -224,10 +224,11 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 Ok(n) => if n > 0 { eprintln!("  FTS5: {} docs indexed", n); },
                 Err(e) => eprintln!("  FTS5 doc warning: {}", e),
             }
+            // Doc vectors (symbol vectors already done inline during parse)
             let embedder = crate::embedding::get_embedder();
-            match crate::embedding::index_vectors(&conn, &repo, embedder.as_ref()) {
-                Ok((s, d)) => if s + d > 0 { eprintln!("  Vectors: {} symbols + {} docs new", s, d); },
-                Err(e) => eprintln!("  Vector warning: {}", e),
+            match crate::embedding::index_doc_vectors(&conn, &repo, embedder.as_ref()) {
+                Ok(n) => if n > 0 { eprintln!("  Vectors: {} docs new", n); },
+                Err(e) => eprintln!("  Doc vector warning: {}", e),
             }
         }
         Command::Branch(cmd) => match cmd {
@@ -311,37 +312,22 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 }
             };
 
-            // 2. vec0 extension
-            let vec0_path = data_dir.join("models/sqlite-vec/vec0.so");
-            if vec0_path.exists() {
+            // 2. vec0 extension (statically compiled)
+            {
                 let test_db = data_dir.join("_check_test.db");
-                {
-                    let conn = match rusqlite::Connection::open(&test_db) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            println!("[FAIL] vec0: can't open test DB: {}", e);
-                            return Ok(());
-                        }
-                    };
-                    unsafe {
-                        if conn.load_extension_enable().is_ok() {
-                            if conn.load_extension(&*vec0_path.to_string_lossy(), None).is_ok() {
-                                println!("[OK]  vec0: {} ({} KB)",
-                                    vec0_path.display(),
-                                    std::fs::metadata(&vec0_path).map(|m| m.len() / 1024).unwrap_or(0));
-                            } else {
-                                println!("[FAIL] vec0: file exists but SQLite can't load it: {}", vec0_path.display());
-                                println!("       Hint: the .so may be for a different architecture or SQLite version.");
-                            }
-                        } else {
-                            println!("[FAIL] vec0: can't enable extension loading");
-                        }
-                    }
+                let result = (|| -> Result<_, String> {
+                    let conn = rusqlite::Connection::open(&test_db).map_err(|e| format!("can't open test DB: {e}"))?;
+                    conn.execute_batch(
+                        "CREATE VIRTUAL TABLE IF NOT EXISTS _vec0_check_ USING vec0(embedding FLOAT[1]);
+                         DROP TABLE IF EXISTS _vec0_check_;",
+                    )
+                    .map_err(|e| format!("vec0 not available: {e}"))
+                })();
+                match result {
+                    Ok(()) => println!("[OK]  vec0: available (statically compiled)"),
+                    Err(e) => println!("[FAIL] vec0: {e}"),
                 }
                 let _ = std::fs::remove_file(&test_db);
-            } else {
-                println!("[MISS] vec0: {} not found", vec0_path.display());
-                println!("       Install: codeloom update (or download from Gitee/GitHub release)");
             }
 
             // 3. FTS5 (built into SQLite)
