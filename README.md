@@ -69,7 +69,8 @@ cargo build --release   # build.rs 自动从 modelscope.cn 下载 91MB 模型
 ```bash
 codeloom check                              # 检查环境（含模型状态）
 codeloom index /path/to/your/cpp/repo       # 索引代码库 + 文档
-codeloom status --repo myrepo --branch main # 查看状态
+codeloom status                             # 查看状态（自动检测仓库和分支）
+codeloom search "auth token"                # 搜索（自动检测仓库和分支）
 
 # 注册到 OpenCode
 opencode mcp add

@@ -384,7 +384,6 @@ pub fn index_doc_vectors(
                 if has_vec && !hash_changed {
                     // Unchanged – skip
                     doc_skipped += 1;
-                    doc_processed += 1;
                 } else {
                     // New or changed – embed and insert/replace
                     let text = format!("{}: {} {}", title, section_path, content);

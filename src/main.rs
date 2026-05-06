@@ -56,7 +56,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Some(cmd) => cli::run(cmd).await?,
-        None => mcp::serve().await?,
+        None => {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            cmd.print_help()?;
+            println!();
+        }
     }
     Ok(())
 }

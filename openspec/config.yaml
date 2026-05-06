@@ -1,6 +1,0 @@
-schema: spec-driven
-context: |
-  CodeLoom: Rust CLI + MCP 工具，为 OpenCode 等 AI 编码助手提供代码结构索引和语义搜索。
-  技术栈: Rust, tree-sitter (C++/Python/Java/Go/TypeScript), SQLite + sqlite-vec, candle + bge-small-zh (512-dim), Markdown 文档解析。
-  架构: CLI 索引 → SQLite 存储 → MCP HTTP 服务 → OpenCode 查询。
-rules: {}

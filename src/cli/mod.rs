@@ -80,20 +80,21 @@ pub enum Command {
 
     /// 列出指定仓库的所有已索引分支
     ListBranches {
-        /// 仓库标识名
-        repo: String,
+        /// 仓库标识名（默认自动检测）
+        #[arg(long)]
+        repo: Option<String>,
     },
 
     /// 搜索代码符号（混合搜索：BM25 关键词 + 向量语义）
     Search {
         /// 搜索关键词或功能描述
         query: String,
-        /// 仓库标识名（必填）
+        /// 仓库标识名（默认自动检测）
         #[arg(long)]
-        repo: String,
-        /// Git 分支名（必填）
+        repo: Option<String>,
+        /// Git 分支名（默认自动检测）
         #[arg(long)]
-        branch: String,
+        branch: Option<String>,
         /// 返回结果数
         #[arg(long, default_value = "10")]
         limit: usize,
@@ -101,24 +102,24 @@ pub enum Command {
 
     /// 查看仓库架构全貌（符号按类型分布）
     Overview {
-        /// 仓库标识名（必填）
+        /// 仓库标识名（默认自动检测）
         #[arg(long)]
-        repo: String,
-        /// Git 分支名（必填）
+        repo: Option<String>,
+        /// Git 分支名（默认自动检测）
         #[arg(long)]
-        branch: String,
+        branch: Option<String>,
     },
 
     /// 按名称模糊搜索符号
     ListSymbols {
         /// 搜索模式（SQL LIKE）
         pattern: String,
-        /// 仓库标识名（必填）
+        /// 仓库标识名（默认自动检测）
         #[arg(long)]
-        repo: String,
-        /// Git 分支名（必填）
+        repo: Option<String>,
+        /// Git 分支名（默认自动检测）
         #[arg(long)]
-        branch: String,
+        branch: Option<String>,
         /// 返回结果数
         #[arg(long, default_value = "20")]
         limit: usize,
@@ -128,24 +129,24 @@ pub enum Command {
     GetDefinition {
         /// 符号完整名称（C++ 类方法用 ClassName::methodName）
         name: String,
-        /// 仓库标识名（必填）
+        /// 仓库标识名（默认自动检测）
         #[arg(long)]
-        repo: String,
-        /// Git 分支名（必填）
+        repo: Option<String>,
+        /// Git 分支名（默认自动检测）
         #[arg(long)]
-        branch: String,
+        branch: Option<String>,
     },
 
     /// 分析函数调用关系
     CallGraph {
         /// 符号完整名称
         name: String,
-        /// 仓库标识名（必填）
+        /// 仓库标识名（默认自动检测）
         #[arg(long)]
-        repo: String,
-        /// Git 分支名（必填）
+        repo: Option<String>,
+        /// Git 分支名（默认自动检测）
         #[arg(long)]
-        branch: String,
+        branch: Option<String>,
         /// 方向：callers（谁调用了它）或 callees（它调用了谁）
         #[arg(long, default_value = "callers")]
         direction: String,
@@ -178,6 +179,32 @@ pub enum BranchCmd {
         repo: Option<String>,
     },
 }
+// ── Repository & branch auto-detection ─────────────────────────────────
+
+/// Auto-detect repo name from current directory.
+/// Logic mirrors Index command: git repos use directory name, non-git returns empty string.
+fn autodetect_repo() -> String {
+    let cwd = std::env::current_dir().ok()
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if cwd.is_empty() { return String::new(); }
+    // If current dir is a git repo, use directory name
+    if crate::indexer::git::current_branch(".").is_some() {
+        std::path::Path::new(&cwd)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "default".into())
+    } else {
+        String::new()
+    }
+}
+
+/// Auto-detect git branch from current directory.
+/// Returns Some(branch) if in a git repo, None otherwise.
+fn autodetect_branch() -> Option<String> {
+    crate::indexer::git::current_branch(".")
+}
+
 pub async fn run(cmd: Command) -> anyhow::Result<()> {
     match cmd {
         Command::Index { path, branch, repo, parent } => {
@@ -256,13 +283,13 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
         Command::Status { repo } => {
             let dd = crate::config::Config::data_dir()?;
             let repo = repo.unwrap_or_else(|| {
-                // Try current directory name, then "default"
-                let cwd = std::env::current_dir().ok()
-                    .and_then(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
-                    .unwrap_or_else(|| "default".into());
-                if dd.join(format!("{}.rag.db", cwd)).exists() { cwd }
-                else if dd.join("default.rag.db").exists() { "default".into() }
-                else { cwd } // Return cwd anyway for a better error message
+                let detected = autodetect_repo();
+                if !detected.is_empty() && dd.join(format!("{}.rag.db", detected)).exists() {
+                    return detected;
+                }
+                // Try "default" as fallback
+                if dd.join("default.rag.db").exists() { return "default".into(); }
+                detected
             });
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() {
@@ -430,6 +457,8 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             }
         }
         Command::ListBranches { repo } => {
+            let repo = repo.unwrap_or_else(autodetect_repo);
+            if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
             let dd = crate::config::Config::data_dir()?;
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() {
@@ -454,6 +483,9 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             }
         }
         Command::Search { query, repo, branch, limit } => {
+            let repo = repo.unwrap_or_else(autodetect_repo);
+            let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
+            if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
             let dd = crate::config::Config::data_dir()?;
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
@@ -471,6 +503,9 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             }
         }
         Command::Overview { repo, branch } => {
+            let repo = repo.unwrap_or_else(autodetect_repo);
+            let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
+            if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
             let dd = crate::config::Config::data_dir()?;
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
@@ -494,6 +529,9 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             }
         }
         Command::ListSymbols { pattern, repo, branch, limit } => {
+            let repo = repo.unwrap_or_else(autodetect_repo);
+            let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
+            if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
             let dd = crate::config::Config::data_dir()?;
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
@@ -513,6 +551,9 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             if count == 0 { println!("  (none)"); }
         }
         Command::GetDefinition { name, repo, branch } => {
+            let repo = repo.unwrap_or_else(autodetect_repo);
+            let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
+            if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
             let dd = crate::config::Config::data_dir()?;
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
@@ -539,6 +580,9 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             if !found { println!("Symbol '{}' not found.", name); }
         }
         Command::CallGraph { name, repo, branch, direction, max_depth } => {
+            let repo = repo.unwrap_or_else(autodetect_repo);
+            let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
+            if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
             let dd = crate::config::Config::data_dir()?;
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
@@ -767,6 +811,10 @@ fn detect_platform() -> Option<String> {
 // ── Clean / Reset ──────────────────────────────────────────────────────
 
 fn do_clean(all: bool, repo: Option<String>, branch: Option<String>) {
+    let repo = repo.or_else(|| {
+        let r = autodetect_repo();
+        if r.is_empty() { None } else { Some(r) }
+    });
     let dd = match crate::config::Config::data_dir() {
         Ok(d) => d,
         Err(e) => { eprintln!("Error: {}", e); return; }
