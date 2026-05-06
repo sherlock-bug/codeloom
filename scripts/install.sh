@@ -1,7 +1,7 @@
 #!/bin/bash
 # CodeLoom 一键安装脚本 (Linux/macOS)
 # 用法:
-#   curl -sSL https://raw.githubusercontent.com/sherlock-bug/codeloom/master/scripts/install.sh | bash
+#   curl -sSL https://gitee.com/greengreensea/codeloom/raw/master/scripts/install.sh | bash
 #   curl -sSL ... | bash -s -- --from-source   # 从源码编译安装
 
 set -e
@@ -60,7 +60,7 @@ if $FROM_SOURCE; then
     echo "=== 从源码编译安装 CodeLoom ==="
     command -v cargo >/dev/null 2>&1 || { echo "需要 Rust 工具链: curl -sSf https://sh.rustup.rs | sh"; exit 1; }
 
-    REPO="https://github.com/sherlock-bug/codeloom.git"
+    REPO="https://gitee.com/greengreensea/codeloom.git"
     TMPDIR=$(mktemp -d)
     trap "rm -rf $TMPDIR" EXIT
 
@@ -71,7 +71,7 @@ if $FROM_SOURCE; then
 
 else
     # ── 下载预编译二进制 ────────────────────────────────────
-    BASE_URL="https://github.com/sherlock-bug/codeloom/releases/latest/download"
+    BASE_URL="https://gitee.com/greengreensea/codeloom/releases/v0.3.8/download"
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
 
@@ -93,12 +93,8 @@ else
         *) echo "Unsupported OS: $OS. Try: curl ... | bash -s -- --from-source"; exit 1 ;;
     esac
 
-    echo "Downloading codeloom for $OS/$ARCH..."
-    # Try ghproxy first (faster from China), fall back to direct
-    if ! curl -sSL --connect-timeout 10 --max-time 120 "https://ghproxy.net/$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom" 2>/dev/null; then
-        echo "Mirror failed, trying direct download..."
-        curl -sSL "$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom"
-    fi
+    echo "Downloading codeloom for $OS/$ARCH from Gitee..."
+    curl -sSL --connect-timeout 10 --max-time 120 "$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom"
 fi
 fi
 
