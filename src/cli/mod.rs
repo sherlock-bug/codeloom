@@ -74,6 +74,15 @@ pub enum Command {
         #[arg(long, requires = "repo")]
         branch: Option<String>,
     },
+
+    /// 列出所有已索引的仓库
+    ListRepos,
+
+    /// 列出指定仓库的所有已索引分支
+    ListBranches {
+        /// 仓库标识名
+        repo: String,
+    },
 }
 
 /// 分支别名管理
@@ -102,8 +111,14 @@ pub enum BranchCmd {
 pub async fn run(cmd: Command) -> anyhow::Result<()> {
     match cmd {
         Command::Index { path, branch, repo, parent } => {
-            let branch = branch.unwrap_or_else(|| crate::indexer::git::current_branch(&path).unwrap_or_else(|| "unknown".into()));
+            let git_branch = crate::indexer::git::current_branch(&path);
+            let is_git = git_branch.is_some();
+            let branch = branch.unwrap_or_else(|| git_branch.unwrap_or_else(|| "unknown".into()));
             let repo = repo.unwrap_or_else(|| {
+                // Non-git folder without explicit --repo → use "" (global visibility)
+                if !is_git {
+                    return String::new();
+                }
                 // When path is ".", use actual current directory name
                 let p = if path == "." || path == "./" {
                     std::env::current_dir().ok().map(|d| d.to_string_lossy().to_string()).unwrap_or(path.clone())
@@ -198,6 +213,49 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
         }
         Command::Update => do_update(),
         Command::Clean { all, repo, branch } => do_clean(all, repo, branch),
+        Command::ListRepos => {
+            let repos = crate::query::repo::list_repos();
+            if repos.is_empty() {
+                println!("No indexed repos found in ~/.codeloom/");
+            } else {
+                println!("Indexed repos:");
+                if let Ok(dd) = crate::config::Config::data_dir() {
+                    for repo in &repos {
+                        let db_path = dd.join(format!("{}.rag.db", repo));
+                        let size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+                        println!("  {:20}  {:>8.1} MB", repo, size as f64 / 1_048_576.0);
+                    }
+                } else {
+                    for repo in &repos {
+                        println!("  {}", repo);
+                    }
+                }
+            }
+        }
+        Command::ListBranches { repo } => {
+            let dd = crate::config::Config::data_dir()?;
+            let dbp = dd.join(format!("{}.rag.db", repo));
+            if !dbp.exists() {
+                println!("Repo '{}' not found. Run 'codeloom list-repos' to see available repos.", repo);
+                return Ok(());
+            }
+            let conn = crate::storage::open(&dbp.to_string_lossy())?;
+            let mut stmt = conn.prepare("SELECT DISTINCT branch_name FROM branches WHERE branch_name IS NOT NULL ORDER BY branch_name")?;
+            let branches: Vec<String> = stmt.query_map([], |r| r.get(0))?.flatten().collect();
+            if branches.is_empty() {
+                println!("Repo '{}': no branches indexed.", repo);
+            } else {
+                println!("Repo '{}' branches:", repo);
+                for b in &branches {
+                    let sym_count: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM symbols s JOIN branches b2 ON s.id=b2.symbol_id WHERE b2.branch_name=?1",
+                        rusqlite::params![b],
+                        |r| r.get(0),
+                    ).unwrap_or(0);
+                    println!("  {:20}  {} symbols", b, sym_count);
+                }
+            }
+        }
         _ => {}, // Completion handled in main.rs
     }
     Ok(())

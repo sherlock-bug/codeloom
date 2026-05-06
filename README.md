@@ -1,4 +1,4 @@
-# CodeLoom v0.2
+# CodeLoom v0.3.7
 
 > 代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 
@@ -20,9 +20,9 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 | **向量搜索** | sqlite-vec ANN 引擎（预编译 .so，160KB），O(log N) 检索，一键安装 |
 | **分支术语表** | `## 23B (release/xxx)` 格式自动映射惯用叫法到实际分支名 |
 | **多仓支持** | 前后端独立索引，跨仓依赖自动识别 |
-| **MCP 原生** | 8 个 MCP 工具，OpenCode/Claude Code 零配置对接 |
+| **MCP 原生** | 10 个 MCP 工具，OpenCode/Claude Code 零配置对接 |
 | **忽略文件** | `.codeloomignore` 过滤 test/build/docs 目录，类似 `.gitignore` |
-| **自动化测试** | 47 测试（41 单元 + 6 集成），本地素材自洽，`cargo test` 一键验证 |
+| **自动化测试** | 55 测试（49 单元 + 6 集成），本地素材自洽，`cargo test` 一键验证 |
 
 ## 安装
 
@@ -112,35 +112,37 @@ OpenCode 里直接用：
 
 ## MCP 工具
 
-8 个 MCP 工具，所有查询工具的 `branch` 参数必传。
+10 个 MCP 工具，所有搜索/查询工具的 `branch` 参数必传。**打开仓库后第一步先调 `codeloom_list_repos` 获取可用仓库名。**
 
-### 索引与状态
+### 仓库与状态管理
 
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `codeloom_index` | `path`, `branch`, `repo?` | 增量索引代码库。首次使用或代码变更后调用。索引源码+文档+#include关系+向量。 |
-| `codeloom_status` | `branch`, `repo?` | 查看索引状态：符号数、边数、文档数、DB 大小。 |
+| `codeloom_list_repos` | 无 | **第一步调用**：列出所有已索引的仓库名。 |
+| `codeloom_list_branches` | `repo` | 列出指定仓库的所有已索引分支及符号数。 |
+| `codeloom_status` | `branch`, `repo` | 查看索引状态：符号数、边数、文档数、DB 大小。 |
+| `codeloom_overview` | `branch`, `repo` | 仓库架构全貌：符号按类型分布、文件数、边数。 |
+| `codeloom_index` | `path`, `branch`, `repo?` | ⚠️ 不通过 MCP 执行索引（需 CLI）。调用前先用 `codeloom_list_repos` 检查是否已索引。 |
 
 ### 符号查询（按名称）
 
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `codeloom_list_symbols` | `pattern`, `branch`, `limit?`, `repo?` | 模糊搜索符号名（SQL LIKE）。如 `pattern="login"` 匹配 `handleLogin`、`loginUser` 等。**返回结构化结果，包含名称、类型、文件路径、行号。** C++ 类方法存储为 `ClassName::methodName` 格式。 |
-| `codeloom_get_definition` | `name`, `branch`, `repo?` | 获取符号完整定义（含源码、签名、文件路径、行号）。优于 read_file：返回精确区间不浪费 token。name 必须是完整符号名，**先用 `codeloom_list_symbols` 查确切名称**。 |
-| `codeloom_search` | `query`, `branch`, `limit?`, `repo?` | SQL LIKE 全文搜索符号名和定义内容。精确关键字匹配，非语义搜索。如 `query="AuthService"`、`query="login"`。 |
+| `codeloom_search` | `query`, `branch`, `limit?`, `repo` | **首选工具**：精确搜索符号名和定义内容。优先于 grep/rg——索引覆盖 #include 头文件（grep 只搜当前目录）。 |
+| `codeloom_list_symbols` | `pattern`, `branch`, `limit?`, `repo` | 模糊搜索符号名（SQL LIKE）。C++ 类方法用 `ClassName::methodName` 格式。 |
+| `codeloom_get_definition` | `name`, `branch`, `repo` | 获取符号完整定义。返回精确代码区间不浪费 token。**先用 `codeloom_list_symbols` 查确切名称。** |
 
 ### 关系分析
 
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `codeloom_get_call_graph` | `name`, `branch`, `direction?`, `max_depth?`, `repo?` | 分析函数/方法的调用者和被调用者。name 用完整符号名。`direction="callers"` 查谁调用了它，`direction="callees"` 查它调用了谁。`max_depth` 控制递归深度（默认 3）。 |
-| `codeloom_overview` | `branch`, `repo?` | 仓库架构全貌：符号按类型分布、文件数、边数。快速了解代码库规模。 |
+| `codeloom_get_call_graph` | `name`, `branch`, `direction?`, `max_depth?`, `repo` | **唯一方式**（grep 无法获取调用关系）：分析调用者和被调用者。`direction="callers"` / `"callees"`。 |
 
 ### 语义搜索
 
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `codeloom_semantic_search` | `query`, `branch`, `limit?`, `repo?` | 自然语言语义搜索（ANN 向量检索 + candle bge-small-zh）。中文/英文均可。如 `query="用户认证流程"`、`query="内存分配失败"`。结果含相似度分数 `[0.xxx]`。 |
+| `codeloom_semantic_search` | `query`, `branch`, `limit?`, `repo` | 自然语言语义搜索（ANN 向量检索 + bge-small-zh）。中文描述功能意图。结果含相似度分数 `[0.xxx]`。 |
 
 ### 常见查询模式
 
@@ -279,13 +281,13 @@ codeloom index ──→ smart.rs ──→ tree_sitter.rs (收集文件+解析)
                          │
                     doc/ ──→ Markdown 解析 + 术语表
                          │
-                    mcp/ ──→ 8 个 JSON-RPC 工具 → OpenCode
+                    mcp/ ──→ 10 个 JSON-RPC 工具 → OpenCode
 ```
 
 ## 开发
 
 ```bash
-cargo test                    # 41 单元测试 (< 3s)
+cargo test                    # 49 单元测试 (< 3s)
 cargo test --test integration  # 6 集成测试 (~180s，需 models/)
 ```
 
