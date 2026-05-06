@@ -3,14 +3,19 @@ use rusqlite::Connection;
 
 /// Try to load the vec0 extension. Returns Ok(true) if loaded, Ok(false) if not found.
 pub fn try_load(conn: &Connection) -> bool {
-    // Look for vec0.so alongside the binary, then in models/
-    let candidates = [
+    // Look for vec0.so in multiple locations: relative path, project dir, user data dir
+    let mut candidates = vec![
         "models/sqlite-vec/vec0.so".to_string(),
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("models/sqlite-vec/vec0.so")
             .to_string_lossy()
             .to_string(),
     ];
+    // Also check ~/.codeloom/models/ (release install location)
+    if let Ok(data_dir) = crate::config::Config::data_dir() {
+        let home_model = data_dir.join("models/sqlite-vec/vec0.so");
+        candidates.push(home_model.to_string_lossy().to_string());
+    }
     for path in &candidates {
         if std::path::Path::new(path).exists() {
             // Enable extension loading via unsafe API

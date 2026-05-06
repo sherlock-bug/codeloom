@@ -119,7 +119,7 @@ fn index_one(conn: &Connection, file_path: &str, _repo_root: &str, repo_name: &s
 }
 
 /// Extract target name from edge_type (e.g. "inherits:std::exception" → "std::exception"),
-/// resolve to symbol ID: same-file → DB lookup → 0 if not found.
+/// resolve to symbol ID: same-file → DB lookup → LIKE fallback → 0 if not found.
 fn resolve_target(conn: &Connection, symbols: &[Symbol], id_map: &[i64], edge: &str, repo: &str) -> i64 {
     let target_name = edge.find(':').map(|i| &edge[i+1..]).unwrap_or("");
     if target_name.is_empty() { return 0; }
@@ -127,12 +127,20 @@ fn resolve_target(conn: &Connection, symbols: &[Symbol], id_map: &[i64], edge: &
     if let Some(idx) = symbols.iter().position(|s| s.name == target_name) {
         if let Some(&id) = id_map.get(idx) { return id; }
     }
-    // 2. DB lookup by name+repo
-    conn.query_row(
+    // 2. DB lookup by exact name+repo
+    if let Ok(id) = conn.query_row(
         "SELECT id FROM symbols WHERE name=?1 AND repo=?2 LIMIT 1",
         rusqlite::params![target_name, repo],
         |row| row.get(0),
-    ).unwrap_or(0)
+    ) { return id; }
+    // 3. LIKE fallback (name may have prefix/suffix like ClassName::method vs method)
+    let like_pat = format!("%{}%", target_name);
+    if let Ok(id) = conn.query_row(
+        "SELECT id FROM symbols WHERE name LIKE ?1 AND repo=?2 LIMIT 1",
+        rusqlite::params![like_pat, repo],
+        |row| row.get(0),
+    ) { return id; }
+    0
 }
 
 fn update_state(conn: &Connection, repo: &str, branch: &str, head: &str, parent: Option<&str>, file_count: usize) -> anyhow::Result<()> {

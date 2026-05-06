@@ -78,7 +78,8 @@ fn test_mcp_tools_list() {
 
 #[test]
 fn test_mcp_missing_branch_error() {
-    let resp = codeloom_mcp(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"codeloom_status","arguments":{"repo":"default"}}}"#);
+    // "repo" is now required; use a real repo from the test DB, but omit branch
+    let resp = codeloom_mcp(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"codeloom_status","arguments":{"repo":"bf"}}}"#);
     assert!(resp.contains("branch is required"), "should error on missing branch, got: {}", &resp[..200.min(resp.len())]);
 }
 
