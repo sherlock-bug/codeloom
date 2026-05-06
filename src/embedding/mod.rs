@@ -196,31 +196,56 @@ static STOP_WORDS: &[&str] = &[
 
 /// Index all symbols and docs for a repo into vec0 vector tables.
 /// Returns (symbol_count, doc_count) or vec0 is not available.
+/// Returns (symbol_count, doc_count) or vec0 is not available.
+/// Incremental: skips symbols/docs that already have vectors in vec0 tables.
 pub fn index_vectors(conn: &rusqlite::Connection, repo: &str, embedder: &dyn Embedder) -> anyhow::Result<(usize, usize)> {
     if !crate::storage::vector::try_load(conn) {
         return Ok((0, 0));
     }
     crate::storage::vector::create_tables(conn, repo)?;
-
     let sym_table = format!("symbol_vec_{}", repo.replace('-', "_"));
     let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
 
-    // Index symbol vectors
-    let mut sym_count = 0;
+    // Collect existing vec0 rowids (for incremental skip)
+    let existing_sym_ids: std::collections::HashSet<i64> = {
+        let mut s = std::collections::HashSet::new();
+        if let Ok(mut stmt) = conn.prepare(&format!("SELECT rowid FROM {sym_table}")) {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, i64>(0)) {
+                for r in rows.flatten() { s.insert(r); }
+            }
+        }
+        s
+    };
+    let existing_doc_ids: std::collections::HashSet<i64> = {
+        let mut s = std::collections::HashSet::new();
+        if let Ok(mut stmt) = conn.prepare(&format!("SELECT rowid FROM {doc_table}")) {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, i64>(0)) {
+                for r in rows.flatten() { s.insert(r); }
+            }
+        }
+        s
+    };
+
+    // Index symbol vectors (only new ones)
+    let mut sym_count = 0; let mut sym_skipped = 0; let mut sym_total = 0;
     if let Ok(mut stmt) = conn.prepare("SELECT id, name, kind, definition FROM symbols WHERE repo=?1") {
         let mut batch = Vec::new();
         if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
         }) {
-            for row in rows.flatten() {
+            let all: Vec<_> = rows.flatten().collect();
+            sym_total = all.len();
+            for row in all {
+                if existing_sym_ids.contains(&row.0) { sym_skipped += 1; continue; }
                 let text = format!("{} {} {}", row.2, row.1, row.3);
                 let emb = embedder.embed(&text).unwrap_or_default();
                 if !emb.is_empty() {
                     batch.push((row.0, emb));
                 }
-                if batch.len() >= 100 {
+                if batch.len() >= 50 {
                     sym_count += crate::storage::vector::insert_vectors(conn, &sym_table, &batch.iter().map(|(id, v)| (*id, v.as_slice())).collect::<Vec<_>>())?;
                     batch.clear();
+                    // progress logged at end
                 }
             }
         }
@@ -229,20 +254,22 @@ pub fn index_vectors(conn: &rusqlite::Connection, repo: &str, embedder: &dyn Emb
         }
     }
 
-    // Index doc vectors
-    let mut doc_count = 0;
+    // Index doc vectors (only new ones)
+    let mut doc_count = 0; let mut doc_skipped = 0;
     if let Ok(mut stmt) = conn.prepare("SELECT id, title, section_path, content FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name!='')") {
         let mut batch = Vec::new();
         if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
         }) {
-            for row in rows.flatten() {
+            let all: Vec<_> = rows.flatten().collect();
+            for row in all {
+                if existing_doc_ids.contains(&row.0) { doc_skipped += 1; continue; }
                 let text = if !row.2.is_empty() { format!("{}: {} {}", row.1, row.2, row.3) } else { format!("{} {}", row.1, row.3) };
                 let emb = embedder.embed(&text).unwrap_or_default();
                 if !emb.is_empty() {
                     batch.push((row.0, emb));
                 }
-                if batch.len() >= 100 {
+                if batch.len() >= 50 {
                     doc_count += crate::storage::vector::insert_vectors(conn, &doc_table, &batch.iter().map(|(id, v)| (*id, v.as_slice())).collect::<Vec<_>>())?;
                     batch.clear();
                 }
@@ -253,9 +280,12 @@ pub fn index_vectors(conn: &rusqlite::Connection, repo: &str, embedder: &dyn Emb
         }
     }
 
+    if sym_total > 0 && (sym_count > 0 || doc_count > 0) {
+        eprintln!("  Vectors: {} new symbols ({} skipped), {} new docs ({} skipped)",
+            sym_count, sym_skipped, doc_count, doc_skipped);
+    }
     Ok((sym_count, doc_count))
 }
-
 // ── Embedder factory ──────────────────────────────────────────────────
 
 /// Returns the best available embedder: CandleEmbedder if model is present, TextEmbedder otherwise.
@@ -267,11 +297,6 @@ pub fn get_embedder() -> Box<dyn Embedder + Send + Sync> {
     }
 }
 
-
-// ── Vector indexing (sqlite-vec) ──────────────────────────────────────
-
-/// Index all symbols and docs as vectors in vec0 tables.
-/// Returns (symbol_count, doc_count) or (0,0) if vec0 not available.
 
 #[cfg(test)]
 mod tests {

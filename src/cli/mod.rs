@@ -132,7 +132,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             index_includes(&conn, &path, &repo);
             let embedder = crate::embedding::get_embedder();
             match crate::embedding::index_vectors(&conn, &repo, embedder.as_ref()) {
-                Ok((s, d)) => if s + d > 0 { println!("  Vectors: {} symbols + {} docs indexed", s, d); },
+                Ok((s, d)) => if s + d > 0 { eprintln!("  Vectors: {} symbols + {} docs new", s, d); },
                 Err(e) => eprintln!("  Vector warning: {}", e),
             }
         }
