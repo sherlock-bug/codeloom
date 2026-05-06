@@ -28,7 +28,7 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 
 ### 离线安装包（推荐，无需网络）
 
-1. 浏览器打开 [GitHub Releases](https://github.com/sherlock-bug/codeloom/releases)
+1. 浏览器打开 [Gitee Releases](https://gitee.com/greengreensea/codeloom/releases)（国内快）或 [GitHub Releases](https://github.com/sherlock-bug/codeloom/releases)
 2. 下载 `codeloom-vX.Y.Z-linux-x86_64.zip`
 3. 解压并安装：
 
@@ -43,11 +43,11 @@ cd codeloom-vX.Y.Z-linux-x86_64   # zip 内包含独立目录的话
 ### 预编译二进制（在线）
 
 ```bash
-# Linux / macOS
-curl -sSL https://raw.githubusercontent.com/sherlock-bug/codeloom/master/scripts/install.sh | bash
+# Linux / macOS（国内推荐 Gitee）
+curl -sSL https://gitee.com/greengreensea/codeloom/raw/master/scripts/install.sh | bash
 
-# Windows
-irm https://raw.githubusercontent.com/sherlock-bug/codeloom/master/scripts/install.ps1 | iex
+# 或 GitHub（海外）
+curl -sSL https://raw.githubusercontent.com/sherlock-bug/codeloom/master/scripts/install.sh | bash
 ```
 
 安装脚本自动部署二进制和嵌入模型到 `~/.codeloom/`。
@@ -55,7 +55,8 @@ irm https://raw.githubusercontent.com/sherlock-bug/codeloom/master/scripts/insta
 ### 从源码编译
 
 ```bash
-git clone https://github.com/sherlock-bug/codeloom.git
+git clone https://gitee.com/greengreensea/codeloom.git  # 国内推荐
+# 或 git clone https://github.com/sherlock-bug/codeloom.git
 cd codeloom
 cargo build --release   # build.rs 自动从 modelscope.cn 下载 91MB 模型
 ```
