@@ -112,20 +112,50 @@ OpenCode 里直接用：
 
 ## MCP 工具
 
-8 个 MCP 工具，所有查询工具的 `branch` 参数必传：
+8 个 MCP 工具，所有查询工具的 `branch` 参数必传。
 
-| 工具 | 功能 |
-|------|------|
-| `codeloom_overview` | 仓库全景统计（符号/边/文档分布） |
-| `codeloom_status` | 索引状态（符号数、边数、文档数、DB 大小） |
-| `codeloom_list_symbols` | 按名称模糊搜索符号 |
-| `codeloom_get_definition` | 获取符号完整定义（含源码、签名、路径、行号） |
-| `codeloom_get_call_graph` | 调用图遍历（callers / callees，深度可配） |
-| `codeloom_search` | 全文搜索符号名和定义 |
-| `codeloom_semantic_search` | 自然语言语义搜索代码 + 文档（sqlite-vec ANN，512 维） |
-| `codeloom_index` | 触发增量索引 |
+### 索引与状态
 
-分支过滤规则：`branch_name IS NULL` 的数据对所有分支可见；有值的仅匹配分支可见。代码和文档一视同仁。
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `codeloom_index` | `path`, `branch`, `repo?` | 增量索引代码库。首次使用或代码变更后调用。索引源码+文档+#include关系+向量。 |
+| `codeloom_status` | `branch`, `repo?` | 查看索引状态：符号数、边数、文档数、DB 大小。 |
+
+### 符号查询（按名称）
+
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `codeloom_list_symbols` | `pattern`, `branch`, `limit?`, `repo?` | 模糊搜索符号名（SQL LIKE）。如 `pattern="login"` 匹配 `handleLogin`、`loginUser` 等。**返回结构化结果，包含名称、类型、文件路径、行号。** C++ 类方法存储为 `ClassName::methodName` 格式。 |
+| `codeloom_get_definition` | `name`, `branch`, `repo?` | 获取符号完整定义（含源码、签名、文件路径、行号）。优于 read_file：返回精确区间不浪费 token。name 必须是完整符号名，**先用 `codeloom_list_symbols` 查确切名称**。 |
+| `codeloom_search` | `query`, `branch`, `limit?`, `repo?` | SQL LIKE 全文搜索符号名和定义内容。精确关键字匹配，非语义搜索。如 `query="AuthService"`、`query="login"`。 |
+
+### 关系分析
+
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `codeloom_get_call_graph` | `name`, `branch`, `direction?`, `max_depth?`, `repo?` | 分析函数/方法的调用者和被调用者。name 用完整符号名。`direction="callers"` 查谁调用了它，`direction="callees"` 查它调用了谁。`max_depth` 控制递归深度（默认 3）。 |
+| `codeloom_overview` | `branch`, `repo?` | 仓库架构全貌：符号按类型分布、文件数、边数。快速了解代码库规模。 |
+
+### 语义搜索
+
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `codeloom_semantic_search` | `query`, `branch`, `limit?`, `repo?` | 自然语言语义搜索（ANN 向量检索 + candle bge-small-zh）。中文/英文均可。如 `query="用户认证流程"`、`query="内存分配失败"`。结果含相似度分数 `[0.xxx]`。 |
+
+### 常见查询模式
+
+**「查看 AClass::method1 调用了哪些函数」：**
+1. `codeloom_list_symbols(pattern="method1")` → 确认完整名称 `AClass::method1`
+2. `codeloom_get_call_graph(name="AClass::method1", direction="callees")`
+
+**「找到登录相关代码」：**
+1. `codeloom_semantic_search(query="用户登录认证")` → 语义搜索找到相关符号
+2. `codeloom_get_definition(name="AuthService::login")` → 查看具体实现
+
+**「了解某个类的继承关系」：**
+`codeloom_list_symbols(pattern="ClassName")` → 查看类及其所有方法
+
+**分支过滤规则：** `branch_name IS NULL` 的数据对所有分支可见；有值的仅匹配分支可见。代码和文档一视同仁。
 
 ## OpenCode MCP 配置
 
