@@ -25,7 +25,21 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 
 ## 安装
 
-### 预编译二进制
+### 离线安装包（推荐，无需网络）
+
+1. 浏览器打开 [GitHub Releases](https://github.com/sherlock-bug/codeloom/releases)
+2. 下载 `codeloom-vX.Y.Z-linux-x86_64.zip`
+3. 解压并安装：
+
+```bash
+unzip codeloom-vX.Y.Z-linux-x86_64.zip
+cd codeloom-vX.Y.Z-linux-x86_64   # zip 内包含独立目录的话
+./install.sh
+```
+
+全程零网络请求，二进制 + 模型文件一并部署到 `~/.codeloom/`。
+
+### 预编译二进制（在线）
 
 ```bash
 # Linux / macOS

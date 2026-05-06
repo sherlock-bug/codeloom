@@ -15,7 +15,45 @@ for arg in "$@"; do
 done
 
 INSTALL_DIR="${HOME}/.codeloom/bin"
-mkdir -p "$INSTALL_DIR"
+MODEL_DIR="${HOME}/.codeloom/models"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ── 离线模式检测 ──────────────────────────────────────────
+# 检测当前目录是否包含完整安装包（zip解压后）
+HAS_LOCAL_BINARY="no"
+HAS_LOCAL_MODELS="no"
+
+if [ -f "$SCRIPT_DIR/codeloom" ]; then
+    HAS_LOCAL_BINARY="yes"
+fi
+if [ -d "$SCRIPT_DIR/models/bge-small-zh" ] && \
+   [ -f "$SCRIPT_DIR/models/bge-small-zh/pytorch_model.bin" ] && \
+   [ -f "$SCRIPT_DIR/models/bge-small-zh/config.json" ] && \
+   [ -f "$SCRIPT_DIR/models/bge-small-zh/tokenizer.json" ] && \
+   [ -f "$SCRIPT_DIR/models/sqlite-vec/vec0.so" ]; then
+    HAS_LOCAL_MODELS="yes"
+fi
+
+if [ "$HAS_LOCAL_BINARY" = "yes" ] && [ "$HAS_LOCAL_MODELS" = "yes" ] && ! $FROM_SOURCE; then
+    echo "=== 离线安装模式 ==="
+    echo "检测到本地安装包: $SCRIPT_DIR"
+    mkdir -p "$INSTALL_DIR" "$MODEL_DIR"
+
+    # 检查已安装版本
+    if [ -f "$INSTALL_DIR/codeloom" ] && [ "$INSTALL_DIR/codeloom" -nt "$SCRIPT_DIR/codeloom" ]; then
+        echo "已安装版本比当前包更新，跳过。"
+        echo "  $INSTALL_DIR/codeloom"
+        exit 0
+    fi
+
+    cp "$SCRIPT_DIR/codeloom" "$INSTALL_DIR/codeloom"
+    cp -r "$SCRIPT_DIR/models/"* "$MODEL_DIR/"
+    chmod +x "$INSTALL_DIR/codeloom"
+    echo "  Binary → $INSTALL_DIR/codeloom"
+    echo "  Models → $MODEL_DIR/"
+    # 跳转到 PATH 配置
+else
+    mkdir -p "$INSTALL_DIR"
 
 if $FROM_SOURCE; then
     # ── 从源码编译安装 ──────────────────────────────────────
@@ -61,6 +99,7 @@ else
         echo "Mirror failed, trying direct download..."
         curl -sSL "$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom"
     fi
+fi
 fi
 
 chmod +x "$INSTALL_DIR/codeloom"
