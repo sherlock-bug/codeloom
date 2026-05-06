@@ -83,6 +83,76 @@ pub enum Command {
         /// 仓库标识名
         repo: String,
     },
+
+    /// 搜索代码符号（混合搜索：BM25 关键词 + 向量语义）
+    Search {
+        /// 搜索关键词或功能描述
+        query: String,
+        /// 仓库标识名（必填）
+        #[arg(long)]
+        repo: String,
+        /// Git 分支名（必填）
+        #[arg(long)]
+        branch: String,
+        /// 返回结果数
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// 查看仓库架构全貌（符号按类型分布）
+    Overview {
+        /// 仓库标识名（必填）
+        #[arg(long)]
+        repo: String,
+        /// Git 分支名（必填）
+        #[arg(long)]
+        branch: String,
+    },
+
+    /// 按名称模糊搜索符号
+    ListSymbols {
+        /// 搜索模式（SQL LIKE）
+        pattern: String,
+        /// 仓库标识名（必填）
+        #[arg(long)]
+        repo: String,
+        /// Git 分支名（必填）
+        #[arg(long)]
+        branch: String,
+        /// 返回结果数
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// 获取符号完整定义
+    GetDefinition {
+        /// 符号完整名称（C++ 类方法用 ClassName::methodName）
+        name: String,
+        /// 仓库标识名（必填）
+        #[arg(long)]
+        repo: String,
+        /// Git 分支名（必填）
+        #[arg(long)]
+        branch: String,
+    },
+
+    /// 分析函数调用关系
+    CallGraph {
+        /// 符号完整名称
+        name: String,
+        /// 仓库标识名（必填）
+        #[arg(long)]
+        repo: String,
+        /// Git 分支名（必填）
+        #[arg(long)]
+        branch: String,
+        /// 方向：callers（谁调用了它）或 callees（它调用了谁）
+        #[arg(long, default_value = "callers")]
+        direction: String,
+        /// 最大递归深度
+        #[arg(long, default_value = "3")]
+        max_depth: usize,
+    },
 }
 
 /// 分支别名管理
@@ -203,9 +273,17 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
             let docs: i64 = conn.query_row("SELECT COUNT(*) FROM doc_nodes WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
             let resolved: i64 = conn.query_row("SELECT COUNT(*) FROM edges WHERE target_id!=0", [], |r| r.get(0)).unwrap_or(0);
+            let sym_table = format!("symbol_vec_{}", repo.replace('-', "_"));
+            let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
+            let vec_syms: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {sym_table}"), [], |r| r.get(0)).unwrap_or(0);
+            let vec_docs: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {doc_table}"), [], |r| r.get(0)).unwrap_or(0);
+            let fts5_syms: i64 = conn.query_row("SELECT COUNT(*) FROM fts5_sym", [], |r| r.get(0)).unwrap_or(0);
+            let fts5_docs: i64 = conn.query_row("SELECT COUNT(*) FROM fts5_doc", [], |r| r.get(0)).unwrap_or(0);
             let meta = std::fs::metadata(&dbp).ok();
             println!("Repo: {}", repo);
             println!("  Symbols: {}  |  Edges: {} (resolved: {} / {:.0}%)  |  Docs: {}", syms, edges, resolved, if edges>0 {resolved as f64/edges as f64*100.0}else{0.0}, docs);
+            println!("  Vectors: {} symbols + {} docs indexed", vec_syms, vec_docs);
+            println!("  FTS5: {} symbols + {} docs indexed", fts5_syms, fts5_docs);
             if let Some(m) = meta { println!("  DB size: {:.1} MB", m.len() as f64 / 1_048_576.0); }
         }
         Command::Mcp { http } => {
@@ -219,6 +297,130 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
         Command::Check => {
             println!("CodeLoom v{}", env!("CARGO_PKG_VERSION"));
             println!("Binary: {:?}", std::env::current_exe().unwrap_or_default());
+            println!();
+
+            // 1. Data directory
+            let data_dir = match crate::config::Config::data_dir() {
+                Ok(d) => {
+                    println!("[OK] Data dir: {}", d.display());
+                    d
+                }
+                Err(e) => {
+                    println!("[FAIL] Data dir: {}", e);
+                    return Ok(());
+                }
+            };
+
+            // 2. vec0 extension
+            let vec0_path = data_dir.join("models/sqlite-vec/vec0.so");
+            if vec0_path.exists() {
+                let test_db = data_dir.join("_check_test.db");
+                {
+                    let conn = match rusqlite::Connection::open(&test_db) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            println!("[FAIL] vec0: can't open test DB: {}", e);
+                            return Ok(());
+                        }
+                    };
+                    unsafe {
+                        if conn.load_extension_enable().is_ok() {
+                            if conn.load_extension(&*vec0_path.to_string_lossy(), None).is_ok() {
+                                println!("[OK]  vec0: {} ({} KB)",
+                                    vec0_path.display(),
+                                    std::fs::metadata(&vec0_path).map(|m| m.len() / 1024).unwrap_or(0));
+                            } else {
+                                println!("[FAIL] vec0: file exists but SQLite can't load it: {}", vec0_path.display());
+                                println!("       Hint: the .so may be for a different architecture or SQLite version.");
+                            }
+                        } else {
+                            println!("[FAIL] vec0: can't enable extension loading");
+                        }
+                    }
+                }
+                let _ = std::fs::remove_file(&test_db);
+            } else {
+                println!("[MISS] vec0: {} not found", vec0_path.display());
+                println!("       Install: codeloom update (or download from Gitee/GitHub release)");
+            }
+
+            // 3. FTS5 (built into SQLite)
+            {
+                let test_db = data_dir.join("_check_test.db");
+                if let Ok(conn) = rusqlite::Connection::open(&test_db) {
+                    let result = conn.execute_batch(
+                        "CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_test USING fts5(x); DROP TABLE IF EXISTS _fts5_test;"
+                    );
+                    if result.is_ok() {
+                        println!("[OK]  FTS5: built-in SQLite full-text search");
+                    } else {
+                        println!("[FAIL] FTS5: SQLite compiled without FTS5 support");
+                    }
+                }
+                let _ = std::fs::remove_file(test_db);
+            }
+
+            // 4. Embedding model
+            let model_file = data_dir.join("models/bge-small-zh/pytorch_model.bin");
+            let tokenizer_file = data_dir.join("models/bge-small-zh/tokenizer.json");
+            let exe_model = std::env::current_exe().ok()
+                .and_then(|e| e.parent().map(|p| p.join("models/bge-small-zh/pytorch_model.bin")));
+
+            let found = if model_file.exists() {
+                Some(model_file)
+            } else if exe_model.as_ref().map(|p| p.exists()).unwrap_or(false) {
+                exe_model
+            } else {
+                None
+            };
+
+            if let Some(ref f) = found {
+                let size = std::fs::metadata(f).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
+                println!("[OK]  Embed model: {} ({:.1} MB)", f.display(), size);
+            }
+
+            // Try loading regardless of file check (may be cached or build-time embedded)
+            let embedder = crate::embedding::get_embedder();
+            match embedder.embed("test") {
+                Ok(v) => {
+                    if found.is_none() {
+                        println!("[OK]  Embed model: loaded ({} dims) — resolves at runtime", v.len());
+                    } else {
+                        println!("       Embed test: {} dims OK", v.len());
+                    }
+                }
+                Err(e) => {
+                    if found.is_some() {
+                        println!("[WARN] Embed test failed: {}", e);
+                    } else {
+                        println!("[MISS] Embed model: not found at ~/.codeloom/models/bge-small-zh/ or binary-relative path");
+                        println!("       Download: build from source (build.rs auto-downloads from modelscope.cn)");
+                        println!("       Embed test: {} — model not loadable", e);
+                    }
+                }
+            }
+
+            // 5. Indexed repos
+            let repos = crate::query::repo::list_repos();
+            if repos.is_empty() {
+                println!();
+                println!("[INFO] No indexed repos. Run: codeloom index <path> --repo <name> --branch <branch>");
+            } else {
+                println!();
+                println!("Indexed repos:");
+                for repo in &repos {
+                    let db_path = data_dir.join(format!("{}.rag.db", repo));
+                    let size = std::fs::metadata(&db_path).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
+                    let syms: i64 = if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                        conn.query_row("SELECT COUNT(*) FROM symbols WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0)
+                    } else { 0 };
+                    let display = if repo.is_empty() { "(global)" } else { &repo };
+                    println!("  {:20}  {:>6} symbols  {:>5.1} MB", display, syms, size);
+                }
+            }
+
+            println!();
+            println!("MCP tools: codeloom mcp  (9 tools, use codeloom_search for hybrid BM25+vector search)");
         }
         Command::Update => do_update(),
         Command::Clean { all, repo, branch } => do_clean(all, repo, branch),
@@ -265,9 +467,147 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Search { query, repo, branch, limit } => {
+            let dd = crate::config::Config::data_dir()?;
+            let dbp = dd.join(format!("{}.rag.db", repo));
+            if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
+            let conn = crate::storage::open(&dbp.to_string_lossy())?;
+            match crate::query::search::hybrid_search(&conn, &query, &repo, &branch, limit) {
+                Ok(results) => {
+                    println!("搜索 \"{}\" ({}条):", query, results.len());
+                    for r in &results {
+                        println!("  [{:.3}] {:45} [{}]  @ {}:{}",
+                            r.score, r.name, r.hit_type,
+                            &r.file_path[..50.min(r.file_path.len())], r.line_start);
+                    }
+                }
+                Err(e) => println!("搜索失败: {}", e),
+            }
+        }
+        Command::Overview { repo, branch } => {
+            let dd = crate::config::Config::data_dir()?;
+            let dbp = dd.join(format!("{}.rag.db", repo));
+            if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
+            let conn = crate::storage::open(&dbp.to_string_lossy())?;
+            let syms: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE b.repo=?1 AND (b.branch_name=?2 OR b.branch_name IS NULL)",
+                rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
+            let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
+            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name=?2)",
+                rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
+            println!("=== {} (branch={}) ===", repo, branch);
+            println!("Symbols: {}  |  Edges: {}  |  Docs: {}\n", syms, edges, docs);
+            println!("Symbols by kind:");
+            let mut stmt = conn.prepare(
+                "SELECT kind, COUNT(*) FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE b.repo=?1 AND (b.branch_name=?2 OR b.branch_name IS NULL) GROUP BY kind ORDER BY COUNT(*) DESC"
+            )?;
+            let kinds: Vec<(String, i64)> = stmt.query_map(rusqlite::params![repo, branch], |r| Ok((r.get::<_,String>(0)?, r.get::<_,i64>(1)?)))?.flatten().collect();
+            for (kind, count) in &kinds {
+                let pct = if syms > 0 { *count as f64 / syms as f64 * 100.0 } else { 0.0 };
+                println!("  {:12}: {:5} ({:.1}%)", kind, count, pct);
+            }
+        }
+        Command::ListSymbols { pattern, repo, branch, limit } => {
+            let dd = crate::config::Config::data_dir()?;
+            let dbp = dd.join(format!("{}.rag.db", repo));
+            if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
+            let conn = crate::storage::open(&dbp.to_string_lossy())?;
+            let like = format!("%{}%", pattern);
+            let sql = "SELECT name, kind, file_path, line_start FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name LIKE ?2 AND (b.branch_name=?3 OR b.branch_name IS NULL) ORDER BY name LIMIT ?4";
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map(rusqlite::params![repo, like, branch, limit as i64], |r| {
+                Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,i64>(3)?))
+            })?;
+            println!("Symbols matching '{}' in {} (branch={}):", pattern, repo, branch);
+            let mut count = 0;
+            for row in rows.flatten() {
+                count += 1;
+                println!("  [{:10}] {:40}  @ {}:{}", row.1, row.0, &row.2[..60.min(row.2.len())], row.3);
+            }
+            if count == 0 { println!("  (none)"); }
+        }
+        Command::GetDefinition { name, repo, branch } => {
+            let dd = crate::config::Config::data_dir()?;
+            let dbp = dd.join(format!("{}.rag.db", repo));
+            if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
+            let conn = crate::storage::open(&dbp.to_string_lossy())?;
+            let sql = "SELECT s.name, s.kind, s.definition, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 AND (b.branch_name=?3 OR b.branch_name IS NULL) LIMIT 5";
+            let mut stmt = conn.prepare(sql)?;
+            let rows = stmt.query_map(rusqlite::params![repo, name, branch], |r| {
+                Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
+                    r.get::<_,String>(3)?, r.get::<_,i64>(4)?, r.get::<_,i64>(5)?,
+                    r.get::<_,Option<String>>(6)?, r.get::<_,Option<String>>(7)?))
+            })?;
+            let mut found = false;
+            for (i, row) in rows.flatten().enumerate() {
+                found = true;
+                let (sname, kind, def, file, lstart, lend, sig, parent) = row;
+                if i > 0 { println!("---"); }
+                print!("[{}] {}", kind, sname);
+                if let Some(ref p) = parent { print!("  (in {})", p); }
+                println!("\n  File: {}:{}-{}", file, lstart, lend);
+                if let Some(ref s) = sig { println!("  Signature: {}", s); }
+                let displayed = if def.len() > 800 { format!("{}... (+{} chars)", &def[..800], def.len()-800) } else { def };
+                println!("  Definition:\n{}", displayed);
+            }
+            if !found { println!("Symbol '{}' not found.", name); }
+        }
+        Command::CallGraph { name, repo, branch, direction, max_depth } => {
+            let dd = crate::config::Config::data_dir()?;
+            let dbp = dd.join(format!("{}.rag.db", repo));
+            if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
+            let conn = crate::storage::open(&dbp.to_string_lossy())?;
+            let ids: Vec<i64> = conn.prepare(
+                "SELECT s.id FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 AND (b.branch_name=?3 OR b.branch_name IS NULL)"
+            )?.query_map(rusqlite::params![repo, name, branch], |r| r.get(0))?.flatten().collect();
+            if ids.is_empty() {
+                println!("Symbol '{}' not found in {} (branch={}).", name, repo, branch);
+                return Ok(());
+            }
+            println!("Call graph for '{}' ({}):", name, direction);
+            let mut visited = std::collections::HashSet::new();
+            for &root_id in &ids {
+                visited.insert(root_id);
+                println!("  * {} (id={})", name, root_id);
+                traverse_calls_cli(&conn, root_id, &direction, max_depth, 1, &mut visited, &branch);
+            }
+        }
         _ => {}, // Completion handled in main.rs
     }
     Ok(())
+}
+
+fn traverse_calls_cli(conn: &rusqlite::Connection, sym_id: i64, direction: &str,
+    max_depth: usize, depth: usize, visited: &mut std::collections::HashSet<i64>, branch: &str,
+) {
+    if depth > max_depth { return; }
+    let prefix = "  ".repeat(depth + 1);
+    let query = match direction {
+        "callees" => format!("SELECT e.target_id, e.edge_type FROM edges e WHERE e.source_id={} AND e.target_id!=0 AND e.edge_type LIKE 'calls:%'", sym_id),
+        _ => format!("SELECT e.source_id, e.edge_type FROM edges e WHERE e.target_id={} AND e.edge_type LIKE 'calls:%'", sym_id),
+    };
+    if let Ok(mut stmt) = conn.prepare(&query) {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+            for row in rows.flatten() {
+                let (other_id, edge_type) = row;
+                if visited.contains(&other_id) {
+                    let repeated = conn.query_row("SELECT name FROM symbols WHERE id=?1", rusqlite::params![other_id], |r| r.get::<_,String>(0)).unwrap_or_default();
+                    println!("{}{} {} (already shown)", prefix, '→', repeated);
+                    continue;
+                }
+                visited.insert(other_id);
+                let other_name = conn.query_row(
+                    "SELECT s.name FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.id=?1 AND (b.branch_name=?2 OR b.branch_name IS NULL)",
+                    rusqlite::params![other_id, branch], |r| r.get::<_,String>(0)
+                ).unwrap_or_default();
+                let called = edge_type.strip_prefix("calls:").unwrap_or(&edge_type);
+                println!("{}{} {} (calls:{})", prefix, '→', other_name, called);
+                if depth < max_depth {
+                    traverse_calls_cli(conn, other_id, direction, max_depth, depth + 1, visited, branch);
+                }
+            }
+        }
+    }
 }
 fn index_docs(conn: &rusqlite::Connection, dir: &str, repo: &str) {
     let mut doc_count = 0;
