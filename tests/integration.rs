@@ -71,9 +71,9 @@ fn test_doc_indexing() {
 fn test_mcp_tools_list() {
     let resp = codeloom_mcp(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#);
     assert!(resp.contains("codeloom_index"));
-    assert!(resp.contains("codeloom_semantic_search"));
-    assert!(!resp.contains("codeloom_pull"), "pull should be removed");
-    assert!(!resp.contains("codeloom_push"), "push should be removed");
+    assert!(resp.contains("codeloom_search"));
+    assert!(resp.contains("codeloom_list_repos"));
+    assert!(!resp.contains("codeloom_semantic_search"), "semantic_search should be removed (replaced by hybrid codeloom_search)");
 }
 
 #[test]
@@ -110,8 +110,12 @@ fn test_semantic_search_candle_mode() {
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
 
-    // Send semantic search
-    write!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"codeloom_semantic_search","arguments":{{"query":"user login authentication","branch":"main","repo":"ss","limit":5}}}}}}"#).unwrap();
+    // Send hybrid search
+    write!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"codeloom_search","arguments":{{"query":"user login authentication","branch":"main","repo":"ss","limit":5}}}}}}"#
+    )
+    .unwrap();
     write!(stdin, "
 ").unwrap();
     stdin.flush().unwrap();

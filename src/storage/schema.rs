@@ -48,6 +48,9 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
             title TEXT, section_path TEXT, content TEXT, level INTEGER,
             file_path TEXT NOT NULL, file_format TEXT, branch_name TEXT
         );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts5_sym USING fts5(name, file_path, signature);
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts5_doc USING fts5(title, section_path, content);
     ")?;
     Ok(())
 }

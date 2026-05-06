@@ -145,6 +145,15 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             // also index docs + vectors
             index_docs(&conn, &path, &repo);
             index_includes(&conn, &path, &repo);
+            // FTS5 full-text index for BM25 keyword search
+            match crate::storage::fts::fill_symbols_fts(&conn, &repo) {
+                Ok(n) => if n > 0 { eprintln!("  FTS5: {} symbols indexed", n); },
+                Err(e) => eprintln!("  FTS5 symbol warning: {}", e),
+            }
+            match crate::storage::fts::fill_docs_fts(&conn, &repo) {
+                Ok(n) => if n > 0 { eprintln!("  FTS5: {} docs indexed", n); },
+                Err(e) => eprintln!("  FTS5 doc warning: {}", e),
+            }
             let embedder = crate::embedding::get_embedder();
             match crate::embedding::index_vectors(&conn, &repo, embedder.as_ref()) {
                 Ok((s, d)) => if s + d > 0 { eprintln!("  Vectors: {} symbols + {} docs new", s, d); },

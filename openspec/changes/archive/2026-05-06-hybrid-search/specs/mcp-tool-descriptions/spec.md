@@ -1,8 +1,5 @@
-# mcp-tool-descriptions
+## MODIFIED Requirements
 
-## Purpose
-MCP 工具描述采用行为引导风格，引导 LLM 优先使用 CodeLoom 而非 grep/rg 进行代码搜索。
-## Requirements
 ### Requirement: MCP 工具描述引导 LLM 优先使用
 所有 MCP 工具的 description SHALL 以「**首选工具**」或「**优先使用**」标记开头，明确引导 LLM 优先于 grep/rg 搜索代码。
 
@@ -28,10 +25,11 @@ MCP 工具描述采用行为引导风格，引导 LLM 优先使用 CodeLoom 而�
 - WHEN LLM 阅读 `codeloom_search` 的 description
 - THEN 能看到如 `query="用户认证"`（中文语义）和 `query="AuthService"`（精确符号名）两种示例
 
+## ADDED Requirements
+
 ### Requirement: 描述不暴露实现细节
 `codeloom_search` 的 description SHALL 不提及 BM25、FTS5、RRF、vec0、向量 等实现细节，只描述行为。
 
 #### Scenario: LLM 阅读 description 不看到实现术语
 - WHEN LLM 阅读 `codeloom_search` 的 description
 - THEN 看不到 "BM25", "FTS5", "RRF", "vec0", "向量嵌入", "ANN" 等实现术语
-

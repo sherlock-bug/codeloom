@@ -1,4 +1,4 @@
-# CodeLoom v0.3.7
+# CodeLoom v0.3.8
 
 > 代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 
@@ -14,13 +14,14 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 |------|------|
 | **代码知识图谱** | tree-sitter 解析 C++/Python/Java/TypeScript/Go，提取符号定义、调用图、继承链、include 关系 |
 | **编码兼容** | UTF-8 / GB2312 / GBK / GB18030 自动检测，中文编码源码零配置索引 |
-| **本地语义嵌入** | candle + bge-small-zh（512 维，91MB），纯 CPU 推理，零外部 API。模型缺失时自动降级 Jaccard |
+| **语义嵌入** | candle + bge-small-zh（512 维，91MB），纯 CPU 推理，零外部 API。模型缺失时自动降级 Jaccard |
+| **混合搜索** | FTS5 BM25 关键词 + vec0 向量语义，RRF 融合统一排名。单一 `codeloom_search` 入口 |
 | **Git 驱动增量** | 自动跟踪 commit，`git diff` 只扫变更文件；新分支从父分支继承符号 |
 | **分支过滤** | 所有 MCP 工具 `branch` 参数必传；`branch_name IS NULL` 的数据所有分支可见 |
 | **向量搜索** | sqlite-vec ANN 引擎（预编译 .so，160KB），O(log N) 检索，一键安装 |
 | **分支术语表** | `## 23B (release/xxx)` 格式自动映射惯用叫法到实际分支名 |
 | **多仓支持** | 前后端独立索引，跨仓依赖自动识别 |
-| **MCP 原生** | 10 个 MCP 工具，OpenCode/Claude Code 零配置对接 |
+| **MCP 原生** | 9 个 MCP 工具，OpenCode/Claude Code 零配置对接 |
 | **忽略文件** | `.codeloomignore` 过滤 test/build/docs 目录，类似 `.gitignore` |
 | **自动化测试** | 55 测试（49 单元 + 6 集成），本地素材自洽，`cargo test` 一键验证 |
 
@@ -79,7 +80,7 @@ opencode mcp add
 OpenCode 里直接用：
 ```
 /codeloom:overview
-/codeloom:semantic-search "用户认证流程"
+/codeloom:search "用户认证流程"
 /codeloom:get-definition  login
 /codeloom:call-graph       login --direction callers
 ```
@@ -113,7 +114,7 @@ OpenCode 里直接用：
 
 ## MCP 工具
 
-10 个 MCP 工具，所有搜索/查询工具的 `branch` 参数必传。**打开仓库后第一步先调 `codeloom_list_repos` 获取可用仓库名。**
+9 个 MCP 工具，所有搜索/查询工具的 `branch` 参数必传。**打开仓库后第一步先调 `codeloom_list_repos` 获取可用仓库名。**
 
 ### 仓库与状态管理
 
@@ -129,7 +130,7 @@ OpenCode 里直接用：
 
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `codeloom_search` | `query`, `branch`, `limit?`, `repo` | **首选工具**：精确搜索符号名和定义内容。优先于 grep/rg——索引覆盖 #include 头文件（grep 只搜当前目录）。 |
+| `codeloom_search` | `query`, `branch`, `limit?`, `repo` | **首选搜索工具**：同时理解精确命名和中文/英文功能意图。自动融合关键词 BM25 和语义向量，返回统一排序。query 可以是符号名或功能描述。 |
 | `codeloom_list_symbols` | `pattern`, `branch`, `limit?`, `repo` | 模糊搜索符号名（SQL LIKE）。C++ 类方法用 `ClassName::methodName` 格式。 |
 | `codeloom_get_definition` | `name`, `branch`, `repo` | 获取符号完整定义。返回精确代码区间不浪费 token。**先用 `codeloom_list_symbols` 查确切名称。** |
 
@@ -139,12 +140,6 @@ OpenCode 里直接用：
 |------|------|------|
 | `codeloom_get_call_graph` | `name`, `branch`, `direction?`, `max_depth?`, `repo` | **唯一方式**（grep 无法获取调用关系）：分析调用者和被调用者。`direction="callers"` / `"callees"`。 |
 
-### 语义搜索
-
-| 工具 | 参数 | 说明 |
-|------|------|------|
-| `codeloom_semantic_search` | `query`, `branch`, `limit?`, `repo` | 自然语言语义搜索（ANN 向量检索 + bge-small-zh）。中文描述功能意图。结果含相似度分数 `[0.xxx]`。 |
-
 ### 常见查询模式
 
 **「查看 AClass::method1 调用了哪些函数」：**
@@ -152,7 +147,7 @@ OpenCode 里直接用：
 2. `codeloom_get_call_graph(name="AClass::method1", direction="callees")`
 
 **「找到登录相关代码」：**
-1. `codeloom_semantic_search(query="用户登录认证")` → 语义搜索找到相关符号
+1. `codeloom_search(query="用户登录认证")` → 混合搜索找到相关符号和文档
 2. `codeloom_get_definition(name="AuthService::login")` → 查看具体实现
 
 **「了解某个类的继承关系」：**
@@ -282,7 +277,7 @@ codeloom index ──→ smart.rs ──→ tree_sitter.rs (收集文件+解析)
                          │
                     doc/ ──→ Markdown 解析 + 术语表
                          │
-                    mcp/ ──→ 10 个 JSON-RPC 工具 → OpenCode
+                    mcp/ ──→ 9 个 JSON-RPC 工具 → OpenCode
 ```
 
 ## 开发

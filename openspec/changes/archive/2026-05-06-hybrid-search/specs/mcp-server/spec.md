@@ -1,8 +1,5 @@
-# mcp-server
+## MODIFIED Requirements
 
-## Purpose
-MCP 服务器管理：工具注册、codeloom_index 行为修正、list-repos/list-branches 新增。
-## Requirements
 ### Requirement: codeloom_index 工具不执行实际索引
 `codeloom_index` MCP 工具 SHALL 不执行实际索引操作，而是返回 CLI 命令字符串和状态指示。
 
@@ -35,6 +32,8 @@ MCP 工具列表 SHALL 增加 `codeloom_list_repos` 和 `codeloom_list_branches`
 - WHEN 调用 `codeloom_list_branches(repo="codeloom")`
 - THEN 返回 codeloom 仓库下所有已索引分支列表
 
+## ADDED Requirements
+
 ### Requirement: 统一搜索工具 codeloom_search
 MCP 工具列表 SHALL 包含 `codeloom_search` 作为唯一代码搜索入口，替代旧的 `codeloom_search`（LIKE）和 `codeloom_semantic_search`（vec0）。
 
@@ -47,4 +46,3 @@ MCP 工具列表 SHALL 包含 `codeloom_search` 作为唯一代码搜索入口�
 #### Scenario: codeloom_search 接受标准参数
 - WHEN 调用 `codeloom_search`
 - THEN 接受参数：`query`（必填，string）、`repo`（必填，string）、`branch`（必填，string）、`limit`（选填，integer，默认10）
-

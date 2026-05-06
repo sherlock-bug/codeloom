@@ -34,8 +34,7 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
         {"name":"codeloom_list_symbols","description":"**优先使用**：按名称模糊搜索已索引的符号。优先于grep/rg使用——索引覆盖项目所有文件及#include的第三方头文件（grep只能搜当前目录）。返回结构化结果：名称、类型、文件路径、行号。C++类方法用ClassName::methodName格式。如pattern=\"login\"匹配handleLogin、loginUser等。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["pattern","repo","branch"]}},
         {"name":"codeloom_get_definition","description":"获取符号完整定义（源码、签名、文件路径、行号）。优于read_file：返回精确代码区间不浪费token。name必须是符号表中存储的完整名称——先用codeloom_list_symbols查找确切名称。C++方法用ClassName::methodName格式。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["name","repo","branch"]}},
         {"name":"codeloom_get_call_graph","description":"**唯一方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。必须先运行codeloom_index后才能用。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["name","repo","branch"]}},
-        {"name":"codeloom_semantic_search","description":"自然语言语义搜索代码+文档（ANN向量检索）。用中文或英文描述功能意图，返回最相关的符号和文档段落，比grep更理解语义。如query=\"用户认证流程\"、\"内存分配失败处理\"、\"JSON解析错误\"。结果含相似度分数[0.xxx]。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
-        {"name":"codeloom_search","description":"**首选工具**：在已索引的代码符号中精确搜索。优先于grep/rg使用——索引覆盖项目所有文件及#include头文件（grep只搜当前目录文件）。返回结构化结果（名称/类型/文件/行号），比grep原始文本更精确。如query=\"AuthService\"、query=\"login\"。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["query","repo","branch"]}},
+        {"name":"codeloom_search","description":"**首选搜索工具**：同时理解精确符号命名和中文/英文功能意图。query可以是符号名（如AuthService/compaction）或功能描述（如'用户认证'、'内存分配'）。覆盖项目所有文件及#include头文件（grep只搜当前目录）。自动融合关键词精确匹配和语义理解，返回统一排序结果。branch=当前git分支名（必填），repo=仓库名（必填，先用codeloom_list_repos查）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。无需任何参数。返回如\"codeloom\\nleveldb\\nspdlog\"。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填，先用codeloom_list_repos查）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
         {"name":"codeloom_overview","description":"**打开仓库后第一个调用的工具**。仓库架构全貌统计：所有符号按类型分布（class/function/method等）、边数量、文档数量。用于快速了解代码库规模——在动手搜索前先看清楚全貌。branch=当前git分支名（必填），repo=仓库名（必填，先用codeloom_list_repos查）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}}
@@ -57,15 +56,7 @@ fn validate_repo(repo: &str) -> Result<String, String> {
 
 fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value) -> serde_json::Value {
     let result = match name {
-        "codeloom_semantic_search" => {
-            let query = args["query"].as_str().unwrap_or("");
-            let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
-            let branch = args["branch"].as_str().unwrap_or("");
-            let limit = args["limit"].as_u64().unwrap_or(10) as usize;
-            if let Err(e) = repo { return err_resp(id, &e); }
-            if branch.is_empty() { return err_resp(id, "branch is required"); }
-            semantic_search(query, &repo.unwrap(), branch, limit)
-        }
+        
         "codeloom_overview" => {
             let branch = args["branch"].as_str().unwrap_or("");
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
@@ -111,10 +102,10 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
             let query = args["query"].as_str().unwrap_or("");
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             let branch = args["branch"].as_str().unwrap_or("");
-            let limit = args["limit"].as_u64().unwrap_or(20) as usize;
+            let limit = args["limit"].as_u64().unwrap_or(10) as usize;
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
-            fulltext_search(query, &repo.unwrap(), branch, limit)
+            hybrid_search(query, &repo.unwrap(), branch, limit)
         }
         "codeloom_index" => {
             let path = args["path"].as_str().unwrap_or("");
@@ -367,117 +358,25 @@ fn traverse_calls(branch: &str, conn: &rusqlite::Connection, sym_id: i64, direct
     }
 }
 
-fn fulltext_search(query: &str, repo: &str, branch: &str, limit: usize) -> String {
+fn hybrid_search(query: &str, repo: &str, branch: &str, limit: usize) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    let like = format!("%{}%", query);
-    let bwc = branch_where_clause(branch);
-    let mut out = format!("Full-text search: '{}' in {} (branch={})\n", query, repo, branch);
-    let name_sql = format!("SELECT s.name, s.kind, s.file_path, s.line_start FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name LIKE ?2 {} LIMIT ?3", bwc);
-    if let Ok(mut stmt) = conn.prepare(&name_sql) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![repo, like, limit as i64], |r| {
-            Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,i64>(3)?))
-        }) {
-            for row in rows.flatten() {
-                out.push_str(&format!("  [{}] {:45}  @ {}:{}\n", row.1, row.0, &row.2[..50.min(row.2.len())], row.3));
+    match crate::query::search::hybrid_search(&conn, query, repo, branch, limit) {
+        Ok(results) => {
+            if results.is_empty() {
+                return format!("未找到 \"{}\" 的相关结果", query);
             }
-        }
-    }
-    out
-}
-
-fn semantic_search(query: &str, repo: &str, branch: &str, limit: usize) -> String {
-    let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    let embedder = crate::embedding::get_embedder();
-    let is_fallback = !crate::embedding::CandleEmbedder::model_available();
-    let query_emb = match embedder.embed(query) {
-        Ok(e) => e,
-        Err(e) => return format!("Error embedding: {}", e),
-    };
-
-    // Try vec0 ANN first
-    let sym_table = format!("symbol_vec_{}", repo.replace('-', "_"));
-    let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
-    if crate::storage::vector::try_load(&conn) {
-        let mut results = Vec::new();
-        if let Ok(rows) = crate::storage::vector::knn_search(&conn, &sym_table, &query_emb, limit) {
-            for (rowid, dist) in rows {
-                if let Ok(name) = conn.query_row(
-                    "SELECT name || ' [' || kind || ']' FROM symbols WHERE id=?1",
-                    rusqlite::params![rowid], |r| r.get::<_,String>(0)
-                ) {
-                    let sim = 1.0 / (1.0 + dist as f32);
-                    results.push((sim, format!("code {}", name)));
-                }
+            let mut out = format!("搜索 \"{}\" ({}条):\n", query, results.len());
+            for r in &results {
+                out.push_str(&format!(
+                    "  [{:.3}] {} [{}]  @ {}:{}\n",
+                    r.score, r.name, r.hit_type,
+                    &r.file_path[..50.min(r.file_path.len())], r.line_start
+                ));
             }
+            out
         }
-        if let Ok(rows) = crate::storage::vector::knn_search(&conn, &doc_table, &query_emb, limit) {
-            for (rowid, dist) in rows {
-                if let Ok((title, section)) = conn.query_row(
-                    "SELECT title, section_path FROM doc_nodes WHERE id=?1",
-                    rusqlite::params![rowid], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?))
-                ) {
-                    let sim = 1.0 / (1.0 + dist as f32);
-                    results.push((sim, format!("doc {} > {}", title, section)));
-                }
-            }
-        }
-        results.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        results.truncate(limit);
-        if results.is_empty() {
-            return format!("No results for: {}", query);
-        }
-        let mut out = format!("Semantic search (vec0): \"{}\"", query);
-        out.push('\n');
-        for (sim, text) in &results {
-            out.push_str(&format!("  [{:.3}] {}\n", sim, text));
-        }
-        return out;
+        Err(e) => format!("搜索失败: {}", e),
     }
-
-    // Fallback: brute-force cosine similarity
-    let mut results = Vec::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT id,title,section_path,content FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name=?2)") {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![repo, branch], |r| {
-            Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?))
-        }) {
-            for row in rows.flatten() {
-                let text = format!("{} {} {}", row.1, row.2, row.3);
-                let emb = embedder.embed(&text).unwrap_or_default();
-                let sim = embedder.similarity(&query_emb, &emb);
-                if sim > 0.05 {
-                    results.push((sim, format!("doc {} > {}", row.1, row.2)));
-                }
-            }
-        }
-    }
-    let bwc = branch_where_clause(branch);
-    let sym_sql = format!("SELECT s.id,s.name,s.kind,s.definition FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 {}", bwc);
-    if let Ok(mut stmt) = conn.prepare(&sym_sql) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
-            Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?))
-        }) {
-            for row in rows.flatten() {
-                let text = format!("{} {} {}", row.2, row.1, row.3);
-                let emb = embedder.embed(&text).unwrap_or_default();
-                let sim = embedder.similarity(&query_emb, &emb);
-                if sim > 0.02 {
-                    results.push((sim, format!("code [{}] {}", row.2, row.1)));
-                }
-            }
-        }
-    }
-    results.sort_by(|a,b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    results.truncate(limit);
-    if results.is_empty() {
-        return format!("No results for: {}", query);
-    }
-    let mode = if is_fallback { " (Jaccard)" } else { " (brute-force)" };
-    let mut out = format!("Semantic search: \"{}\"{}", query, mode);
-    out.push('\n');
-    for (sim, text) in &results {
-        out.push_str(&format!("  [{:.3}] {}\n", sim, text));
-    }
-    out
 }
 
 pub async fn serve_http(addr: &str) -> anyhow::Result<()> {
@@ -530,10 +429,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tools_list_returns_10_tools() {
+    fn test_tools_list_returns_9_tools() {
         let resp = tools_list(serde_json::Value::Number(1.into()));
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 9);
     }
 
     #[test]
