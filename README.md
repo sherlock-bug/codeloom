@@ -6,7 +6,7 @@
 
 CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的知识图谱，让 OpenCode/Claude Code 等 AI 编码助手中的 LLM 能理解百万行级别的多代码仓项目。
 
-纯本地运行，零外部 API 依赖，代码不出内网。远程部署 MCP Server，**一个 .db 文件拎包就走**。
+纯本地运行（索引 + 关键词搜索），语义搜索需配置 OpenAI 兼容 Embedding API，代码不出内网。
 
 ## 能力
 
@@ -18,7 +18,7 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 | **文档图片提取** | MD/HTML/DOCX/XLSX 内图片自动提取，WebP 智能压缩，SQLite BLOB 存储 |
 | **图片 base64 返回** | MCP 返回图片时 base64 编码，远程部署无路径依赖 |
 | **编码兼容** | UTF-8 / GB2312 / GBK / GB18030 自动检测，中文编码源码零配置索引 |
-| **语义嵌入** | candle + bge-small-zh（512 维，91MB），纯 CPU 推理，零外部 API |
+| **语义嵌入** | OpenAI 兼容 API（`/v1/embeddings`），支持 bge-m3 / text-embedding-3 等任意嵌入模型 |
 | **混合搜索** | FTS5 BM25 关键词 + vec0 向量语义，加权融合统一排名。搜索返回 snippet + 注释 + 图片提示 |
 | **注释索引** | C++ 行内注释 + 体内注释自动收集，支持中文/英文注释搜索 |
 | **文件节点** | 代码文件元信息索引 + 注释摘要，支持文件名和内容搜索 |
@@ -34,16 +34,15 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 ### 离线安装包（推荐，无需网络）
 
 1. 浏览器打开 [Gitee Releases](https://gitee.com/greengreensea/codeloom/releases)（国内快）或 [GitHub Releases](https://github.com/sherlock-bug/codeloom/releases)
-2. 下载 `codeloom-vX.Y.Z-linux-x86_64.zip`
+2. 下载 `codeloom-vX.Y.Z-offline.tar.gz`
 3. 解压并安装：
 
 ```bash
-unzip codeloom-vX.Y.Z-linux-x86_64.zip
-cd codeloom-vX.Y.Z-linux-x86_64   # zip 内包含独立目录的话
+tar xzf codeloom-vX.Y.Z-offline.tar.gz
 ./install.sh
 ```
 
-全程零网络请求，二进制 + 模型文件一并部署到 `~/.codeloom/`。
+安装到 `~/.local/bin/codeloom`，配置文件模板写入 `~/.codeloom/config.yaml`。
 
 ### 预编译二进制（在线）
 
@@ -55,31 +54,35 @@ curl -sSL https://gitee.com/greengreensea/codeloom/raw/master/scripts/install.sh
 curl -sSL https://raw.githubusercontent.com/sherlock-bug/codeloom/master/scripts/install.sh | bash
 ```
 
-安装脚本自动部署二进制和嵌入模型到 `~/.codeloom/`。
-
 ### 从源码编译
 
 ```bash
 git clone https://gitee.com/greengreensea/codeloom.git  # 国内推荐
 # 或 git clone https://github.com/sherlock-bug/codeloom.git
 cd codeloom
-cargo build --release   # build.rs 自动从 modelscope.cn 下载 91MB 模型
+cargo build --release
 ```
 
-要求：Rust 1.80+、curl。
+要求：Rust 1.80+。build.rs 自动编译 sqlite-vec 扩展（静态链接）。
 
 ## 5 分钟上手
 
 ```bash
-codeloom check                              # 检查环境（含模型状态）
+# 1. 配置 Embedding API（语义搜索必需）
+cat > ~/.codeloom/config.yaml << 'YAML'
+embedding:
+  api_base: "http://localhost:11434/v1"   # Ollama
+  model: "bge-m3"
+YAML
+
+# 2. 索引 + 搜索
+codeloom check                              # 检查环境（含 API 连通性）
 codeloom index /path/to/your/cpp/repo       # 索引代码库 + 文档
-codeloom status                             # 查看状态（自动检测仓库和分支）
-codeloom search "auth token"                # 搜索（自动检测仓库和分支）
+codeloom status                             # 查看状态
+codeloom search "auth token"                # FTS5 + 向量混合搜索
 
 # 注册到 OpenCode
-opencode mcp add
-#   name → codeloom
-#   command → codeloom mcp
+opencode mcp add codeloom -- codeloom mcp
 ```
 
 OpenCode 里直接用：
@@ -94,10 +97,9 @@ OpenCode 里直接用：
 
 ```
 ~/.codeloom/
-├── config.yaml              # 项目配置（多仓、路径）
+├── config.yaml              # 项目配置（多仓路径 + embedding API）
 ├── <repo>.rag.db            # 知识图谱主文件（单文件 SQLite）
-├── models/bge-small-zh/     # 嵌入模型（91MB，编译/安装时自动下载）
-└── bin/codeloom             # 二进制 (~15MB)
+└── bin/codeloom             # 二进制 (~18MB)
 ```
 
 ## 索引基准
@@ -248,6 +250,40 @@ third_party/
 
 ## 配置
 
+### Embedding API（语义搜索必需）
+
+语义搜索（向量召回）通过 OpenAI 兼容的 `/v1/embeddings` 接口调用嵌入模型。不配置时仅能使用 FTS5 关键词搜索。
+
+```yaml
+# ~/.codeloom/config.yaml
+embedding:
+  api_base: "http://localhost:11434/v1"   # 必填，OpenAI 兼容 API 地址
+  model: "bge-m3"                         # 必填，模型名
+  api_key: "not-needed"                   # 可选，Bearer Token
+  dimension: 1024                         # 可选，向量维度（自动检测）
+  batch_size: 64                          # 可选，批量大小（默认 64）
+  text_limit: 300                         # 可选，单文本截断长度（默认 300）
+  max_chars_per_batch: 90000              # 可选，单批最大字符数（默认 90000）
+```
+
+**支持的嵌入服务：**
+
+| 服务 | api_base 示例 | 推荐模型 | 维度 |
+|------|--------------|---------|------|
+| Ollama | `http://localhost:11434/v1` | `bge-m3` | 1024 |
+| LM Studio | `http://localhost:1234/v1` | `text-embedding-nomic-embed-text-v1.5` | 768 |
+| Xinference | `http://localhost:9997/v1` | `bge-m3` | 1024 |
+| OpenAI | `https://api.openai.com/v1` | `text-embedding-3-small` | 1536 |
+| 内网部署 | `http://your-server:port/v1` | 任意兼容模型 | — |
+
+**验证连通性：**
+
+```bash
+codeloom check    # 会尝试调一次 /v1/embeddings，报告状态
+```
+
+### 多仓配置
+
 ```yaml
 # ~/.codeloom/config.yaml
 projects:
@@ -278,7 +314,7 @@ codeloom index ──→ smart.rs ──→ tree_sitter.rs (收集文件+解析)
                          │                    │
                     storage/ ──→ SQLite (symbols, edges, doc_nodes)
                     storage/  ──→ sqlite-vec ANN + 关系结构
-                    embedding/ ──→ candle + bge-small-zh (512维)
+                    embedding/ ──→ OpenAI 兼容 API (`/v1/embeddings`)
                          │
                     doc/ ──→ Markdown 解析 + 术语表
                          │
@@ -288,8 +324,8 @@ codeloom index ──→ smart.rs ──→ tree_sitter.rs (收集文件+解析)
 ## 开发
 
 ```bash
-cargo test                    # 49 单元测试 (< 3s)
-cargo test --test integration  # 6 集成测试 (~180s，需 models/)
+cargo test                    # 73 测试 (< 3s)
+cargo test --test integration  # 7 集成测试 (~180s)
 ```
 
 测试素材：`tests/fixtures/leveldb` (132 C++ 文件) + `tests/fixtures/docs` (102 .md 文件)。
