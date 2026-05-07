@@ -34,7 +34,7 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
         {"name":"codeloom_list_symbols","description":"**优先使用**：按名称模糊搜索已索引的符号。优先于grep/rg使用——索引覆盖项目所有文件及#include的第三方头文件（grep只能搜当前目录）。返回结构化结果：名称、类型、文件路径、行号。C++类方法用ClassName::methodName格式。如pattern=\"login\"匹配handleLogin、loginUser等。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["pattern","repo","branch"]}},
         {"name":"codeloom_get_definition","description":"获取符号完整定义（源码、签名、文件路径、行号）。优于read_file：返回精确代码区间不浪费token。name必须是符号表中存储的完整名称——先用codeloom_list_symbols查找确切名称。C++方法用ClassName::methodName格式。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["name","repo","branch"]}},
         {"name":"codeloom_get_call_graph","description":"**唯一方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。必须先运行codeloom_index后才能用。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["name","repo","branch"]}},
-        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】混合搜索引擎：比grep更快（预索引）、覆盖更全（含#include头文件）、更智能（理解中文/英文语义，不仅文本匹配）。query可以是符号名（AuthService/compaction）或功能描述（'用户认证'、'内存分配'）。自动融合BM25关键词+向量语义，返回结构化结果（名称/类型/文件/行号）。不要用grep/rg搜代码——用这个。branch=当前git分支名（必填），repo=仓库名（必填，先用codeloom_list_repos查）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
+        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】混合搜索引擎：比grep更快（预索引）、覆盖更全（含#include头文件）、更智能（理解中文/英文语义，不仅文本匹配）。query可以是符号名（AuthService/compaction）或功能描述（'用户认证'、'内存分配'）。自动融合BM25关键词+向量语义，返回结构化结果（名称/类型/文件/行号）。不要用grep/rg搜代码——用这个。branch=当前git分支名（必填），repo=仓库名（必填，先用codeloom_list_repos查）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
 
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。无需任何参数。返回如\"codeloom\\nleveldb\\nspdlog\"。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填，先用codeloom_list_repos查）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
@@ -128,9 +128,18 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             let branch = args["branch"].as_str().unwrap_or("");
             let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+            let kind_raw = args["kind"].as_str().unwrap_or("");
+            let valid_kinds: &[&str] = &["function", "method", "class", "struct", "enum", "enum_value", "field", "global", "static_var", "variable"];
+            let kind_filter = if kind_raw.is_empty() {
+                None
+            } else if valid_kinds.contains(&kind_raw) {
+                Some(kind_raw)
+            } else {
+                return err_resp(id, &format!("Invalid kind '{}'. Valid values: {}", kind_raw, valid_kinds.join(", ")));
+            };
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
-            hybrid_search(query, &repo.unwrap(), branch, limit)
+            hybrid_search(query, &repo.unwrap(), branch, limit, kind_filter)
         }
         "codeloom_index" => {
             let path = args["path"].as_str().unwrap_or("");
@@ -284,7 +293,7 @@ fn get_definition(name: &str, repo: &str, branch: &str) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
     let bwc = branch_where_clause(branch);
     let mut out = format!("Definition: '{}' in {} (branch={})\n", name, repo, branch);
-    let exact_sql = format!("SELECT s.name, s.kind, s.definition, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class, s.namespace FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 {} LIMIT 5", bwc);
+    let exact_sql = format!("SELECT s.name, s.kind, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class, s.namespace FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 {} LIMIT 5", bwc);
     let mut found = false;
     if let Ok(mut stmt) = conn.prepare(&exact_sql) {
         if let Ok(rows) = stmt.query_map(rusqlite::params![repo, name], |r| {
@@ -394,9 +403,9 @@ fn traverse_calls(branch: &str, conn: &rusqlite::Connection, sym_id: i64, direct
     }
 }
 
-fn hybrid_search(query: &str, repo: &str, branch: &str, limit: usize) -> String {
+fn hybrid_search(query: &str, repo: &str, branch: &str, limit: usize, kind_filter: Option<&str>) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    match crate::query::search::hybrid_search(&conn, query, repo, branch, limit) {
+    match crate::query::search::hybrid_search(&conn, query, repo, branch, limit, kind_filter) {
         Ok(results) => {
             if results.is_empty() {
                 return format!("未找到 \"{}\" 的相关结果", query);
@@ -404,30 +413,19 @@ fn hybrid_search(query: &str, repo: &str, branch: &str, limit: usize) -> String 
             let mut out = format!("搜索 \"{}\" ({}条):\n", query, results.len());
             for r in &results {
                 let mut extra = String::new();
-                if r.hit_type == "doc" {
-                    // Query doc_nodes for snippet, node_type, image info
-                    if let Ok((content, node_type)) = conn.query_row(
-                        "SELECT content, node_type FROM doc_nodes WHERE file_path=?1 AND (title=?2 OR section_path=?2) AND (branch_name IS NULL OR branch_name=?3) LIMIT 1",
-                        rusqlite::params![r.file_path, r.name.trim_start_matches("📄 "), branch],
-                        |row| Ok((row.get::<_,String>(0).unwrap_or_default(), row.get::<_,String>(1).unwrap_or_default()))
-                    ) {
-                        let snippet: String = content.chars().take(200).collect();
-                        let snippet_clean = snippet.replace('\n', " ").replace('\r', "");
-                        extra = format!(" node_type={}", node_type);
-                        if !snippet_clean.is_empty() {
-                            extra.push_str(&format!(" snippet=\"{}...\"", &snippet_clean[..snippet_clean.len().min(100)]));
-                        }
-                        // Count images
-                        if let Ok(img_count) = conn.query_row(
-                            "SELECT COUNT(*) FROM doc_images di JOIN doc_nodes dn ON di.doc_node_id=dn.id WHERE dn.file_path=?1 AND (dn.title=?2 OR dn.section_path=?2) AND (dn.branch_name IS NULL OR dn.branch_name=?3)",
-                            rusqlite::params![r.file_path, r.name.trim_start_matches("📄 "), branch],
-                            |row| row.get::<_,i64>(0)
-                        ) {
-                            if img_count > 0 {
-                                extra.push_str(&format!(" images={}", img_count));
-                            }
-                        }
-                    }
+                // Type badge for code results
+                if r.hit_type == "code" && !r.kind.is_empty() {
+                    extra.push_str(&format!(" |{}", r.kind));
+                }
+                // doc_id for doc results (so LLM can call codeloom_get_doc)
+                if r.hit_type == "doc" && r.doc_id != 0 {
+                    extra.push_str(&format!(" |doc_id:{}", r.doc_id));
+                }
+                // Snippet for both code and doc
+                if !r.snippet.is_empty() {
+                    let snippet_clean = r.snippet.replace('\n', " ").replace('\r', "");
+                    let display = &snippet_clean[..snippet_clean.len().min(120)];
+                    extra.push_str(&format!(" |\"{}...\"", display));
                 }
                 out.push_str(&format!(
                     "  [{:.3}] {} [{}]{} @ {}:{}\n",
@@ -820,7 +818,7 @@ mod tests {
     fn test_get_definition_found() {
         let conn = crate::storage::open(":memory:").unwrap();
         crate::storage::migrate(&conn).unwrap();
-        conn.execute("INSERT INTO symbols (repo,name,kind,definition,content_hash,file_path,line_start,line_end,signature) VALUES ('gd','AuthService','class','class AuthService {}','g1','auth.cpp',10,15,'class AuthService')", []).unwrap();
+        conn.execute("INSERT INTO symbols (repo,name,kind,content_hash,file_path,line_start,line_end,signature) VALUES ('gd','AuthService','class','g1','auth.cpp',10,15,'class AuthService')", []).unwrap();
         let sid = conn.last_insert_rowid();
         conn.execute("INSERT INTO branches (symbol_id,repo,branch_name) VALUES (?1,'gd','main')", rusqlite::params![sid]).unwrap();
         let result = get_definition("AuthService", "gd", "main");
@@ -829,16 +827,16 @@ mod tests {
 
 
     #[test]
-    fn test_candle_semantic_search_no_fallback() {
-        // Model is available and cached — candle mode active
-        assert!(crate::embedding::CandleEmbedder::model_available());
+    #[ignore = "API embedding not configured in CI"]
+    fn test_api_semantic_search_no_fallback() {
+        // Embedding requires API config in config.yaml — skip in CI
     }
 
     #[test]
     fn test_overview_basic() {
         let conn = crate::storage::open(":memory:").unwrap();
         crate::storage::migrate(&conn).unwrap();
-        conn.execute("INSERT INTO symbols (repo,name,kind,definition,content_hash,file_path,line_start,line_end) VALUES ('ov','f','function','void f(){}','abc','f.cpp',1,1)", []).unwrap();
+        conn.execute("INSERT INTO symbols (repo,name,kind,content_hash,file_path,line_start,line_end) VALUES ('ov','f','function','abc','f.cpp',1,1)", []).unwrap();
         let sym_id = conn.last_insert_rowid();
         conn.execute("INSERT INTO branches (symbol_id,repo,branch_name) VALUES (?1,'ov','main')", rusqlite::params![sym_id]).unwrap();
         let result = overview("ov", "main");
@@ -891,7 +889,7 @@ mod tests {
     fn test_overview_enhanced_with_images_and_format() {
         let conn = crate::storage::open(":memory:").unwrap();
         crate::storage::migrate(&conn).unwrap();
-        conn.execute("INSERT INTO symbols (repo,name,kind,definition,content_hash,file_path,line_start,line_end) VALUES ('ov2','f','function','void f(){}','abc','f.cpp',1,1)", []).unwrap();
+        conn.execute("INSERT INTO symbols (repo,name,kind,content_hash,file_path,line_start,line_end) VALUES ('ov2','f','function','abc','f.cpp',1,1)", []).unwrap();
         let sym_id = conn.last_insert_rowid();
         conn.execute("INSERT INTO branches (symbol_id,repo,branch_name) VALUES (?1,'ov2','main')", rusqlite::params![sym_id]).unwrap();
         // Add some docs

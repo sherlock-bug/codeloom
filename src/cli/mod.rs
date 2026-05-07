@@ -226,6 +226,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "default".into())
             });
+            let t0 = std::time::Instant::now();
             println!("Indexing {} (branch={}, repo={})...", path, branch, repo);
             let data_dir = crate::config::Config::data_dir()?;
             let db_path = data_dir.join(format!("{}.rag.db", repo));
@@ -236,11 +237,13 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             } else {
                 crate::indexer::smart::smart_index(&conn, &path, &repo, &branch)?
             };
-            println!("Done: {} files, {} symbols", result.files_scanned, result.symbols_new);
+            let t1 = t0.elapsed();
+            println!("Done: {} files, {} symbols ({:.1}s parse+db)", result.files_scanned, result.symbols_new, t1.as_secs_f64());
             if result.symbols_inherited > 0 { println!("  {} inherited from {}", result.symbols_inherited, result.inherited_from.as_deref().unwrap_or("parent")); }
             if let Some(ref from) = result.from_commit { println!("  delta: {}..{}", &from[..8.min(from.len())], result.head_commit.as_deref().map(|h|&h[..8]).unwrap_or("?")); }
             // also index docs
             index_docs(&conn, &path, &repo);
+            let t2 = t0.elapsed();
             index_includes(&conn, &path, &repo);
             // FTS5 full-text index for BM25 keyword search
             match crate::storage::fts::fill_symbols_fts(&conn, &repo) {
@@ -251,12 +254,16 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 Ok(n) => if n > 0 { eprintln!("  FTS5: {} docs indexed", n); },
                 Err(e) => eprintln!("  FTS5 doc warning: {}", e),
             }
-            // Doc vectors (symbol vectors already done inline during parse)
-            let embedder = crate::embedding::get_embedder();
-            match crate::embedding::index_doc_vectors(&conn, &repo, embedder.as_ref()) {
-                Ok(n) => if n > 0 { eprintln!("  Vectors: {} docs new", n); },
-                Err(e) => eprintln!("  Doc vector warning: {}", e),
+            let t3 = t0.elapsed();
+            // Symbol + Doc vectors (batch process)
+            let embedder = crate::embedding::get_embedder()?;
+            match crate::embedding::index_vectors(&conn, &repo, embedder.as_ref()) {
+                Ok((sym_n, doc_n)) => eprintln!("  Vectors: {} symbols, {} docs", sym_n, doc_n),
+                Err(e) => eprintln!("  Vector warning: {}", e),
             }
+            let t4 = t0.elapsed();
+            eprintln!("  ⏱  parse+db: {:.1}s | docs+fts: {:.1}s | vectors: {:.1}s | total: {:.1}s",
+                t1.as_secs_f64(), (t3-t2).as_secs_f64(), (t4-t3).as_secs_f64(), t4.as_secs_f64());
         }
         Command::Branch(cmd) => match cmd {
             BranchCmd::SetAlias { alias, branch, desc, repo } => {
@@ -373,43 +380,25 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 let _ = std::fs::remove_file(test_db);
             }
 
-            // 4. Embedding model
-            let model_file = data_dir.join("models/bge-small-zh/pytorch_model.bin");
-            let tokenizer_file = data_dir.join("models/bge-small-zh/tokenizer.json");
-            let exe_model = std::env::current_exe().ok()
-                .and_then(|e| e.parent().map(|p| p.join("models/bge-small-zh/pytorch_model.bin")));
-
-            let found = if model_file.exists() {
-                Some(model_file)
-            } else if exe_model.as_ref().map(|p| p.exists()).unwrap_or(false) {
-                exe_model
-            } else {
-                None
-            };
-
-            if let Some(ref f) = found {
-                let size = std::fs::metadata(f).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
-                println!("[OK]  Embed model: {} ({:.1} MB)", f.display(), size);
-            }
-
-            // Try loading regardless of file check (may be cached or build-time embedded)
-            let embedder = crate::embedding::get_embedder();
-            match embedder.embed("test") {
-                Ok(v) => {
-                    if found.is_none() {
-                        println!("[OK]  Embed model: loaded ({} dims) — resolves at runtime", v.len());
-                    } else {
-                        println!("       Embed test: {} dims OK", v.len());
+            // 4. Embedding (API-based)
+            let config = crate::config::Config::load().unwrap_or_default();
+            match &config.embedding {
+                Some(cfg) => {
+                    println!("[OK]  Embed API: {} (model: {})", cfg.api_base, cfg.model);
+                    match crate::embedding::get_embedder() {
+                        Ok(embedder) => match embedder.embed("test") {
+                            Ok(v) => println!("       Embed test: {} dims OK", v.len()),
+                            Err(e) => println!("[WARN] Embed test failed: {}", e),
+                        },
+                        Err(e) => println!("[WARN] Embedder init failed: {}", e),
                     }
                 }
-                Err(e) => {
-                    if found.is_some() {
-                        println!("[WARN] Embed test failed: {}", e);
-                    } else {
-                        println!("[MISS] Embed model: not found at ~/.codeloom/models/bge-small-zh/ or binary-relative path");
-                        println!("       Download: build from source (build.rs auto-downloads from modelscope.cn)");
-                        println!("       Embed test: {} — model not loadable", e);
-                    }
+                None => {
+                    println!("[MISS] Embed API: not configured.");
+                    println!("       Add 'embedding' section to ~/.codeloom/config.yaml:");
+                    println!("         embedding:");
+                    println!("           api_base: \"http://your-llm:8080/v1\"");
+                    println!("           model: \"bge-m3\"");
                 }
             }
 
@@ -490,13 +479,23 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
-            match crate::query::search::hybrid_search(&conn, &query, &repo, &branch, limit) {
+            match crate::query::search::hybrid_search(&conn, &query, &repo, &branch, limit, None) {
                 Ok(results) => {
                     println!("搜索 \"{}\" ({}条):", query, results.len());
                     for r in &results {
-                        println!("  [{:.3}] {:45} [{}]  @ {}:{}",
-                            r.score, r.name, r.hit_type,
-                            &r.file_path[..50.min(r.file_path.len())], r.line_start);
+                        let id_tag = if r.hit_type == "doc" && r.doc_id != 0 {
+                            format!(" [id:{}]", r.doc_id)
+                        } else {
+                            String::new()
+                        };
+                        let snippet = if r.hit_type == "doc" && !r.snippet.is_empty() {
+                            format!("  └─ {}", &r.snippet.chars().take(120).collect::<String>())
+                        } else {
+                            String::new()
+                        };
+                        println!("  [{:.3}] {:45}  [{}{}]  @ {}:{}{}",
+                            r.score, r.name, r.hit_type, id_tag,
+                            &r.file_path[..50.min(r.file_path.len())], r.line_start, snippet);
                     }
                 }
                 Err(e) => println!("搜索失败: {}", e),
@@ -558,24 +557,22 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
-            let sql = "SELECT s.name, s.kind, s.definition, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 AND (b.branch_name=?3 OR b.branch_name IS NULL) LIMIT 5";
+            let sql = "SELECT s.name, s.kind, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 AND (b.branch_name=?3 OR b.branch_name IS NULL) LIMIT 5";
             let mut stmt = conn.prepare(sql)?;
             let rows = stmt.query_map(rusqlite::params![repo, name, branch], |r| {
                 Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
-                    r.get::<_,String>(3)?, r.get::<_,i64>(4)?, r.get::<_,i64>(5)?,
-                    r.get::<_,Option<String>>(6)?, r.get::<_,Option<String>>(7)?))
+                    r.get::<_,i64>(3)?, r.get::<_,i64>(4)?,
+                    r.get::<_,Option<String>>(5)?, r.get::<_,Option<String>>(6)?))
             })?;
             let mut found = false;
             for (i, row) in rows.flatten().enumerate() {
                 found = true;
-                let (sname, kind, def, file, lstart, lend, sig, parent) = row;
+                let (sname, kind, file, lstart, lend, sig, parent) = row;
                 if i > 0 { println!("---"); }
                 print!("[{}] {}", kind, sname);
                 if let Some(ref p) = parent { print!("  (in {})", p); }
                 println!("\n  File: {}:{}-{}", file, lstart, lend);
                 if let Some(ref s) = sig { println!("  Signature: {}", s); }
-                let displayed = if def.len() > 800 { format!("{}... (+{} chars)", &def[..800], def.len()-800) } else { def };
-                println!("  Definition:\n{}", displayed);
             }
             if !found { println!("Symbol '{}' not found.", name); }
         }
@@ -642,7 +639,7 @@ fn traverse_calls_cli(conn: &rusqlite::Connection, sym_id: i64, direction: &str,
 fn index_docs(conn: &rusqlite::Connection, dir: &str, repo: &str) {
     let mut doc_count = 0;
     let ignore_patterns = crate::ignore::load_patterns(dir);
-    let supported = ["md", "rst", "xlsx", "xls", "xlsm", "docx", "pdf", "xml", "html", "htm"];
+    let supported = ["md", "rst", "xlsx", "xls", "xlsm", "docx", "pdf", "xml"];
     for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
         let p = entry.path();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -888,6 +885,17 @@ fn do_clean(all: bool, repo: Option<String>, branch: Option<String>) {
             let sql = format!("DELETE FROM {} WHERE {} = ?1 AND (repo = ?2 OR repo IS NULL OR repo = '')", table, col);
             if let Ok(n) = conn.execute(&sql, rusqlite::params![branch, repo]) {
                 total += n;
+            }
+        }
+        // Also drop vec tables for this repo to force full vector regeneration on re-index
+        let vec_prefix = format!("%vec_{}%", repo.replace('-', "_"));
+        if let Ok(mut stmt) = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?1") {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![vec_prefix], |r| r.get::<_,String>(0)) {
+                for row in rows.flatten() {
+                    if conn.execute_batch(&format!("DROP TABLE IF EXISTS [{}]", row)).is_ok() {
+                        total += 1;
+                    }
+                }
             }
         }
         println!("Repo '{}', branch '{}': removed {} row(s)", repo, branch, total);

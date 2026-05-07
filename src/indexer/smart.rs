@@ -47,12 +47,12 @@ fn _smart_index(
     let head = git::head_commit(repo_root);
     result.head_commit = head.clone();
 
-    // Initialize embedder and vec0 tables for inline vectorization
-    let embedder = crate::embedding::get_embedder();
-    let _ = crate::storage::vector::create_tables(conn, repo_name);
+    // Initialize embedder for vec0 tables only; batch index_vectors handles all embedding
+    let embedder = crate::embedding::get_embedder()?;
+    crate::storage::vector::create_tables(conn, repo_name, embedder.dimension())?;
 
     let Some(ref head_commit) = head else {
-        full_scan(conn, repo_root, repo_name, branch, &mut result, Some(embedder.as_ref()))?;
+        full_scan(conn, repo_root, repo_name, branch, &mut result, None)?;
         return Ok(result);
     };
 
@@ -77,7 +77,7 @@ fn _smart_index(
         result.files_changed = files.len();
         result.files_scanned = files.len();
         for fp in &files {
-            match index_one(conn, fp, repo_root, repo_name, branch, Some(embedder.as_ref())) {
+            match index_one(conn, fp, repo_root, repo_name, branch, None) {
                 Ok(c) => result.symbols_new += c,
                 Err(e) => eprintln!("Warning: {}: {}", fp, e),
             }
@@ -101,7 +101,7 @@ fn _smart_index(
         result.files_scanned = files.len();
         result.from_commit = Some(base);
         for fp in &files {
-            match index_one(conn, fp, repo_root, repo_name, branch, Some(embedder.as_ref())) {
+            match index_one(conn, fp, repo_root, repo_name, branch, None) {
                 Ok(c) => result.symbols_new += c,
                 Err(e) => eprintln!("Warning: {}: {}", fp, e),
             }
@@ -112,7 +112,7 @@ fn _smart_index(
         return Ok(result);
     }
 
-    full_scan(conn, repo_root, repo_name, branch, &mut result, Some(embedder.as_ref()))?;
+    full_scan(conn, repo_root, repo_name, branch, &mut result, None)?;
     update_state(
         conn, repo_name, branch, head_commit, None, result.files_changed,
     )?;
@@ -186,35 +186,8 @@ fn index_one(
             rusqlite::params![db_id, repo_name, branch],
         )?;
 
-        // Inline vectorization: embed immediately, skip if already in vec0
-        if let Some(embedder) = embedder {
-            let existing: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM pragma_table_info(?)",
-                    rusqlite::params![&sym_table],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            if existing >= 0 {
-                let text = format!("{} {} {}", sym.kind, sym.name, sym.definition);
-                match embedder.embed(&text) {
-                    Ok(emb) if !emb.is_empty() => {
-                        let json = format!(
-                            "[{}]",
-                            emb.iter()
-                                .map(|v| v.to_string())
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        );
-                        let _ = conn.execute(
-                            &format!("INSERT OR IGNORE INTO {sym_table} (rowid, embedding) VALUES (?1, ?2)"),
-                            rusqlite::params![db_id, json],
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        }
+        // Inline vectorization disabled — defer to index_vectors batch processing
+        let _ = embedder;  // silence unused warning
     }
     // Resolve target IDs: same-file by name first, then DB by name
     for (src_idx, _tgt_idx, edge) in &edges_data {

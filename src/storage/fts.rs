@@ -10,6 +10,8 @@ pub struct SearchHit {
     pub name: String,
     pub file_path: String,
     pub line_start: i64,
+    pub kind: String,     // symbol kind (function/class/enum_value...), empty for docs
+    pub snippet: String,  // empty (definition removed in v0.6.0)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,14 +20,15 @@ pub enum HitType {
     Doc,
 }
 
-/// Fill FTS5 symbol index from symbols table (filtered by repo)
+/// Fill FTS5 symbol index from symbols table (filtered by repo).
+/// Uses 4-column FTS5: name, file_path, signature, kind.
 pub fn fill_symbols_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
     // Clear old data first (FTS5 doesn't support WHERE DELETE on content tables)
     conn.execute("DELETE FROM fts5_sym", [])?;
 
     let count = conn.execute(
-        "INSERT INTO fts5_sym(name, file_path, signature)
-         SELECT name, file_path, COALESCE(signature, '') FROM symbols WHERE repo=?1 ORDER BY rowid",
+        "INSERT INTO fts5_sym(name, file_path, signature, kind)
+         SELECT name, file_path, COALESCE(signature, ''), kind FROM symbols WHERE repo=?1 ORDER BY rowid",
         rusqlite::params![repo],
     )?;
     Ok(count)
@@ -49,44 +52,70 @@ pub fn clear_fts(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// FTS5 BM25 keyword search on symbols only (used by hybrid search)
+/// FTS5 BM25 keyword search on symbols only (used by hybrid search).
+/// If kind_filter is Some, only returns symbols of that kind.
 pub fn search_symbols(
     conn: &Connection,
     query: &str,
     repo: &str,
     branch: &str,
     limit: usize,
+    kind_filter: Option<&str>,
 ) -> anyhow::Result<Vec<SearchHit>> {
-    // Escape FTS5 special characters to avoid syntax errors
     let safe_query = escape_fts5(query);
+    eprintln!("[DEBUG search_symbols] query={:?} safe={:?} repo={:?} branch={:?} limit={} kind={:?}", query, safe_query, repo, branch, limit, kind_filter);
 
-    let sql = "SELECT fts5_sym.rowid, bm25(fts5_sym) as score, s.name, s.file_path, s.line_start
-               FROM fts5_sym
-               JOIN symbols s ON s.rowid = fts5_sym.rowid
-               JOIN branches b ON b.symbol_id = s.id
-               WHERE fts5_sym MATCH ?1 AND s.repo=?2 AND b.branch_name=?3
-               ORDER BY score
-               LIMIT ?4";
+    let mut sql = String::from(
+        "SELECT fts5_sym.rowid, bm25(fts5_sym) as score, s.name, s.file_path, s.line_start, s.kind
+         FROM fts5_sym
+         JOIN symbols s ON s.rowid = fts5_sym.rowid
+         JOIN branches b ON b.symbol_id = s.id
+         WHERE fts5_sym MATCH ?1 AND s.repo=?2 AND b.branch_name=?3",
+    );
 
-    let mut stmt = conn.prepare(sql)?;
-    let hits = stmt
-        .query_map(
-            rusqlite::params![safe_query, repo, branch, limit as i64],
-            |r| {
-                Ok(SearchHit {
-                    rowid: r.get(0)?,
-                    score: r.get(1)?,
-                    hit_type: HitType::Code,
-                    name: r.get(2)?,
-                    file_path: r.get(3)?,
-                    line_start: r.get(4)?,
-                })
-            },
+    if kind_filter.is_some() {
+        sql.push_str(" AND s.kind=?5");
+    }
+
+    sql.push_str(" ORDER BY score LIMIT ?4");
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let hits: Vec<SearchHit> = if let Some(kind) = kind_filter {
+        stmt.query_map(
+            rusqlite::params![safe_query, repo, branch, limit as i64, kind],
+            |r| map_symbol_hit(r),
         )?
         .filter_map(|r| r.ok())
-        .collect();
+        .collect()
+    } else {
+        stmt.query_map(
+            rusqlite::params![safe_query, repo, branch, limit as i64],
+            |r| map_symbol_hit(r),
+        )?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    eprintln!("[DEBUG search_symbols] got {} hits: {:?}", 
+        hits.len(), 
+        hits.iter().map(|h| (h.name.as_str(), h.score, h.file_path.as_str())).collect::<Vec<_>>());
 
     Ok(hits)
+}
+
+fn map_symbol_hit(r: &rusqlite::Row) -> rusqlite::Result<SearchHit> {
+    let snippet: String = String::new();
+    Ok(SearchHit {
+        rowid: r.get(0)?,
+        score: r.get(1)?,
+        hit_type: HitType::Code,
+        name: r.get(2)?,
+        file_path: r.get(3)?,
+        line_start: r.get(4)?,
+        kind: r.get(5)?,
+        snippet,
+    })
 }
 
 /// FTS5 BM25 search on documents only
@@ -98,7 +127,7 @@ pub fn search_docs(
 ) -> anyhow::Result<Vec<SearchHit>> {
     let safe_query = escape_fts5(query);
 
-    let sql = "SELECT fts5_doc.rowid, bm25(fts5_doc) as score, d.title, d.file_path, 0
+    let sql = "SELECT fts5_doc.rowid, bm25(fts5_doc) as score, d.title, d.file_path, 0, '', COALESCE(d.content, '')
                FROM fts5_doc
                JOIN doc_nodes d ON d.rowid = fts5_doc.rowid
                WHERE fts5_doc MATCH ?1 AND d.repo=?2
@@ -110,6 +139,8 @@ pub fn search_docs(
         .query_map(
             rusqlite::params![safe_query, repo, limit as i64],
             |r| {
+                let content: String = r.get(6)?;
+                let snippet: String = content.chars().take(200).collect();
                 Ok(SearchHit {
                     rowid: r.get(0)?,
                     score: r.get(1)?,
@@ -117,6 +148,8 @@ pub fn search_docs(
                     name: r.get(2)?,
                     file_path: r.get(3)?,
                     line_start: r.get(4)?,
+                    kind: String::new(),
+                    snippet,
                 })
             },
         )?
@@ -126,24 +159,18 @@ pub fn search_docs(
     Ok(hits)
 }
 
-/// Escape FTS5 special characters to prevent query syntax errors
+/// Escape FTS5 special characters to prevent query syntax errors.
+/// Multi-word queries are joined with AND (each term must appear in the row).
 fn escape_fts5(query: &str) -> String {
-    // FTS5 special chars: ^ * " - ( ) : AND OR NOT NEAR
-    // Strategy: wrap each term in double quotes for literal matching,
-    // but also allow multi-word queries by inserting AND between terms
     let terms: Vec<&str> = query.split_whitespace().collect();
     if terms.len() == 1 {
-        // Single term: use NEAR(0) trick for substring matching, or just quote it
-        // For substring behavior similar to LIKE %term%, use prefix + quote
         let term = terms[0];
-        // Quote the term for literal matching, and prepend * for prefix-like matching
         if term.chars().all(|c| c.is_alphanumeric() || c == '_') {
             format!("\"{}\" OR {}*", term, term)
         } else {
             format!("\"{}\"", term)
         }
     } else {
-        // Multiple terms: AND them
         let quoted: Vec<String> = terms
             .iter()
             .map(|t| format!("\"{}\"", t))
@@ -169,8 +196,8 @@ mod tests {
 
         // Insert test symbols
         conn.execute(
-            "INSERT INTO symbols (repo, name, kind, definition, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'AuthService', 'class', 'class AuthService {}', 'h1', 'src/auth.cpp', 10, 15, 'class AuthService')",
+            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
+             VALUES ('test', 'AuthService', 'class', 'h1', 'src/auth.cpp', 10, 15, 'class AuthService')",
             [],
         ).unwrap();
         let sym_id = conn.last_insert_rowid();
@@ -180,8 +207,8 @@ mod tests {
         ).unwrap();
 
         conn.execute(
-            "INSERT INTO symbols (repo, name, kind, definition, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'LoginManager', 'class', 'class LoginManager {}', 'h2', 'src/auth.cpp', 20, 25, 'class LoginManager')",
+            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
+             VALUES ('test', 'LoginManager', 'class', 'h2', 'src/auth.cpp', 20, 25, 'class LoginManager')",
             [],
         ).unwrap();
         let sym_id2 = conn.last_insert_rowid();
@@ -195,13 +222,49 @@ mod tests {
         assert_eq!(count, 2);
 
         // Search exact
-        let hits = search_symbols(&conn, "AuthService", "test", "main", 10).unwrap();
+        let hits = search_symbols(&conn, "AuthService", "test", "main", 10, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "AuthService");
+        assert_eq!(hits[0].kind, "class");
+        assert!(hits[0].kind == "class", "should have kind=class, got: {}", hits[0].kind);
 
         // Search partial
-        let hits = search_symbols(&conn, "Auth", "test", "main", 10).unwrap();
+        let hits = search_symbols(&conn, "Auth", "test", "main", 10, None).unwrap();
         assert!(hits.iter().any(|h| h.name == "AuthService"));
+    }
+
+    #[test]
+    fn test_search_kind_filter() {
+        let conn = mem_db();
+
+        conn.execute(
+            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
+             VALUES ('test', 'my_func', 'function', 'h1', 'src/a.cpp', 1, 2, 'void my_func()')",
+            [],
+        ).unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute("INSERT INTO branches (symbol_id, repo, branch_name) VALUES (?1, 'test', 'main')", rusqlite::params![sid]).unwrap();
+
+        conn.execute(
+            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
+             VALUES ('test', 'MyEnum::A', 'enum_value', 'h2', 'src/b.cpp', 3, 3, 'MyEnum::A')",
+            [],
+        ).unwrap();
+        let sid2 = conn.last_insert_rowid();
+        conn.execute("INSERT INTO branches (symbol_id, repo, branch_name) VALUES (?1, 'test', 'main')", rusqlite::params![sid2]).unwrap();
+
+        fill_symbols_fts(&conn, "test").unwrap();
+
+        // Without filter — both appear
+        let hits = search_symbols(&conn, "my", "test", "main", 10, None).unwrap();
+        assert!(hits.iter().any(|h| h.kind == "function"));
+        assert!(hits.iter().any(|h| h.kind == "enum_value"));
+
+        // With function filter — only function
+        let hits = search_symbols(&conn, "my", "test", "main", 10, Some("function")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, "function");
+        assert_eq!(hits[0].name, "my_func");
     }
 
     #[test]
@@ -234,8 +297,8 @@ mod tests {
         let conn = mem_db();
 
         conn.execute(
-            "INSERT INTO symbols (repo, name, kind, definition, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'memory_alloc', 'function', 'void* memory_alloc(size_t n)', 'h3', 'src/mem.cpp', 1, 3, 'void* memory_alloc(size_t n)')",
+            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
+             VALUES ('test', 'memory_alloc', 'function', 'h3', 'src/mem.cpp', 1, 3, 'void* memory_alloc(size_t n)')",
             [],
         ).unwrap();
         let sym_id = conn.last_insert_rowid();
@@ -245,8 +308,8 @@ mod tests {
         ).unwrap();
 
         conn.execute(
-            "INSERT INTO symbols (repo, name, kind, definition, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'buffer_free', 'function', 'void buffer_free()', 'h4', 'src/mem.cpp', 5, 6, 'void buffer_free()')",
+            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
+             VALUES ('test', 'buffer_free', 'function', 'h4', 'src/mem.cpp', 5, 6, 'void buffer_free()')",
             [],
         ).unwrap();
         let sym_id2 = conn.last_insert_rowid();
@@ -258,7 +321,7 @@ mod tests {
         fill_symbols_fts(&conn, "test").unwrap();
 
         // Search "memory alloc" should match memory_alloc
-        let hits = search_symbols(&conn, "memory alloc", "test", "main", 10).unwrap();
+        let hits = search_symbols(&conn, "memory alloc", "test", "main", 10, None).unwrap();
         assert!(hits.iter().any(|h| h.name == "memory_alloc"));
     }
 }

@@ -1,4 +1,4 @@
-// Hybrid search — RRF fusion of FTS5 BM25 + vec0 vector ANN
+// Hybrid search — weighted fusion of FTS5 BM25 + vec0 vector ANN
 use crate::storage;
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -6,56 +6,78 @@ use std::collections::HashMap;
 /// A fused search result from hybrid (BM25 + vector) search
 #[derive(Debug, Clone)]
 pub struct FusedResult {
-    pub score: f64, // RRF fusion score
+    pub score: f64, // weighted fusion score
     pub name: String,
     pub hit_type: String, // "code" or "doc"
     pub file_path: String,
     pub line_start: i64,
+    pub kind: String,     // symbol kind (function/class/enum_value etc.), empty for docs
+    pub snippet: String,  // first 200 chars of definition, empty for docs without content
+    pub doc_id: i64,      // doc_nodes rowid (= doc_id for codeloom_get_doc), 0 for code results
 }
 
-/// Reciprocal Rank Fusion: merge BM25 and vector result lists.
-/// k=60 is the standard value (used by Elasticsearch 8.x).
-pub fn rrf_fuse(
-    bm25: &[storage::fts::SearchHit],
-    vec_results: &[(f64, String, String, String, i64)], // (similarity, name, hit_type, file_path, line_start)
-    k: f64,
+/// Weighted fusion: normalize BM25 scores to (0,1] then combine with vector cosine similarity.
+/// BM25 scores (from FTS5 bm25()) are ≤0, with 0 = best match. We use 1/(1+|score|).
+/// Vector distances are converted to cosine similarity: 1/(1+distance), already in (0,1].
+/// Final: w_bm25 * norm_bm25 + w_vec * cosine_sim
+pub fn weighted_fuse(
+    bm25_hits: &[storage::fts::SearchHit],
+    vec_results: &[(f64, String, String, String, i64, String, i64)],
+    w_bm25: f64,
+    w_vec: f64,
 ) -> Vec<FusedResult> {
-    let mut scores: HashMap<String, (f64, String, String, i64, String)> = HashMap::new();
+    // Key: (name, file_path) — prevents same-name sections from accumulating and
+    // distinguishes same-named symbols from different files
+    let mut entries: HashMap<(String, String), FusedResult> = HashMap::new();
 
-    // BM25 side
-    for (rank, hit) in bm25.iter().enumerate() {
-        let key = hit.name.clone();
-        let score = 1.0 / (k + (rank as f64) + 1.0);
-        let entry =
-            scores
-                .entry(key)
-                .or_insert((0.0, hit.name.clone(), hit_type_to_str(&hit.hit_type), hit.line_start, hit.file_path.clone()));
-        entry.0 += score;
+    // BM25 side — normalize and insert
+    for hit in bm25_hits {
+        let key = (hit.name.clone(), hit.file_path.clone());
+        let norm_bm25 = 1.0 / (1.0 + hit.score.abs());
+        let score = w_bm25 * norm_bm25;
+
+        let is_doc = matches!(hit.hit_type, storage::fts::HitType::Doc);
+        let entry = entries.entry(key.clone()).or_insert(FusedResult {
+            score: 0.0,
+            name: hit.name.clone(),
+            hit_type: if is_doc { "doc".into() } else { "code".into() },
+            file_path: hit.file_path.clone(),
+            line_start: hit.line_start,
+            kind: hit.kind.clone(),
+            snippet: hit.snippet.clone(),
+            doc_id: if is_doc { hit.rowid } else { 0 },
+        });
+        // Take max — same name+file_path from multiple BM25 rows (multi-section doc) gets best score
+        entry.score = entry.score.max(score);
     }
 
-    // Vector side
-    for (rank, (_, name, hit_type, file_path, line_start)) in vec_results.iter().enumerate() {
-        let key = name.clone();
-        let score = 1.0 / (k + (rank as f64) + 1.0);
-        if let Some(entry) = scores.get_mut(&key) {
-            entry.0 += score;
+    // Vector side — normalize similarity and merge
+    for (sim, name, hit_type, file_path, line_start, snippet, doc_id) in vec_results {
+        let key = (name.clone(), file_path.clone());
+        let score = w_vec * sim;
+
+        if let Some(entry) = entries.get_mut(&key) {
+            entry.score = entry.score.max(score);
+            // If vec side has a real doc_id (non-zero), carry it forward
+            if *doc_id != 0 {
+                entry.doc_id = *doc_id;
+            }
         } else {
-            scores.insert(key, (score, name.clone(), hit_type.clone(), *line_start, file_path.clone()));
+            entries.insert(key, FusedResult {
+                score,
+                name: name.clone(),
+                hit_type: hit_type.clone(),
+                file_path: file_path.clone(),
+                line_start: *line_start,
+                kind: String::new(),
+                snippet: snippet.clone(),
+                doc_id: *doc_id,
+            });
         }
     }
 
-    // Sort by RRF score descending
-    let mut fused: Vec<FusedResult> = scores
-        .into_values()
-        .map(|(s, name, ht, ls, fp)| FusedResult {
-            score: s,
-            name,
-            hit_type: ht,
-            file_path: fp,
-            line_start: ls,
-        })
-        .collect();
-
+    // Sort by score descending
+    let mut fused: Vec<FusedResult> = entries.into_values().collect();
     fused.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -64,52 +86,58 @@ pub fn rrf_fuse(
     fused
 }
 
-fn hit_type_to_str(ht: &storage::fts::HitType) -> String {
-    match ht {
-        storage::fts::HitType::Code => "code".to_string(),
-        storage::fts::HitType::Doc => "doc".to_string(),
-    }
-}
-
-/// Hybrid search: runs FTS5 BM25 + vec0 ANN in parallel, RRF fuses results.
+/// Hybrid search: runs FTS5 BM25 + vec0 ANN in parallel, weighted fuses results.
 pub fn hybrid_search(
     conn: &Connection,
     query: &str,
     repo: &str,
     branch: &str,
     limit: usize,
+    kind_filter: Option<&str>,
 ) -> anyhow::Result<Vec<FusedResult>> {
     let fetch_limit = (limit * 2).max(10);
 
     // Run BM25 keyword search (FTS5)
-    let bm25_symbols = storage::fts::search_symbols(conn, query, repo, branch, fetch_limit)?;
+    let bm25_symbols = storage::fts::search_symbols(conn, query, repo, branch, fetch_limit, kind_filter)?;
     let bm25_docs = storage::fts::search_docs(conn, query, repo, fetch_limit)?;
 
     // Run vec0 vector search
     let vec_results = run_vector_search(conn, query, repo, branch, fetch_limit);
+    eprintln!("[DEBUG hybrid_search] bm25_sym={} bm25_doc={} vec={}", 
+        bm25_symbols.len(), bm25_docs.len(), vec_results.len());
 
     // Combine bm25 symbols + docs
     let mut all_bm25: Vec<storage::fts::SearchHit> = Vec::new();
     all_bm25.extend(bm25_symbols);
     all_bm25.extend(bm25_docs);
 
-    // RRF fuse
-    let mut fused = rrf_fuse(&all_bm25, &vec_results, 60.0);
+    // Weighted fuse (equal weights, fall back if one side is empty)
+    let has_bm25 = !all_bm25.is_empty();
+    let has_vec = !vec_results.is_empty();
+    let (w_bm25, w_vec) = match (has_bm25, has_vec) {
+        (true, true) => (0.5, 0.5),
+        (true, false) => (1.0, 0.0),
+        (false, true) => (0.0, 1.0),
+        (false, false) => (0.0, 0.0),
+    };
+
+    let mut fused = weighted_fuse(&all_bm25, &vec_results, w_bm25, w_vec);
     fused.truncate(limit);
     Ok(fused)
 }
 
-/// Run vec0 vector search, same as old semantic_search but returns structured results.
+/// Run vec0 vector search, returns (similarity, name, hit_type, file_path, line_start, snippet, doc_id).
+/// doc_id is doc_nodes.rowid for doc results, 0 for code results.
 fn run_vector_search(
     conn: &Connection,
     query: &str,
     repo: &str,
     branch: &str,
     limit: usize,
-) -> Vec<(f64, String, String, String, i64)> {
+) -> Vec<(f64, String, String, String, i64, String, i64)> {
     let mut results = Vec::new();
 
-    let embedder = crate::embedding::get_embedder();
+    let Ok(embedder) = crate::embedding::get_embedder() else { return results; };
     let query_emb = match embedder.embed(query) {
         Ok(e) => e,
         Err(_) => return results,
@@ -140,7 +168,7 @@ fn run_vector_search(
                 },
             ) {
                 let sim = 1.0 / (1.0 + dist as f64);
-                results.push((sim, name, "code".into(), file_path, line_start));
+                results.push((sim, name, "code".into(), file_path, line_start, String::new(), 0));
             }
         }
     }
@@ -148,13 +176,14 @@ fn run_vector_search(
     // Doc vector search
     if let Ok(rows) = crate::storage::vector::knn_search(conn, &doc_table, &query_emb, limit) {
         for (rowid, dist) in rows {
-            if let Ok((title, file_path)) = conn.query_row(
-                "SELECT title, file_path FROM doc_nodes WHERE rowid=?1",
+            if let Ok((title, file_path, content)) = conn.query_row(
+                "SELECT title, file_path, COALESCE(content, '') FROM doc_nodes WHERE rowid=?1",
                 rusqlite::params![rowid],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
             ) {
                 let sim = 1.0 / (1.0 + dist as f64);
-                results.push((sim, format!("📄 {}", title), "doc".into(), file_path, 0));
+                let snippet: String = content.chars().take(200).collect();
+                results.push((sim, title, "doc".into(), file_path, 0, snippet, rowid));
             }
         }
     }
@@ -167,83 +196,103 @@ mod tests {
     use super::*;
     use crate::storage;
 
+    fn make_bm25_hit(name: &str, file_path: &str, score: f64, hit_type: storage::fts::HitType, rowid: i64) -> storage::fts::SearchHit {
+        storage::fts::SearchHit {
+            rowid,
+            score,
+            hit_type,
+            name: name.into(),
+            file_path: file_path.into(),
+            line_start: 1,
+            kind: String::new(),
+            snippet: String::new(),
+        }
+    }
+
     #[test]
-    fn test_rrf_fusion_both_sides() {
-        // Create some BM25 hits
+    fn test_weighted_fuse_both_sides() {
         let bm25 = vec![
-            storage::fts::SearchHit {
-                rowid: 1,
-                score: 2.5,
-                hit_type: storage::fts::HitType::Code,
-                name: "AuthService".into(),
-                file_path: "src/auth.cpp".into(),
-                line_start: 10,
-            },
-            storage::fts::SearchHit {
-                rowid: 2,
-                score: 1.8,
-                hit_type: storage::fts::HitType::Code,
-                name: "LoginManager".into(),
-                file_path: "src/auth.cpp".into(),
-                line_start: 20,
-            },
+            make_bm25_hit("AuthService", "src/auth.cpp", -2.5, storage::fts::HitType::Code, 0),
+            make_bm25_hit("LoginManager", "src/auth.cpp", -1.8, storage::fts::HitType::Code, 0),
         ];
 
-        // Create vec results: AuthService also appears, plus a vec-only hit
         let vec_results = vec![
-            (0.91, "AuthService".into(), "code".into(), "src/auth.cpp".into(), 10),
-            (0.85, "AuthenticateUser".into(), "code".into(), "src/auth.cpp".into(), 30),
+            (0.91, "AuthService".into(), "code".into(), "src/auth.cpp".into(), 10, String::new(), 0),
+            (0.85, "AuthenticateUser".into(), "code".into(), "src/auth.cpp".into(), 30, String::new(), 0),
         ];
 
-        let fused = rrf_fuse(&bm25, &vec_results, 60.0);
-        // AuthService should be top (appears in both lists)
+        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
+        // AuthService should be top (appears in both lists, gets max of BM25 and vec)
         assert_eq!(fused[0].name, "AuthService");
-        // Others follow
         assert!(fused.len() >= 2);
     }
 
     #[test]
-    fn test_rrf_fusion_one_side_empty() {
-        let bm25 = vec![storage::fts::SearchHit {
-            rowid: 1,
-            score: 2.5,
-            hit_type: storage::fts::HitType::Code,
-            name: "OnlyBM25".into(),
-            file_path: "src/test.cpp".into(),
-            line_start: 1,
-        }];
+    fn test_weighted_fuse_one_side_empty() {
+        let bm25 = vec![make_bm25_hit("OnlyBM25", "src/test.cpp", -2.5, storage::fts::HitType::Code, 0)];
+        let vec_results: Vec<(f64, String, String, String, i64, String, i64)> = vec![];
 
-        let vec_results: Vec<(f64, String, String, String, i64)> = vec![];
-
-        let fused = rrf_fuse(&bm25, &vec_results, 60.0);
+        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
         assert_eq!(fused.len(), 1);
         assert_eq!(fused[0].name, "OnlyBM25");
     }
 
     #[test]
-    fn test_rrf_sorting() {
-        // Doc that appears in both lists should rank higher than ones only in one
+    fn test_weighted_fuse_sorting() {
+        // "BothHave" appears in both lists → should rank higher than single-list entries
         let bm25 = vec![
-            storage::fts::SearchHit {
-                rowid: 1, score: 0.0,
-                hit_type: storage::fts::HitType::Code,
-                name: "BothHave".into(), file_path: "a.cpp".into(), line_start: 1,
-            },
-            storage::fts::SearchHit {
-                rowid: 2, score: 0.0,
-                hit_type: storage::fts::HitType::Code,
-                name: "OnlyBM25".into(), file_path: "b.cpp".into(), line_start: 2,
-            },
+            make_bm25_hit("BothHave", "a.cpp", -2.5, storage::fts::HitType::Code, 0),
+            make_bm25_hit("OnlyBM25", "b.cpp", -1.8, storage::fts::HitType::Code, 0),
         ];
 
         let vec_results = vec![
-            (0.9, "BothHave".into(), "code".into(), "a.cpp".into(), 1),
-            (0.8, "OnlyVec".into(), "code".into(), "c.cpp".into(), 3),
+            (0.9, "BothHave".into(), "code".into(), "a.cpp".into(), 1, String::new(), 0),
+            (0.8, "OnlyVec".into(), "code".into(), "c.cpp".into(), 3, String::new(), 0),
         ];
 
-        let fused = rrf_fuse(&bm25, &vec_results, 60.0);
+        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
         // "BothHave" (in both lists) should rank #1
         assert_eq!(fused[0].name, "BothHave");
         assert!(fused[0].score > fused[1].score);
+    }
+
+    #[test]
+    fn test_no_duplicate_docs() {
+        // Same name + file_path should produce only ONE result (take max score)
+        let bm25 = vec![
+            make_bm25_hit("impl", "./doc/impl.md", -3.0, storage::fts::HitType::Doc, 42),
+            make_bm25_hit("impl", "./doc/impl.md", -5.0, storage::fts::HitType::Doc, 42),
+        ];
+
+        let vec_results = vec![
+            (0.85, "impl".into(), "doc".into(), "./doc/impl.md".into(), 0, String::new(), 42),
+        ];
+
+        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
+        // Should have exactly 1 result for impl.md, not 3 separate ones
+        assert_eq!(fused.len(), 1, "Expected 1 result for impl.md, got {}", fused.len());
+        assert_eq!(fused[0].name, "impl");
+        assert_eq!(fused[0].doc_id, 42);
+    }
+
+    #[test]
+    fn test_exact_match_ranks_first() {
+        // Exact function name match should score highest
+        let bm25 = vec![
+            make_bm25_hit("DoCompactionWork", "db/db_impl.cc", -0.5, storage::fts::HitType::Code, 0),
+            make_bm25_hit("CompactPointer", "db/version_edit.cc", -8.0, storage::fts::HitType::Code, 0),
+            make_bm25_hit("PrevLogNumber", "db/version_edit.cc", -10.0, storage::fts::HitType::Code, 0),
+        ];
+
+        let vec_results = vec![
+            (0.92, "DoCompactionWork".into(), "code".into(), "db/db_impl.cc".into(), 898, String::new(), 0),
+            (0.45, "CompactPointer".into(), "code".into(), "db/version_edit.cc".into(), 19, String::new(), 0),
+        ];
+
+        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
+        assert_eq!(fused[0].name, "DoCompactionWork");
+        // Score gap should be significant (exact vs fuzzy)
+        assert!(fused[0].score > fused[1].score + 0.1,
+            "Expected significant gap, got: #1={} #2={}", fused[0].score, fused[1].score);
     }
 }

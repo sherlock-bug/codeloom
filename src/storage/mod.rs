@@ -156,7 +156,7 @@ mod tests {
             repo: "test".into(),
             name: "my_func".into(),
             kind: "function".into(),
-            definition: "void my_func() {}".into(),
+
             content_hash: dedup::hash_content("void my_func() {}"),
             file_path: "src/main.cpp".into(),
             line_start: 10,
@@ -183,7 +183,7 @@ mod tests {
             repo: "test".into(),
             name: "dup".into(),
             kind: "function".into(),
-            definition: "void dup() {}".into(),
+
             content_hash: "abc".into(),
             file_path: "x.cpp".into(),
             line_start: 1,

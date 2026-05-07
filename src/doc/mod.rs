@@ -23,7 +23,7 @@ pub fn parse_document(ext: &str, path: &str, bytes: &[u8]) -> anyhow::Result<Vec
         "xlsx" | "xls" | "xlsm" => xlsx::parse_xlsx(bytes),
         "docx" => docx::parse_docx(bytes),
         "pdf" => pdf::parse_pdf(bytes),
-        "xml" | "html" | "htm" => {
+        "xml" => {
             let content = String::from_utf8_lossy(bytes).to_string();
             xml::parse_xml(&content)
         }

@@ -1,12 +1,35 @@
-use serde::{Serialize,Deserialize};
+use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 use std::collections::HashMap;
-#[derive(Debug,Serialize,Deserialize,Default)]
-pub struct Config { pub projects: HashMap<String, ProjectConfig> }
-#[derive(Debug,Serialize,Deserialize)]
-pub struct ProjectConfig { pub repos: HashMap<String, RepoConfig>, #[serde(default)] pub base_db: Option<String>, #[serde(default="dft")] pub similarity_threshold: f64 }
-#[derive(Debug,Serialize,Deserialize)]
-pub struct RepoConfig { pub root: String, #[serde(default)] pub languages: Vec<String> }
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct Config {
+    #[serde(default)] pub projects: HashMap<String, ProjectConfig>,
+    #[serde(default)] pub embedding: Option<EmbeddingConfig>,
+}
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EmbeddingConfig {
+    pub api_base: String,
+    #[serde(default)] pub api_key: Option<String>,
+    pub model: String,
+    #[serde(default)] pub dimension: Option<usize>,
+    #[serde(default = "default_batch")] pub batch_size: usize,
+    #[serde(default = "default_text_limit")] pub text_limit: usize,
+    #[serde(default = "default_max_chars")] pub max_chars_per_batch: usize,
+}
+fn default_batch() -> usize { 64 }
+fn default_text_limit() -> usize { 400 }
+fn default_max_chars() -> usize { 90000 }
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    pub repos: HashMap<String, RepoConfig>,
+    #[serde(default)] pub base_db: Option<String>,
+    #[serde(default = "dft")] pub similarity_threshold: f64,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RepoConfig {
+    pub root: String,
+    #[serde(default)] pub languages: Vec<String>,
+}
 fn dft() -> f64 { 0.75 }
 impl Config {
     pub fn load() -> anyhow::Result<Self> {
@@ -24,23 +47,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_config_default() {
-        let cfg = Config::default();
-        assert!(cfg.projects.is_empty());
-    }
-
-    #[test]
-    fn test_data_dir_returns_path() {
-        let dir = Config::data_dir();
-        assert!(dir.is_ok());
-        let d = dir.unwrap();
-        assert!(d.to_string_lossy().contains(".codeloom"));
-    }
-
-    #[test]
-    fn test_dft_threshold() {
-        assert_eq!(dft(), 0.75);
-    }
+    #[test] fn test_config_default() { assert!(Config::default().projects.is_empty()); }
+    #[test] fn test_data_dir_returns_path() { assert!(Config::data_dir().unwrap().to_string_lossy().contains(".codeloom")); }
+    #[test] fn test_dft_threshold() { assert_eq!(dft(), 0.75); }
 }

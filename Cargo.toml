@@ -54,11 +54,8 @@ clap_complete = "4.6.3"
 # 编码检测
 encoding_rs = "0.8"
 
-# Embedding — candle (纯 Rust ML 框架，零 C 依赖)
-candle-core = "0.10"
-candle-nn = "0.10"
-candle-transformers = "0.10"
-tokenizers = "0.21"
+# HTTP 客户端（API embedding，rustls 纯 Rust TLS，零系统依赖）
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 calamine = "0.34.0"
 zip = "8.6.0"
 quick-xml = "0.39.3"

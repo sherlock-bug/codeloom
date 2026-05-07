@@ -103,8 +103,8 @@ fn extract_func(
     symbols.push(Symbol {
         id: None, repo: repo.into(), name: full.clone(),
         kind: if parent_class.is_some() {"method"} else {"function"}.into(),
-        definition: def.clone(), content_hash: dedup::hash_content(&def),
-        file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
+        content_hash: dedup::hash_content(&full),
+        file_path: file.path.clone(), line_start: node.start_position().row as u32+1, 
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: Some(full), parent_class: parent_class.map(|s| s.into()), namespace: None,
     });
@@ -175,7 +175,7 @@ fn extract_class(
     if !comment.is_empty() { def = format!("{}\n{}", comment, def); }
     symbols.push(Symbol {
         id: None, repo: repo.into(), name: name.into(), kind: kind.into(),
-        definition: def.clone(), content_hash: dedup::hash_content(&def),
+        content_hash: dedup::hash_content(&name),
         file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: Some(name.into()), parent_class: None, namespace: None,
@@ -211,7 +211,7 @@ fn extract_enum(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols:
     if !comment.is_empty() { def = format!("{}\n{}", comment, def); }
     symbols.push(Symbol {
         id: None, repo: repo.into(), name: name.into(), kind: "enum".into(),
-        definition: def.clone(), content_hash: dedup::hash_content(&def),
+        content_hash: dedup::hash_content(&name),
         file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: None, parent_class: None, namespace: None,
@@ -229,7 +229,7 @@ fn extract_enum(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols:
                             let full = format!("{}::{}", name, vname);
                             symbols.push(Symbol {
                                 id: None, repo: repo.into(), name: full.clone(), kind: "enum_value".into(),
-                                definition: String::new(), content_hash: String::new(),
+                                content_hash: String::new(),
                                 file_path: file.path.clone(),
                                 line_start: enumerator.start_position().row as u32+1,
                                 line_end: enumerator.end_position().row as u32+1,
@@ -272,7 +272,7 @@ fn extract_field(
     symbols.push(Symbol {
         id: None, repo: repo.into(), name: full_name.clone(),
         kind: "field".into(),
-        definition: def.clone(), content_hash: dedup::hash_content(&def),
+        content_hash: dedup::hash_content(&def),
         file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: Some(format!("{}: {}", name, type_name)),
@@ -309,10 +309,10 @@ fn extract_decl(source: &str, node: &Node, file: &FileInfo, repo: &str, parent_c
             symbols.push(Symbol {
                 id: None, repo: repo.into(), name: full,
                 kind: kind.into(),
-                definition: def.clone(), content_hash: dedup::hash_content(&def),
-                file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
-                line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
-                signature: None, parent_class: parent_class.map(|s| s.into()), namespace: None,
+        content_hash: dedup::hash_content(&name),
+        file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
+        line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
+        signature: None,parent_class: parent_class.map(|s| s.into()), namespace: None,
             });
         }
     }

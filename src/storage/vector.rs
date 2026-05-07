@@ -13,24 +13,24 @@ pub fn try_load(conn: &Connection) -> bool {
 }
 
 /// Create vec0 virtual tables for this repo (symbol vectors + doc vectors)
-pub fn create_tables(conn: &Connection, repo: &str) -> anyhow::Result<()> {
+pub fn create_tables(conn: &Connection, repo: &str, dim: usize) -> anyhow::Result<()> {
     let sym_table = format!("symbol_vec_{}", repo.replace('-', "_"));
     let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
 
     conn.execute_batch(&format!(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS {sym_table} USING vec0(embedding FLOAT[512]);
-         CREATE VIRTUAL TABLE IF NOT EXISTS {doc_table} USING vec0(embedding FLOAT[512]);"
+        "CREATE VIRTUAL TABLE IF NOT EXISTS {sym_table} USING vec0(embedding FLOAT[{dim}]);\n\
+         CREATE VIRTUAL TABLE IF NOT EXISTS {doc_table} USING vec0(embedding FLOAT[{dim}]);"
     ))?;
     Ok(())
 }
 
 /// Clear all vectors for a repo (before re-indexing to avoid vec0 UNIQUE conflicts)
-pub fn clear_vectors(conn: &Connection, repo: &str) -> anyhow::Result<()> {
+pub fn clear_vectors(conn: &Connection, repo: &str, dim: usize) -> anyhow::Result<()> {
     let sym_table = format!("symbol_vec_{}", repo.replace('-', "_"));
     let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
     // vec0 virtual tables don't support DELETE with WHERE, so drop and recreate
     let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS {sym_table}; DROP TABLE IF EXISTS {doc_table};"));
-    create_tables(conn, repo)
+    create_tables(conn, repo, dim)
 }
 
 /// Bulk insert vectors into a vec0 table. Vectors are JSON arrays.

@@ -4,7 +4,7 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS symbols (
             id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL DEFAULT 'default',
-            name TEXT NOT NULL, kind TEXT NOT NULL, definition TEXT NOT NULL,
+            name TEXT NOT NULL, kind TEXT NOT NULL,
             content_hash TEXT NOT NULL, file_path TEXT NOT NULL,
             line_start INTEGER NOT NULL DEFAULT 0, line_end INTEGER NOT NULL DEFAULT 0,
             language TEXT, signature TEXT, parent_class TEXT, namespace TEXT,
@@ -51,11 +51,13 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
             UNIQUE(repo, file_path, section_path)
         );
 
-        CREATE VIRTUAL TABLE IF NOT EXISTS fts5_sym USING fts5(name, file_path, signature);
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts5_sym USING fts5(name, file_path, signature, definition, kind);
         CREATE VIRTUAL TABLE IF NOT EXISTS fts5_doc USING fts5(title, section_path, content);
     ")?;
     // v0.5.0 migrations: multi-format doc + image support
     migrate_v5(conn)?;
+    // v0.5.x migration: fts5_sym column extension (definition + kind)
+    migrate_v6(conn)?;
     Ok(())
 }
 
@@ -94,6 +96,26 @@ fn migrate_v5(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch("
             ALTER TABLE edges ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'symbol';
             ALTER TABLE edges ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'symbol';
+        ")?;
+    }
+
+    Ok(())
+}
+
+/// Rebuild fts5_sym with 5 columns (adds definition + kind).
+/// FTS5 doesn't support ALTER, so we DROP and recreate.
+fn migrate_v6(conn: &Connection) -> anyhow::Result<()> {
+    // Check if fts5_sym already has the 'definition' column
+    let has_definition: bool = {
+        let test_sql = "SELECT definition FROM fts5_sym LIMIT 0";
+        conn.prepare(test_sql).is_ok()
+    };
+
+    if !has_definition {
+        // Drop old 3/4-column FTS5 and recreate with 5 columns
+        conn.execute_batch("
+            DROP TABLE IF EXISTS fts5_sym;
+            CREATE VIRTUAL TABLE fts5_sym USING fts5(name, file_path, signature, definition, kind);
         ")?;
     }
 
