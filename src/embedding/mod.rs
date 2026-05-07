@@ -367,25 +367,22 @@ pub fn index_file_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder
             let all: Vec<_> = rows.flatten().collect();
             let mut text_batch: Vec<(i64, String)> = Vec::new();
             let mut vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
+            let mut batch_chars: usize = 0;
             for row in all {
                 if existing_ids.contains(&row.0) { continue; }
-                // Truncate summary to text_limit before embedding (API token limit)
-                let limit = embedder.text_limit();
-                let summary: String = if row.2.len() > limit {
-                    row.2.chars().take(limit).collect()
-                } else {
-                    row.2.clone()
-                };
-                let text = if summary.is_empty() {
+                let text = if row.2.is_empty() {
                     row.1.clone()
                 } else {
-                    format!("{} | {}", row.1, summary)
+                    format!("{} | {}", row.1, row.2)
                 };
+                let chars = text.len();
+                batch_chars += chars;
                 text_batch.push((row.0, text));
-                if text_batch.len() >= embedder.batch_size() {
+                if batch_chars >= embedder.max_chars_per_batch() || text_batch.len() >= embedder.batch_size() {
                     flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
                     file_count += insert_vec_batch(conn, &file_table, &mut vec_batch)?;
                     text_batch.clear();
+                    batch_chars = 0;
                 }
             }
             if !text_batch.is_empty() {
