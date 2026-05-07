@@ -30,17 +30,16 @@ pub async fn serve_stdio() -> anyhow::Result<()> {
 fn tools_list(id: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
         {"name":"codeloom_index","description":"⚠️ 此工具不通过MCP执行索引（索引需用CLI命令：codeloom index <path> --repo <name> --branch <branch>）。调用前请先用codeloom_list_repos检查是否已索引，用codeloom_status确认状态。path=项目根目录，branch=当前git分支名（必填），repo=仓库名（可选，默认取目录名）","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"branch":{"type":"string"},"repo":{"type":"string"}},"required":["path","branch"]}},
-        {"name":"codeloom_status","description":"查看索引状态：符号数、边数、文档数、数据库大小。在用其他MCP工具前先调用此工具确认仓库已索引且数据非空。branch=当前git分支名（必填），repo=仓库名（必填，先用codeloom_list_repos查）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
+        {"name":"codeloom_status","description":"查看索引状态：符号数、边数、文档数、数据库大小。在用其他MCP工具前先调用此工具确认仓库已索引且数据非空。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
         {"name":"codeloom_list_symbols","description":"**优先使用**：按名称模糊搜索已索引的符号。优先于grep/rg使用——索引覆盖项目所有文件及#include的第三方头文件（grep只能搜当前目录）。返回结构化结果：名称、类型、文件路径、行号。C++类方法用ClassName::methodName格式。如pattern=\"login\"匹配handleLogin、loginUser等。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["pattern","repo","branch"]}},
-        {"name":"codeloom_get_definition","description":"获取符号完整定义（源码、签名、文件路径、行号）。优于read_file：返回精确代码区间不浪费token。name必须是符号表中存储的完整名称——先用codeloom_list_symbols查找确切名称。C++方法用ClassName::methodName格式。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["name","repo","branch"]}},
-        {"name":"codeloom_get_call_graph","description":"**唯一方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。必须先运行codeloom_index后才能用。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["name","repo","branch"]}},
-        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】混合搜索引擎：比grep更快（预索引）、覆盖更全（含#include头文件）、更智能（理解中文/英文语义，不仅文本匹配）。query可以是符号名（AuthService/compaction）或功能描述（'用户认证'、'内存分配'）。自动融合BM25关键词+向量语义，返回结构化结果（名称/类型/文件/行号）。不要用grep/rg搜代码——用这个。branch=当前git分支名（必填），repo=仓库名（必填，先用codeloom_list_repos查）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
+        {"name":"codeloom_get_call_graph","description":"**唯一方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["name","repo","branch","direction"]}},
+        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】混合搜索引擎：比grep更快（预索引）、覆盖更全（含#include头文件）、更智能（理解中文/英文语义，不仅文本匹配）。query可以是符号名（AuthService/compaction）或功能描述（'用户认证'、'内存分配'）。自动融合BM25关键词+向量语义，返回结构化结果（名称/类型/文件/行号）。不要用grep/rg搜代码——用这个。kind可选：按符号类型过滤（function/method/class/struct/enum等），如kind=class搜所有类。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
 
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。无需任何参数。返回如\"codeloom\\nleveldb\\nspdlog\"。","inputSchema":{"type":"object","properties":{},"required":[]}},
-        {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填，先用codeloom_list_repos查）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
-        {"name":"codeloom_overview","description":"**打开仓库后第一个调用的工具**。仓库架构全貌统计：所有符号按类型分布（class/function/method等）、边数量、文档数量。用于快速了解代码库规模——在动手搜索前先看清楚全貌。branch=当前git分支名（必填），repo=仓库名（必填，先用codeloom_list_repos查）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
+        {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
+        {"name":"codeloom_overview","description":"**打开仓库后第一个调用的工具**。仓库架构全貌统计：所有符号按类型分布（class/function/method等）、边数量、文档数量。用于快速了解代码库规模——在动手搜索前先看清楚全貌。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
         {"name":"codeloom_get_doc","description":"获取文档节点的完整内容及嵌入图片。doc_id=文档节点ID（从搜索或overview结果中获得），repo=仓库名，branch=分支名。返回标题、章节路径、层级、内容、文件路径、格式、节点类型及图片列表（base64编码）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["doc_id","repo","branch"]}},
-        {"name":"codeloom_query_excel","description":"查询Excel单元格数据。doc_id=文档节点ID（Excel文档内节点），repo=仓库名，branch=分支名（必填）。mode可选：row（返回整行键值对）、column（返回整列）、filter（按条件过滤，filter参数为过滤表达式如'销售额 > 5000'）、auto（根据节点类型自动推断）。limit最多返回行数（默认20）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["row","column","filter","auto"]},"filter":{"type":"string"},"search":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["doc_id","repo","branch"]}}
+        {"name":"codeloom_query_excel","description":"回答Excel表格问题（筛选、查找行列数据等）。doc_id=文档节点ID（Excel文档内节点），repo=仓库名，branch=分支名（必填）。mode可选：row（返回整行键值对）、column（返回整列）、filter（按条件过滤，filter参数为过滤表达式如'销售额 > 5000'）、auto（根据节点类型自动推断）。limit最多返回行数（默认20）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["row","column","filter","auto"]},"filter":{"type":"string"},"search":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["doc_id","repo","branch"]}}
     ]}})
 }
 
@@ -104,14 +103,6 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
             list_symbols(pattern, &repo.unwrap(), branch, limit)
-        }
-        "codeloom_get_definition" => {
-            let branch = args["branch"].as_str().unwrap_or("");
-            let sym_name = args["name"].as_str().unwrap_or("");
-            let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
-            if let Err(e) = repo { return err_resp(id, &e); }
-            if branch.is_empty() { return err_resp(id, "branch is required"); }
-            get_definition(sym_name, &repo.unwrap(), branch)
         }
         "codeloom_get_call_graph" => {
             let branch = args["branch"].as_str().unwrap_or("");
@@ -284,52 +275,6 @@ fn list_symbols(pattern: &str, repo: &str, branch: &str, limit: usize) -> String
                 out.push_str(&format!("  [{:10}] {:40}  @ {}:{}\n", row.1, row.0, &row.2[..60.min(row.2.len())], row.3));
             }
             if count == 0 { out.push_str("  (none)\n"); }
-        }
-    }
-    out
-}
-
-fn get_definition(name: &str, repo: &str, branch: &str) -> String {
-    let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    let bwc = branch_where_clause(branch);
-    let mut out = format!("Definition: '{}' in {} (branch={})\n", name, repo, branch);
-    let exact_sql = format!("SELECT s.name, s.kind, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class, s.namespace FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 {} LIMIT 5", bwc);
-    let mut found = false;
-    if let Ok(mut stmt) = conn.prepare(&exact_sql) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![repo, name], |r| {
-            Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
-                r.get::<_,String>(3)?, r.get::<_,i64>(4)?, r.get::<_,i64>(5)?,
-                r.get::<_,Option<String>>(6)?, r.get::<_,Option<String>>(7)?, r.get::<_,Option<String>>(8)?))
-        }) {
-            for (i, row) in rows.flatten().enumerate() {
-                found = true;
-                if i > 0 { out.push_str("\n---\n"); }
-                let (sname, kind, def, file, lstart, lend, sig, parent, ns) = row;
-                out.push_str(&format!("[{}] {}", kind, sname));
-                if let Some(ref p) = parent { out.push_str(&format!("  (in {})", p)); }
-                if let Some(ref n) = ns { out.push_str(&format!("  ns={}", n)); }
-                out.push_str(&format!("\n  File: {}:{}-{}\n", file, lstart, lend));
-                if let Some(ref s) = sig { out.push_str(&format!("  Signature: {}\n", s)); }
-                if def.len() > 800 {
-                    out.push_str(&format!("  Definition:\n{}\n  ... (+{} chars)\n", &def[..800], def.len() - 800));
-                } else {
-                    out.push_str(&format!("  Definition:\n{}\n", def));
-                }
-            }
-        }
-    }
-    if !found {
-        let like = format!("%{}%", name);
-        let like_sql = format!("SELECT s.name, s.kind, s.file_path, s.line_start FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name LIKE ?2 {} ORDER BY s.name LIMIT 10", bwc);
-        if let Ok(mut stmt) = conn.prepare(&like_sql) {
-            if let Ok(rows) = stmt.query_map(rusqlite::params![repo, like], |r| {
-                Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,i64>(3)?))
-            }) {
-                out.push_str("  (exact match not found, showing similar):\n");
-                for row in rows.flatten() {
-                    out.push_str(&format!("  [{:10}] {:40}  @ {}:{}\n", row.1, row.0, &row.2[..60.min(row.2.len())], row.3));
-                }
-            }
         }
     }
     out
@@ -741,10 +686,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tools_list_returns_11_tools() {
+    fn test_tools_list_has_correct_count() {
         let resp = tools_list(serde_json::Value::Number(1.into()));
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 10);
     }
 
     #[test]
@@ -822,16 +767,6 @@ mod tests {
 
 
     #[test]
-    fn test_get_definition_found() {
-        let conn = crate::storage::open(":memory:").unwrap();
-        crate::storage::migrate(&conn).unwrap();
-        conn.execute("INSERT INTO symbols (repo,name,kind,content_hash,file_path,line_start,line_end,signature) VALUES ('gd','AuthService','class','g1','auth.cpp',10,15,'class AuthService')", []).unwrap();
-        let sid = conn.last_insert_rowid();
-        conn.execute("INSERT INTO branches (symbol_id,repo,branch_name) VALUES (?1,'gd','main')", rusqlite::params![sid]).unwrap();
-        let result = get_definition("AuthService", "gd", "main");
-        assert!(result.contains("AuthService"));
-    }
-
 
     #[test]
     #[ignore = "API embedding not configured in CI"]
@@ -922,6 +857,6 @@ mod tests {
         let search_tool = tools.iter().find(|t| t["name"] == "codeloom_search").unwrap();
         assert!(search_tool["name"].as_str().unwrap() == "codeloom_search");
         // Verify that new tool definitions are reachable by checking tool count
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 10);
     }
 }
