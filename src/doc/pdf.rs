@@ -33,6 +33,7 @@ pub fn parse_pdf(bytes: &[u8]) -> anyhow::Result<Vec<DocSection>> {
             node_type: "section".to_string(),
             content: trimmed.to_string(),
             images: vec![],
+        parent_id: None,
         });
     } else {
         for (i, page) in pages.iter().enumerate() {
@@ -44,6 +45,7 @@ pub fn parse_pdf(bytes: &[u8]) -> anyhow::Result<Vec<DocSection>> {
                 node_type: "section".to_string(),
                 content: page.to_string(),
                 images: vec![],
+            parent_id: None,
             });
         }
     }

@@ -2,11 +2,12 @@
 #[derive(Debug, Clone)]
 pub struct DocSection {
     pub title: String,
-    pub section_path: String,   // heading path, XML element path, "Sheet名/RowN"
-    pub level: i32,             // 1=h1/sheet, 2=h2/header_cell, 3=h3/row, 4=h4/cell
-    pub node_type: String,      // section, sheet, header_cell, row, cell
+    pub section_path: String,
+    pub level: i32,
+    pub node_type: String,
     pub content: String,
     pub images: Vec<ImageRef>,
+    pub parent_id: Option<i64>,
 }
 
 #[derive(Debug, Clone)]

@@ -52,6 +52,7 @@ pub fn parse_markdown(content: &str, _path: &str) -> Vec<DocSection> {
                 node_type: "section".to_string(),
                 content: content.trim().to_string(),
                 images: std::mem::take(images),
+            parent_id: None,
             });
         }
         content.clear();
@@ -122,6 +123,7 @@ pub fn parse_markdown(content: &str, _path: &str) -> Vec<DocSection> {
         node_type: "section".to_string(),
         content: content.to_string(),
         images: vec![],
+    parent_id: None,
     });
 
     sections
@@ -143,32 +145,140 @@ pub fn write_doc_sections(
     file_format: &str,
     sections: &[DocSection],
 ) -> anyhow::Result<usize> {
+    let max_chunk = 500;
     let mut count = 0;
-    let mut last_node_id;
 
     for sec in sections {
-        let hash = crate::storage::dedup::hash_content(
-            &format!("{}:{}:{}", sec.title, sec.section_path, sec.content)
-        );
-        let sp = if sec.section_path.is_empty() { String::new() } else { sec.section_path.clone() };
-
-        conn.execute(
-            "INSERT INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format, content_hash, node_type)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(repo, file_path, section_path) DO UPDATE SET
-             title=excluded.title, content=excluded.content, level=excluded.level,
-             file_format=excluded.file_format, content_hash=excluded.content_hash, node_type=excluded.node_type",
-            rusqlite::params![repo, sec.title, sp, sec.content, sec.level, path, file_format, hash, sec.node_type],
-        )?;
-        count += 1;
-        last_node_id = conn.last_insert_rowid();
-
-        if !sec.images.is_empty() {
-            crate::storage::insert_doc_images(conn, last_node_id, &sec.images)?;
+        // Check if content needs chunking
+        if sec.content.chars().count() <= max_chunk {
+            // Short content — write directly
+            count += write_one_section(conn, repo, path, file_format, sec, None)?;
+        } else {
+            // Long content — write parent + chunks
+            let parent_id = write_one_parent(conn, repo, path, file_format, sec)?;
+            // Delete old chunks
+            conn.execute(
+                "DELETE FROM doc_nodes WHERE parent_id=?1 AND node_type='chunk'",
+                rusqlite::params![parent_id],
+            )?;
+            // Split and write chunks
+            let chunks = split_at_punctuation(&sec.content, max_chunk);
+            for (i, chunk_content) in chunks.iter().enumerate() {
+                let chunk_path = format!("{}/chunk/{}", sec.section_path, i);
+                let chunk = DocSection {
+                    title: sec.title.clone(),
+                    section_path: chunk_path,
+                    level: sec.level,
+                    node_type: "chunk".into(),
+                    content: chunk_content.clone(),
+                    images: vec![],
+                    parent_id: Some(parent_id),
+                };
+                write_one_section(conn, repo, path, file_format, &chunk, Some(parent_id))?;
+                count += 1;
+            }
+            count += 1; // parent counted
         }
     }
-
     Ok(count)
+}
+
+fn write_one_section(
+    conn: &Connection,
+    repo: &str,
+    path: &str,
+    file_format: &str,
+    sec: &DocSection,
+    parent_id: Option<i64>,
+) -> anyhow::Result<usize> {
+    let hash = crate::storage::dedup::hash_content(
+        &format!("{}:{}:{}", sec.title, sec.section_path, sec.content)
+    );
+    let sp = if sec.section_path.is_empty() { String::new() } else { sec.section_path.clone() };
+    let pid: Option<i64> = parent_id.or(sec.parent_id);
+
+    conn.execute(
+        "INSERT INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format, content_hash, node_type, parent_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(repo, file_path, section_path) DO UPDATE SET
+         title=excluded.title, content=excluded.content, level=excluded.level,
+         file_format=excluded.file_format, content_hash=excluded.content_hash, node_type=excluded.node_type,
+         parent_id=COALESCE(excluded.parent_id, parent_id)",
+        rusqlite::params![repo, sec.title, sp, sec.content, sec.level, path, file_format, hash, sec.node_type, pid],
+    )?;
+    let last_node_id = conn.last_insert_rowid();
+
+    if !sec.images.is_empty() {
+        crate::storage::insert_doc_images(conn, last_node_id, &sec.images)?;
+    }
+    Ok(1)
+}
+
+fn write_one_parent(
+    conn: &Connection,
+    repo: &str,
+    path: &str,
+    file_format: &str,
+    sec: &DocSection,
+) -> anyhow::Result<i64> {
+    let hash = crate::storage::dedup::hash_content(
+        &format!("{}:{}:{}", sec.title, sec.section_path, sec.content)
+    );
+    let sp = if sec.section_path.is_empty() { String::new() } else { sec.section_path.clone() };
+
+    conn.execute(
+        "INSERT INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format, content_hash, node_type, parent_id)
+         VALUES (?1, ?2, ?3, '', ?4, ?5, ?6, ?7, ?8, NULL)
+         ON CONFLICT(repo, file_path, section_path) DO UPDATE SET
+         level=excluded.level, file_format=excluded.file_format, content_hash=excluded.content_hash, node_type=excluded.node_type",
+        rusqlite::params![repo, sec.title, sp, sec.level, path, file_format, hash, sec.node_type],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Split content into ≤max_len chunks at punctuation boundaries.
+/// Priority: 。！？ > \n > ；，、 > force at max_len.
+fn split_at_punctuation(content: &str, max_len: usize) -> Vec<String> {
+    let chars: Vec<char> = content.chars().collect();
+    let total = chars.len();
+    if total <= max_len {
+        return vec![content.to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut pos = 0;
+    while pos < total {
+        let end = (pos + max_len).min(total);
+        if end >= total {
+            chunks.push(chars[pos..].iter().collect());
+            break;
+        }
+        let slice = &chars[pos..end];
+        // Priority 1: 。！？
+        if let Some(offset) = slice.iter().rposition(|c| matches!(c, '。' | '！' | '？')) {
+            let split = pos + offset + 1;
+            chunks.push(chars[pos..split].iter().collect());
+            pos = split;
+            continue;
+        }
+        // Priority 2: \n
+        if let Some(offset) = slice.iter().rposition(|c| *c == '\n') {
+            let split = pos + offset + 1;
+            chunks.push(chars[pos..split].iter().collect());
+            pos = split;
+            continue;
+        }
+        // Priority 3: ；，、
+        if let Some(offset) = slice.iter().rposition(|c| matches!(c, '；' | '，' | '、')) {
+            let split = pos + offset + 1;
+            chunks.push(chars[pos..split].iter().collect());
+            pos = split;
+            continue;
+        }
+        // Priority 4: force split at max_len
+        chunks.push(chars[pos..end].iter().collect());
+        pos = end;
+    }
+    chunks
 }
 
 #[cfg(test)]

@@ -34,6 +34,7 @@ pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<DocSection>> {
                 node_type: "sheet".to_string(),
                 content: format!("列名: {}  共{}行", headers.iter().filter(|c| !c.trim().is_empty()).cloned().collect::<Vec<_>>().join(", "), total_rows),
                 images: vec![],
+            parent_id: None,
             });
 
             // Header cells (level=2)
@@ -48,6 +49,7 @@ pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<DocSection>> {
                     node_type: "header_cell".to_string(),
                     content: cn.to_string(),
                     images: vec![],
+                parent_id: None,
                 });
             }
 
@@ -65,6 +67,7 @@ pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<DocSection>> {
                     node_type: "row".to_string(),
                     content: String::new(),
                     images: vec![],
+                parent_id: None,
                 });
 
                 // Cell nodes (level=4) — each cell is searchable
@@ -81,6 +84,7 @@ pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<DocSection>> {
                         node_type: "cell".to_string(),
                         content: v.to_string(),
                         images: vec![],
+                    parent_id: None,
                     });
                 }
             }

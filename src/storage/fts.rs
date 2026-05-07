@@ -41,7 +41,7 @@ pub fn fill_docs_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
 
     let count = conn.execute(
         "INSERT INTO fts5_doc(title, section_path, content)
-         SELECT COALESCE(title, ''), COALESCE(section_path, ''), content FROM doc_nodes WHERE repo=?1 ORDER BY rowid",
+         SELECT COALESCE(title, ''), COALESCE(section_path, ''), content FROM doc_nodes WHERE repo=?1 AND content != '' ORDER BY rowid",
         rusqlite::params![repo],
     )?;
     Ok(count)

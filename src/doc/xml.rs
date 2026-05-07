@@ -67,6 +67,7 @@ pub fn parse_xml(content: &str) -> anyhow::Result<Vec<DocSection>> {
                         node_type: "section".to_string(),
                         content: std::mem::take(&mut current_text),
                         images: std::mem::take(&mut images),
+                    parent_id: None,
                     });
                     image_pos = 0;
                 }
@@ -99,6 +100,7 @@ pub fn parse_xml(content: &str) -> anyhow::Result<Vec<DocSection>> {
             node_type: "section".to_string(),
             content: std::mem::take(&mut current_text),
             images: std::mem::take(&mut images),
+        parent_id: None,
         });
     }
 
@@ -111,6 +113,7 @@ pub fn parse_xml(content: &str) -> anyhow::Result<Vec<DocSection>> {
             node_type: "section".to_string(),
             content: "HTML document".to_string(),
             images: vec![],
+        parent_id: None,
         });
     }
 

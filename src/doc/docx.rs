@@ -132,6 +132,7 @@ fn flush_section(
         node_type: "section".to_string(),
         content,
         images: std::mem::take(images),
+    parent_id: None,
     });
 
     text.clear();
