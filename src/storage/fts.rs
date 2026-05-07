@@ -111,10 +111,12 @@ pub fn search_symbols(
     kind_filter: Option<&str>,
 ) -> anyhow::Result<Vec<SearchHit>> {
     let safe_query = escape_fts5(query);
-    eprintln!("[DEBUG search_symbols] query={:?} safe={:?} repo={:?} branch={:?} limit={} kind={:?}", query, safe_query, repo, branch, limit, kind_filter);
+    if cfg!(debug_assertions) {
+        eprintln!("[DEBUG search_symbols] query={:?} safe={:?} repo={:?} branch={:?} limit={} kind={:?}", query, safe_query, repo, branch, limit, kind_filter);
+    }
 
     let mut sql = String::from(
-        "SELECT fts5_sym.rowid, bm25(fts5_sym) as score, s.name, s.file_path, s.line_start, s.kind
+        "SELECT fts5_sym.rowid, bm25(fts5_sym) as score, s.name, s.file_path, s.line_start, s.kind, COALESCE(s.doc_comment, '')
          FROM fts5_sym
          JOIN symbols s ON s.rowid = fts5_sym.rowid
          JOIN branches b ON b.symbol_id = s.id
@@ -145,15 +147,22 @@ pub fn search_symbols(
         .collect()
     };
 
-    eprintln!("[DEBUG search_symbols] got {} hits: {:?}", 
-        hits.len(), 
-        hits.iter().map(|h| (h.name.as_str(), h.score, h.file_path.as_str())).collect::<Vec<_>>());
+    if cfg!(debug_assertions) {
+        eprintln!("[DEBUG search_symbols] got {} hits: {:?}", 
+            hits.len(), 
+            hits.iter().map(|h| (h.name.as_str(), h.score, h.file_path.as_str())).collect::<Vec<_>>());
+    }
 
     Ok(hits)
 }
 
 fn map_symbol_hit(r: &rusqlite::Row) -> rusqlite::Result<SearchHit> {
-    let snippet: String = String::new();
+    let doc_comment: String = r.get(6)?;
+    let snippet = if doc_comment.is_empty() {
+        String::new()
+    } else {
+        doc_comment.chars().take(120).collect()
+    };
     Ok(SearchHit {
         rowid: r.get(0)?,
         score: r.get(1)?,

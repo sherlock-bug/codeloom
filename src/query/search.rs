@@ -107,8 +107,10 @@ pub fn hybrid_search(
 
     // Run vec0 vector search
     let vec_results = run_vector_search(conn, query, repo, branch, fetch_limit);
-    eprintln!("[DEBUG hybrid_search] bm25_sym={} bm25_doc={} bm25_file={} vec={}", 
-        bm25_symbols.len(), bm25_docs.len(), bm25_files.len(), vec_results.len());
+    if cfg!(debug_assertions) {
+        eprintln!("[DEBUG hybrid_search] bm25_sym={} bm25_doc={} bm25_file={} vec={}", 
+            bm25_symbols.len(), bm25_docs.len(), bm25_files.len(), vec_results.len());
+    }
 
     // Combine bm25 symbols + docs + files
     let mut all_bm25: Vec<storage::fts::SearchHit> = Vec::new();

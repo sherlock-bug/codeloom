@@ -98,6 +98,9 @@ pub enum Command {
         /// 返回结果数
         #[arg(long, default_value = "10")]
         limit: usize,
+        /// 按符号类型过滤 (function, method, class, struct, enum, etc.)
+        #[arg(long)]
+        kind: Option<String>,
     },
 
     /// 查看仓库架构全貌（符号按类型分布）
@@ -479,7 +482,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Search { query, repo, branch, limit } => {
+        Command::Search { query, repo, branch, limit, kind } => {
             let repo = repo.unwrap_or_else(autodetect_repo);
             let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
             if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
@@ -488,32 +491,32 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
             let q = query.clone();
+            let kind_filter = kind.clone();
             let results = tokio::task::spawn_blocking(move || {
-                crate::query::search::hybrid_search(&conn, &query, &repo, &branch, limit, None)
+                crate::query::search::hybrid_search(&conn, &query, &repo, &branch, limit, kind_filter.as_deref())
             }).await??;
             {
                 let results = results;
                 println!("搜索 \"{}\" ({}条):", q, results.len());
                 for r in &results {
-                    let id_tag = if r.hit_type == "doc" && r.doc_id != 0 {
-                        format!(" [id:{}]", r.doc_id)
-                    } else {
-                        String::new()
-                    };
-                    let snippet = if r.hit_type == "doc" && !r.snippet.is_empty() {
-                        format!("  └─ {}", &r.snippet.chars().take(120).collect::<String>())
-                    } else if r.hit_type == "file" && !r.snippet.is_empty() {
-                        format!("  └─ {}", &r.snippet.chars().take(120).collect::<String>())
-                    } else {
-                        String::new()
-                    };
+                    let mut extra = String::new();
+                    if r.hit_type == "code" && !r.kind.is_empty() {
+                        extra.push_str(&format!(" |{}", r.kind));
+                    }
+                    if r.hit_type == "doc" && r.doc_id != 0 {
+                        extra.push_str(&format!(" |doc_id:{}", r.doc_id));
+                    }
+                    if !r.snippet.is_empty() {
+                        let s: String = r.snippet.chars().take(120).collect();
+                        extra.push_str(&format!(" |{}", s));
+                    }
                     if r.hit_type == "file" {
-                        println!("  [{:.3}] {:45}  [file]{}",
-                            r.score, &r.file_path[..45.min(r.file_path.len())], snippet);
+                        println!("  [{:.3}] {:60}  [file]{}",
+                            r.score, &r.file_path[..60.min(r.file_path.len())], extra);
                     } else {
-                        println!("  [{:.3}] {:45}  [{}{}]  @ {}:{}{}",
-                            r.score, r.name, r.hit_type, id_tag,
-                            &r.file_path[..50.min(r.file_path.len())], r.line_start, snippet);
+                        println!("  [{:.3}] {:45}  [{}]{} @ {}:{}",
+                            r.score, r.name, r.hit_type, extra,
+                            &r.file_path[..50.min(r.file_path.len())], r.line_start);
                     }
                 }
             }
