@@ -15,42 +15,22 @@ for arg in "$@"; do
 done
 
 INSTALL_DIR="${HOME}/.codeloom/bin"
-MODEL_DIR="${HOME}/.codeloom/models"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_DIR="${HOME}/.codeloom"
 
 # ── 离线模式检测 ──────────────────────────────────────────
-# 检测当前目录是否包含完整安装包（zip解压后）
-HAS_LOCAL_BINARY="no"
-HAS_LOCAL_MODELS="no"
-
-if [ -f "$SCRIPT_DIR/codeloom" ]; then
-    HAS_LOCAL_BINARY="yes"
-fi
-if [ -d "$SCRIPT_DIR/models/bge-small-zh" ] && \
-   [ -f "$SCRIPT_DIR/models/bge-small-zh/pytorch_model.bin" ] && \
-   [ -f "$SCRIPT_DIR/models/bge-small-zh/config.json" ] && \
-   [ -f "$SCRIPT_DIR/models/bge-small-zh/tokenizer.json" ] && \
-   [ -f "$SCRIPT_DIR/models/sqlite-vec/vec0.so" ]; then
-    HAS_LOCAL_MODELS="yes"
-fi
-
-if [ "$HAS_LOCAL_BINARY" = "yes" ] && [ "$HAS_LOCAL_MODELS" = "yes" ] && ! $FROM_SOURCE; then
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/codeloom" ] && ! $FROM_SOURCE; then
     echo "=== 离线安装模式 ==="
-    echo "检测到本地安装包: $SCRIPT_DIR"
-    mkdir -p "$INSTALL_DIR" "$MODEL_DIR"
+    mkdir -p "$INSTALL_DIR" "$CONFIG_DIR"
 
-    # 检查已安装版本
-    if [ -f "$INSTALL_DIR/codeloom" ] && [ "$INSTALL_DIR/codeloom" -nt "$SCRIPT_DIR/codeloom" ]; then
-        echo "已安装版本比当前包更新，跳过。"
-        echo "  $INSTALL_DIR/codeloom"
-        exit 0
-    fi
+    # 清除旧版本（所有已知路径）
+    for old in "$INSTALL_DIR/codeloom" "$HOME/.local/bin/codeloom" /usr/local/bin/codeloom; do
+        [ -f "$old" ] && rm -f "$old" && echo "  清理旧版: $old"
+    done
 
     cp "$SCRIPT_DIR/codeloom" "$INSTALL_DIR/codeloom"
-    cp -r "$SCRIPT_DIR/models/"* "$MODEL_DIR/"
     chmod +x "$INSTALL_DIR/codeloom"
     echo "  Binary → $INSTALL_DIR/codeloom"
-    echo "  Models → $MODEL_DIR/"
     # 跳转到 PATH 配置
 else
     mkdir -p "$INSTALL_DIR"
@@ -68,56 +48,60 @@ if $FROM_SOURCE; then
     cd "$TMPDIR/codeloom"
     cargo build --release
     cp target/release/codeloom "$INSTALL_DIR/codeloom"
+    chmod +x "$INSTALL_DIR/codeloom"
 
 else
     # ── 下载预编译二进制 ────────────────────────────────────
-    BASE_URL="https://gitee.com/greengreensea/codeloom/releases/v0.3.8/download"
+    VERSION="v0.5.2"
+    BASE_URL="https://gitee.com/greengreensea/codeloom/releases/download/${VERSION}"
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
 
     case "$OS" in
         linux)
             case "$ARCH" in
-                x86_64)  BINARY="codeloom-linux-x86_64" ;;
-                aarch64) BINARY="codeloom-linux-arm64" ;;
+                x86_64)  BINARY="codeloom" ;;
+                aarch64) BINARY="codeloom" ;;   # 暂只有 x86_64 静态链接
                 *)       echo "Unsupported arch: $ARCH. Try: curl ... | bash -s -- --from-source"; exit 1 ;;
             esac
             ;;
         darwin)
-            case "$ARCH" in
-                x86_64)  BINARY="codeloom-darwin-x86_64" ;;
-                arm64)   BINARY="codeloom-darwin-arm64" ;;
-                *)       echo "Unsupported arch: $ARCH. Try: curl ... | bash -s -- --from-source"; exit 1 ;;
-            esac
+            echo "macOS 暂不支持预编译二进制，请从源码编译: curl ... | bash -s -- --from-source"; exit 1
             ;;
         *) echo "Unsupported OS: $OS. Try: curl ... | bash -s -- --from-source"; exit 1 ;;
     esac
 
     echo "Downloading codeloom for $OS/$ARCH from Gitee..."
     curl -sSL --connect-timeout 10 --max-time 120 "$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom"
+    chmod +x "$INSTALL_DIR/codeloom"
 fi
 fi
 
-chmod +x "$INSTALL_DIR/codeloom"
+# ── 默认配置（不存在时创建）──────────────────────────────
+if [ ! -f "${CONFIG_DIR}/config.yaml" ]; then
+    cat > "${CONFIG_DIR}/config.yaml" << 'YAML'
+# CodeLoom 配置
+# embedding 用于语义搜索，需配置 OpenAI 兼容 API
+# embedding:
+#   api_base: "http://your-api:port/v1"
+#   model: "bge-m3"
+#   api_key: "not-needed"
+YAML
+    echo "默认配置已创建: ${CONFIG_DIR}/config.yaml"
+fi
 
 # ── 添加到 PATH ──────────────────────────────────────────
-# Detect the user's shell to pick the right config file
 SHELL_CONFIG=""
 case "$(basename "$SHELL")" in
     zsh)  SHELL_CONFIG="$HOME/.zshrc" ;;
     bash) SHELL_CONFIG="$HOME/.bashrc" ;;
-    *)    # Fallback: use first existing
-          for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
-              if [ -f "$f" ]; then SHELL_CONFIG="$f"; break; fi
+    *)    for f in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+              [ -f "$f" ] && { SHELL_CONFIG="$f"; break; }
           done ;;
 esac
-if [ -n "$SHELL_CONFIG" ]; then
-    if ! grep -q "codeloom/bin" "$SHELL_CONFIG" 2>/dev/null; then
-        echo "export PATH=\"$INSTALL_DIR:\$PATH\"" >> "$SHELL_CONFIG"
-        echo "→ Added to $SHELL_CONFIG"
-    fi
-else
-    echo "→ Add to PATH manually: export PATH=\"$INSTALL_DIR:\$PATH\""
+if [ -n "$SHELL_CONFIG" ] && ! grep -qF "${INSTALL_DIR}" "$SHELL_CONFIG" 2>/dev/null; then
+    echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$SHELL_CONFIG"
+    echo "→ Added to $SHELL_CONFIG"
 fi
 
 echo ""

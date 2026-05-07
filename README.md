@@ -42,7 +42,7 @@ tar xzf codeloom-vX.Y.Z-offline.tar.gz
 ./install.sh
 ```
 
-安装到 `~/.local/bin/codeloom`，配置文件模板写入 `~/.codeloom/config.yaml`。
+安装到 `~/.codeloom/bin/codeloom`，配置文件模板写入 `~/.codeloom/config.yaml`。
 
 ### 预编译二进制（在线）
 
