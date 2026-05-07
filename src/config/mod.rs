@@ -17,7 +17,7 @@ pub struct EmbeddingConfig {
     #[serde(default = "default_max_chars")] pub max_chars_per_batch: usize,
 }
 fn default_batch() -> usize { 64 }
-fn default_text_limit() -> usize { 400 }
+fn default_text_limit() -> usize { 300 }
 fn default_max_chars() -> usize { 90000 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectConfig {

@@ -487,33 +487,35 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
-            match crate::query::search::hybrid_search(&conn, &query, &repo, &branch, limit, None) {
-                Ok(results) => {
-                    println!("搜索 \"{}\" ({}条):", query, results.len());
-                    for r in &results {
-                        let id_tag = if r.hit_type == "doc" && r.doc_id != 0 {
-                            format!(" [id:{}]", r.doc_id)
-                        } else {
-                            String::new()
-                        };
-                        let snippet = if r.hit_type == "doc" && !r.snippet.is_empty() {
-                            format!("  └─ {}", &r.snippet.chars().take(120).collect::<String>())
-                        } else if r.hit_type == "file" && !r.snippet.is_empty() {
-                            format!("  └─ {}", &r.snippet.chars().take(120).collect::<String>())
-                        } else {
-                            String::new()
-                        };
-                        if r.hit_type == "file" {
-                            println!("  [{:.3}] {:45}  [file]{}",
-                                r.score, &r.file_path[..45.min(r.file_path.len())], snippet);
-                        } else {
-                            println!("  [{:.3}] {:45}  [{}{}]  @ {}:{}{}",
-                                r.score, r.name, r.hit_type, id_tag,
-                                &r.file_path[..50.min(r.file_path.len())], r.line_start, snippet);
-                        }
+            let q = query.clone();
+            let results = tokio::task::spawn_blocking(move || {
+                crate::query::search::hybrid_search(&conn, &query, &repo, &branch, limit, None)
+            }).await??;
+            {
+                let results = results;
+                println!("搜索 \"{}\" ({}条):", q, results.len());
+                for r in &results {
+                    let id_tag = if r.hit_type == "doc" && r.doc_id != 0 {
+                        format!(" [id:{}]", r.doc_id)
+                    } else {
+                        String::new()
+                    };
+                    let snippet = if r.hit_type == "doc" && !r.snippet.is_empty() {
+                        format!("  └─ {}", &r.snippet.chars().take(120).collect::<String>())
+                    } else if r.hit_type == "file" && !r.snippet.is_empty() {
+                        format!("  └─ {}", &r.snippet.chars().take(120).collect::<String>())
+                    } else {
+                        String::new()
+                    };
+                    if r.hit_type == "file" {
+                        println!("  [{:.3}] {:45}  [file]{}",
+                            r.score, &r.file_path[..45.min(r.file_path.len())], snippet);
+                    } else {
+                        println!("  [{:.3}] {:45}  [{}{}]  @ {}:{}{}",
+                            r.score, r.name, r.hit_type, id_tag,
+                            &r.file_path[..50.min(r.file_path.len())], r.line_start, snippet);
                     }
                 }
-                Err(e) => println!("搜索失败: {}", e),
             }
         }
         Command::Overview { repo, branch } => {

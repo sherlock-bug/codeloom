@@ -197,9 +197,9 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
         }
     }
 
-    // Doc vectors — smart batch, NO truncation
+    // Doc vectors — use embedder batch_size (API limit, typically 64)
     let mut doc_count = 0; let mut doc_skipped = 0;
-    if let Ok(mut stmt) = conn.prepare("SELECT id, title, section_path, content FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name!='')") {
+    if let Ok(mut stmt) = conn.prepare("SELECT id, title, section_path, content FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name!='') AND content != ''") {
         if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
         }) {
@@ -213,7 +213,7 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
                 let chars = text.len();
                 batch_chars += chars;
                 text_batch.push((row.0, text));
-                if batch_chars >= MAX_CHARS_PER_BATCH || text_batch.len() >= 256 {
+                if batch_chars >= embedder.max_chars_per_batch() || text_batch.len() >= embedder.batch_size() {
                     flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
                     doc_count += insert_vec_batch(conn, &doc_table, &mut vec_batch)?;
                     text_batch.clear();
@@ -301,8 +301,6 @@ pub fn index_doc_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder)
 }
 
 // ── Smart batching helpers ─────────────────────────────────────────────
-
-const MAX_CHARS_PER_BATCH: usize = 50000;
 
 fn texts_of<'a>(batch: &'a [(i64, String)]) -> Vec<&'a str> {
     batch.iter().map(|(_, t)| t.as_str()).collect()
