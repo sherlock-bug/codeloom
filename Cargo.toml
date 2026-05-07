@@ -1,6 +1,6 @@
 [package]
 name = "codeloom"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "团队代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱"
 
@@ -59,6 +59,12 @@ candle-core = "0.10"
 candle-nn = "0.10"
 candle-transformers = "0.10"
 tokenizers = "0.21"
+calamine = "0.34.0"
+zip = "8.6.0"
+quick-xml = "0.39.3"
+pdf-extract = "0.10.0"
+image = { version = "0.25.10", features = ["webp"] }
+webp = "0.3.1"
 
 [build-dependencies]
 cc = "1"

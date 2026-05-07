@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <database>
+    <host>localhost</host>
+    <port>3306</port>
+    <name>testdb</name>
+  </database>
+  <server>
+    <host>0.0.0.0</host>
+    <port>8080</port>
+  </server>
+</config>

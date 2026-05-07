@@ -126,3 +126,24 @@ fn test_semantic_search_candle_mode() {
     assert!(!line.contains("Jaccard fallback"), "candle mode should be active");
     assert!(line.contains("Auth"), "should find auth: {}", &line[..200.min(line.len())]);
 }
+
+#[test]
+fn test_multi_format_index() {
+    let fixture_dir = "tests/fixtures/multi-format";
+    let db = "tests/fixtures/multi-format/test_multi.rag.db";
+    let _ = std::fs::remove_file(db);
+    
+    // Index the fixture directory
+    let output = Command::new("target/debug/codeloom")
+        .args(["index", fixture_dir, "--repo", "multitest", "--branch", "main"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "index failed: {} {}", stdout, stderr);
+    assert!(stdout.contains("Docs:"), "should have doc sections");
+    
+    // Cleanup
+    let _ = std::fs::remove_file(db);
+}
+

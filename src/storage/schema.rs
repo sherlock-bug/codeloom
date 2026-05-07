@@ -54,5 +54,48 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
         CREATE VIRTUAL TABLE IF NOT EXISTS fts5_sym USING fts5(name, file_path, signature);
         CREATE VIRTUAL TABLE IF NOT EXISTS fts5_doc USING fts5(title, section_path, content);
     ")?;
+    // v0.5.0 migrations: multi-format doc + image support
+    migrate_v5(conn)?;
+    Ok(())
+}
+
+fn migrate_v5(conn: &Connection) -> anyhow::Result<()> {
+    // doc_images table
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS doc_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_node_id INTEGER NOT NULL REFERENCES doc_nodes(id) ON DELETE CASCADE,
+            alt_text TEXT,
+            original_src TEXT,
+            image_data BLOB,
+            position INTEGER,
+            section_context TEXT,
+            image_type TEXT DEFAULT 'inline',
+            original_size INTEGER,
+            compressed_size INTEGER,
+            width INTEGER,
+            height INTEGER
+        );
+    ")?;
+
+    // doc_nodes.node_type
+    let has_node_type: bool = conn
+        .prepare("SELECT node_type FROM doc_nodes LIMIT 0")
+        .is_ok();
+    if !has_node_type {
+        conn.execute_batch("ALTER TABLE doc_nodes ADD COLUMN node_type TEXT NOT NULL DEFAULT 'section';")?;
+    }
+
+    // edges.source_kind / target_kind
+    let has_source_kind: bool = conn
+        .prepare("SELECT source_kind FROM edges LIMIT 0")
+        .is_ok();
+    if !has_source_kind {
+        conn.execute_batch("
+            ALTER TABLE edges ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'symbol';
+            ALTER TABLE edges ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'symbol';
+        ")?;
+    }
+
     Ok(())
 }

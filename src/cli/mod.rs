@@ -642,22 +642,41 @@ fn traverse_calls_cli(conn: &rusqlite::Connection, sym_id: i64, direction: &str,
 fn index_docs(conn: &rusqlite::Connection, dir: &str, repo: &str) {
     let mut doc_count = 0;
     let ignore_patterns = crate::ignore::load_patterns(dir);
+    let supported = ["md", "rst", "xlsx", "xls", "xlsm", "docx", "pdf", "xml", "html", "htm"];
     for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
         let p = entry.path();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !["md","rst"].contains(&ext) { continue; }
+        if !supported.contains(&ext) { continue; }
         let ps = p.to_string_lossy();
         if ps.contains("/.git/") { continue; }
         if crate::ignore::is_ignored(&ps, &ignore_patterns) { continue; }
-        if let Ok(content) = crate::util::read_file_smart(ps.as_ref()) {
-            // Store branch glossary entries
-            let entries = crate::doc::glossary::parse_branch_glossary(&content);
-            if !entries.is_empty() { println!("  Glossary: {} entries from {}", entries.len(), ps); }
-            // Store as doc_nodes for embedding-based search
-            match crate::doc::index_markdown(conn, &ps, &content, repo) {
-                Ok(n) => { doc_count += n; }
-                Err(e) => { eprintln!("  Warning: doc index {}: {}", ps, e); }
+
+        // Read file bytes
+        let bytes = match std::fs::read(p) {
+            Ok(b) => b,
+            Err(e) => { eprintln!("  Warning: read {}: {}", ps, e); continue; }
+        };
+
+        // Glossary extraction (md/rst only)
+        if ext == "md" || ext == "rst" {
+            if let Ok(content) = String::from_utf8(bytes.clone()) {
+                let entries = crate::doc::glossary::parse_branch_glossary(&content);
+                if !entries.is_empty() { println!("  Glossary: {} entries from {}", entries.len(), ps); }
             }
+        }
+
+        // Parse and write
+        match crate::doc::parse_document(ext, &ps, &bytes) {
+            Ok(sections) => {
+                match crate::doc::write_doc_sections(conn, repo, &ps, ext, &sections) {
+                    Ok(n) => {
+                        doc_count += n;
+                        if n > 10 { println!("  {}: {} nodes", ps, n); }
+                    }
+                    Err(e) => eprintln!("  Warning: write {}: {}", ps, e),
+                }
+            }
+            Err(e) => eprintln!("  Warning: parse {}: {}", ps, e),
         }
     }
     if doc_count > 0 { println!("  Docs: {} sections from {}", doc_count, dir); }

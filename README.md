@@ -1,4 +1,4 @@
-# CodeLoom v0.4.1
+# CodeLoom v0.5.0
 
 > 代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 
@@ -6,24 +6,25 @@
 
 CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的知识图谱，让 OpenCode/Claude Code 等 AI 编码助手中的 LLM 能理解百万行级别的多代码仓项目。
 
-纯本地运行，零外部 API 依赖，代码不出内网。远程部署 MCP Server，单人维护即可。
+纯本地运行，零外部 API 依赖，代码不出内网。远程部署 MCP Server，**一个 .db 文件拎包就走**。
 
 ## 能力
 
 | 能力 | 说明 |
 |------|------|
 | **代码知识图谱** | tree-sitter 解析 C++/Python/Java/TypeScript/Go，提取符号定义、调用图、继承链、include 关系 |
+| **多格式文档** | 支持 md/rst/xlsx/docx/pdf/xml/html 文档索引与搜索，统一格式路由 |
+| **Excel 结构化查询** | 智能表头检测 + 四层节点模型（sheet→header→row→cell），MCP SQL-like 查询 |
+| **文档图片提取** | MD/HTML/DOCX/XLSX 内图片自动提取，WebP 智能压缩，SQLite BLOB 存储 |
+| **图片 base64 返回** | MCP 返回图片时 base64 编码，远程部署无路径依赖 |
 | **编码兼容** | UTF-8 / GB2312 / GBK / GB18030 自动检测，中文编码源码零配置索引 |
-| **语义嵌入** | candle + bge-small-zh（512 维，91MB），纯 CPU 推理，零外部 API。模型缺失时自动降级 Jaccard |
-| **混合搜索** | FTS5 BM25 关键词 + vec0 向量语义，RRF 融合统一排名。单一 `codeloom_search` 入口 |
+| **语义嵌入** | candle + bge-small-zh（512 维，91MB），纯 CPU 推理，零外部 API |
+| **混合搜索** | FTS5 BM25 关键词 + vec0 向量语义，RRF 融合统一排名。搜索返回 snippet + 图片提示 |
 | **Git 驱动增量** | 自动跟踪 commit，`git diff` 只扫变更文件；新分支从父分支继承符号 |
 | **分支过滤** | 所有 MCP 工具 `branch` 参数必传；`branch_name IS NULL` 的数据所有分支可见 |
-| **向量搜索** | sqlite-vec ANN 引擎（预编译 .so，160KB），O(log N) 检索，一键安装 |
-| **分支术语表** | `## 23B (release/xxx)` 格式自动映射惯用叫法到实际分支名 |
 | **多仓支持** | 前后端独立索引，跨仓依赖自动识别 |
-| **MCP 原生** | 9 个 MCP 工具，OpenCode/Claude Code 零配置对接 |
-| **忽略文件** | `.codeloomignore` 过滤 test/build/docs 目录，类似 `.gitignore` |
-| **自动化测试** | 55 测试（49 单元 + 6 集成），本地素材自洽，`cargo test` 一键验证 |
+| **MCP 原生** | 11 个 MCP 工具（含 get_doc + query_excel），OpenCode/Claude Code 零配置对接 |
+| **自动化测试** | 74 测试（67 单元 + 7 集成），本地素材自洽，`cargo test` 一键验证 |
 
 ## 安装
 

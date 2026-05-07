@@ -31,6 +31,73 @@ fn migrate_doc_nodes(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── doc_images ────────────────────────────────────────────────────────
+
+/// Insert multiple images for a doc_node, compressing smartly
+pub fn insert_doc_images(
+    conn: &Connection,
+    doc_node_id: i64,
+    images: &[crate::doc::ImageRef],
+) -> anyhow::Result<usize> {
+    let mut count = 0;
+    for img in images {
+        if img.raw_bytes.is_empty() && img.image_type == "linked" {
+            // Linked images: store reference without bytes
+            conn.execute(
+                "INSERT INTO doc_images (doc_node_id, alt_text, original_src, image_data, position, section_context, image_type, original_size, compressed_size, width, height)
+                 VALUES (?1, ?2, ?3, NULL, ?4, ?5, 'linked', 0, 0, 0, 0)",
+                rusqlite::params![doc_node_id, img.alt_text, img.original_src, img.position, img.section_context],
+            )?;
+        } else if !img.raw_bytes.is_empty() {
+            let original_size = img.raw_bytes.len() as i64;
+            let compressed = crate::doc::smart_compress(&img.raw_bytes)?;
+            conn.execute(
+                "INSERT INTO doc_images (doc_node_id, alt_text, original_src, image_data, position, section_context, image_type, original_size, compressed_size, width, height)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                rusqlite::params![
+                    doc_node_id, img.alt_text, img.original_src,
+                    compressed.data, img.position, img.section_context,
+                    img.image_type, original_size, compressed.data.len() as i64,
+                    compressed.width, compressed.height
+                ],
+            )?;
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Read images for a doc_node (sorted by position), with BLOB data
+pub struct DocImage {
+    pub id: i64,
+    pub alt_text: String,
+    pub image_data: Vec<u8>,
+    pub width: i32,
+    pub height: i32,
+    pub section_context: String,
+}
+
+pub fn get_doc_images(conn: &Connection, doc_node_id: i64) -> anyhow::Result<Vec<DocImage>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, alt_text, image_data, width, height, section_context FROM doc_images WHERE doc_node_id=?1 ORDER BY position",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![doc_node_id], |r| {
+        Ok(DocImage {
+            id: r.get(0)?,
+            alt_text: r.get::<_, String>(1).unwrap_or_default(),
+            image_data: r.get::<_, Vec<u8>>(2).unwrap_or_default(),
+            width: r.get(3).unwrap_or(0),
+            height: r.get(4).unwrap_or(0),
+            section_context: r.get::<_, String>(5).unwrap_or_default(),
+        })
+    })?;
+    let mut images = Vec::new();
+    for row in rows {
+        images.push(row?);
+    }
+    Ok(images)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
