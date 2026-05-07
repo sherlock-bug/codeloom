@@ -126,6 +126,22 @@ pub fn hybrid_search(
     };
 
     let mut fused = weighted_fuse(&all_bm25, &vec_results, w_bm25, w_vec);
+
+    // Exact name match boost: if query equals a symbol name (case-insensitive),
+    // boost the score to ensure exact matches rank higher than fuzzy vector matches.
+    let query_lower = query.to_lowercase();
+    for r in &mut fused {
+        if r.name.to_lowercase() == query_lower {
+            r.score = (r.score + 0.5).min(1.0);
+        }
+    }
+    // Re-sort after boosting
+    fused.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     fused.truncate(limit);
     Ok(fused)
 }

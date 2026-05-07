@@ -171,9 +171,9 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
             for row in all {
                 if existing_sym_ids.contains(&row.0) { sym_skipped += 1; processed += 1; continue; }
                 let text = if row.3.is_empty() {
-                    format!("{} | {}", row.2, row.1)
+                    format!("{} | {}", row.1, row.2)
                 } else {
-                    format!("{} | {} | {}", row.2, row.1, row.3)
+                    format!("{} | {} | {}", row.1, row.2, row.3)
                 };
                 let chars = text.len();
                 batch_chars += chars;
