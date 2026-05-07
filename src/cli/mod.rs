@@ -498,12 +498,19 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                         };
                         let snippet = if r.hit_type == "doc" && !r.snippet.is_empty() {
                             format!("  └─ {}", &r.snippet.chars().take(120).collect::<String>())
+                        } else if r.hit_type == "file" && !r.snippet.is_empty() {
+                            format!("  └─ {}", &r.snippet.chars().take(120).collect::<String>())
                         } else {
                             String::new()
                         };
-                        println!("  [{:.3}] {:45}  [{}{}]  @ {}:{}{}",
-                            r.score, r.name, r.hit_type, id_tag,
-                            &r.file_path[..50.min(r.file_path.len())], r.line_start, snippet);
+                        if r.hit_type == "file" {
+                            println!("  [{:.3}] {:45}  [file]{}",
+                                r.score, &r.file_path[..45.min(r.file_path.len())], snippet);
+                        } else {
+                            println!("  [{:.3}] {:45}  [{}{}]  @ {}:{}{}",
+                                r.score, r.name, r.hit_type, id_tag,
+                                &r.file_path[..50.min(r.file_path.len())], r.line_start, snippet);
+                        }
                     }
                 }
                 Err(e) => println!("搜索失败: {}", e),

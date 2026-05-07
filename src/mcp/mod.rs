@@ -421,17 +421,24 @@ fn hybrid_search(query: &str, repo: &str, branch: &str, limit: usize, kind_filte
                 if r.hit_type == "doc" && r.doc_id != 0 {
                     extra.push_str(&format!(" |doc_id:{}", r.doc_id));
                 }
-                // Snippet for both code and doc
+                // Snippet for code, doc, and file
                 if !r.snippet.is_empty() {
                     let snippet_clean = r.snippet.replace('\n', " ").replace('\r', "");
                     let display = &snippet_clean[..snippet_clean.len().min(120)];
                     extra.push_str(&format!(" |\"{}...\"", display));
                 }
-                out.push_str(&format!(
-                    "  [{:.3}] {} [{}]{} @ {}:{}\n",
-                    r.score, r.name, r.hit_type, extra,
-                    &r.file_path[..50.min(r.file_path.len())], r.line_start
-                ));
+                if r.hit_type == "file" {
+                    out.push_str(&format!(
+                        "  [{:.3}] {} [file]{}\n",
+                        r.score, &r.file_path[..60.min(r.file_path.len())], extra
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "  [{:.3}] {} [{}]{} @ {}:{}\n",
+                        r.score, r.name, r.hit_type, extra,
+                        &r.file_path[..50.min(r.file_path.len())], r.line_start
+                    ));
+                }
             }
             out
         }

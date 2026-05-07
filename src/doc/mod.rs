@@ -330,4 +330,96 @@ mod tests {
         let b64 = to_base64(b"hello world test");
         assert!(!b64.is_empty());
     }
+
+    // ── Chunking tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_chunk_short_no_split() {
+        let content = "这是简短的一段话。";
+        let chunks = split_at_punctuation(content, 500);
+        assert_eq!(chunks.len(), 1, "短内容不应拆分");
+        assert_eq!(chunks[0], content);
+    }
+
+    #[test]
+    fn test_chunk_period_split() {
+        let mut content = String::new();
+        for i in 0..80 {
+            content.push_str(&format!("这是第{}句话。", i));
+        }
+        // Content should exceed 500 chars and split at periods
+        assert!(content.chars().count() > 500);
+        let chunks = split_at_punctuation(&content, 500);
+        assert!(chunks.len() >= 2, "应在句号处拆分");
+        for chunk in &chunks {
+            assert!(chunk.chars().count() <= 510, // slight overshoot from period join
+                "每个chunk应≤500字左右, got {}", chunk.chars().count());
+        }
+    }
+
+    #[test]
+    fn test_chunk_newline_split() {
+        let mut content = String::new();
+        for i in 0..300 {
+            content.push_str(&format!("line{}\n", i));
+        }
+        assert!(content.len() > 500);
+        let chunks = split_at_punctuation(&content, 500);
+        assert!(chunks.len() >= 2, "应在换行处拆分");
+    }
+
+    #[test]
+    fn test_chunk_punctuation_priority() {
+        // Content with periods should split at period, not at comma
+        let mut content = String::new();
+        for i in 0..35 {
+            content.push_str(&format!("这是第{}段文字，包含逗号分隔的内容。", i));
+        }
+        assert!(content.chars().count() > 500);
+        let chunks = split_at_punctuation(&content, 500);
+        // Each chunk should end with a sentence-ending punctuation
+        for chunk in &chunks[..chunks.len()-1] {
+            assert!(
+                chunk.ends_with('。') || chunk.ends_with('！') || chunk.ends_with('？') || chunk.ends_with('\n'),
+                "chunk应优先在句末标点处拆分, got end: {:?}", chunk.chars().rev().take(5).collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    fn test_chunk_inheritance() {
+        // Verify that chunked DocSections inherit title/path/level
+        let content = std::iter::repeat("长文本内容。").take(90).collect::<String>();
+        let parent = DocSection {
+            title: "Compaction".into(),
+            section_path: "Compaction".into(),
+            level: 2,
+            node_type: "section".into(),
+            content,
+            images: vec![],
+            parent_id: None,
+        };
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::storage::migrate(&conn).unwrap();
+
+        let count = write_doc_sections(&conn, "test", "test.md", "md", &[parent]).unwrap();
+        assert!(count >= 2, "长内容应拆分出多个节点, got {}", count);
+
+        // Check chunks inherit parent fields
+        let mut stmt = conn.prepare("SELECT title, section_path, level, node_type, parent_id FROM doc_nodes WHERE node_type='chunk' ORDER BY section_path").unwrap();
+        let chunks: Vec<_> = stmt.query_map([], |r| Ok((
+            r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,i32>(2)?,
+            r.get::<_,String>(3)?, r.get::<_,Option<i64>>(4)?
+        ))).unwrap().flatten().collect();
+
+        assert!(!chunks.is_empty(), "应有chunk子节点");
+        for (title, path, level, node_type, pid) in &chunks {
+            assert_eq!(title, "Compaction");
+            assert!(path.starts_with("Compaction/chunk/"));
+            assert_eq!(*level, 2);
+            assert_eq!(node_type, "chunk");
+            assert!(pid.is_some(), "chunk应有parent_id");
+        }
+    }
 }
