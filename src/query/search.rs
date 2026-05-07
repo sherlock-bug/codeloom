@@ -17,9 +17,10 @@ pub struct FusedResult {
 }
 
 /// Weighted fusion: normalize BM25 scores to (0,1] then combine with vector cosine similarity.
-/// BM25 scores (from FTS5 bm25()) are ≤0, with 0 = best match. We use 1/(1+|score|).
+/// BM25 scores (from FTS5 bm25()) are ≤0, with 0 = best match. We use 1/(0.5+|score|)
+/// so a strong BM25 hit (e.g. -0.5) normalizes to 1.0, outranking vector similarity.
 /// Vector distances are converted to cosine similarity: 1/(1+distance), already in (0,1].
-/// Final: w_bm25 * norm_bm25 + w_vec * cosine_sim
+/// Final: max(w_bm25 * norm_bm25, w_vec * cosine_sim) — takes the stronger channel.
 pub fn weighted_fuse(
     bm25_hits: &[storage::fts::SearchHit],
     vec_results: &[(f64, String, String, String, i64, String, i64)],
@@ -33,7 +34,7 @@ pub fn weighted_fuse(
     // BM25 side — normalize and insert
     for hit in bm25_hits {
         let key = (hit.name.clone(), hit.file_path.clone());
-        let norm_bm25 = 1.0 / (1.0 + hit.score.abs());
+        let norm_bm25 = 1.0 / (0.5 + hit.score.abs());
         let score = w_bm25 * norm_bm25;
 
         let is_doc = matches!(hit.hit_type, storage::fts::HitType::Doc);
@@ -127,18 +128,14 @@ pub fn hybrid_search(
 
     let mut fused = weighted_fuse(&all_bm25, &vec_results, w_bm25, w_vec);
 
-    // Exact name match boost: if query equals a symbol/file name (case-insensitive),
-    // boost the score to ensure exact matches rank higher than fuzzy vector matches.
+    // If query is a substring of the result name, boost score.
+    // One simple rule for all types — no per-type special casing.
     let query_lower = query.to_lowercase();
     for r in &mut fused {
-        let name_lower = r.name.to_lowercase();
-        if name_lower == query_lower
-            || name_lower.rsplit('/').next().map(|f| f == query_lower).unwrap_or(false)
-        {
-            r.score = (r.score + 0.5).min(1.0);
+        if r.name.to_lowercase().contains(&query_lower) {
+            r.score = (r.score + 0.3).min(1.0);
         }
     }
-    // Re-sort after boosting
     fused.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
