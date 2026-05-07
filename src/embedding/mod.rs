@@ -209,7 +209,11 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
             let mut batch_chars = 0usize;
             for row in all {
                 if existing_doc_ids.contains(&row.0) { doc_skipped += 1; continue; }
-                let text = if !row.2.is_empty() { format!("{}: {} {}", row.1, row.2, row.3) } else { format!("{} {}", row.1, row.3) };
+                let content: String = {
+                    let c: String = row.3.chars().take(embedder.text_limit()).collect();
+                    c.replace('\r', "")
+                };
+                let text = if !row.2.is_empty() { format!("{}: {} {}", row.1, row.2, content) } else { format!("{} {}", row.1, content) };
                 let chars = text.len();
                 batch_chars += chars;
                 text_batch.push((row.0, text));
