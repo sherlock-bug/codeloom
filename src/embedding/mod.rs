@@ -369,10 +369,17 @@ pub fn index_file_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder
             let mut vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
             for row in all {
                 if existing_ids.contains(&row.0) { continue; }
-                let text = if row.2.is_empty() {
+                // Truncate summary to text_limit before embedding (API token limit)
+                let limit = embedder.text_limit();
+                let summary: String = if row.2.len() > limit {
+                    row.2.chars().take(limit).collect()
+                } else {
+                    row.2.clone()
+                };
+                let text = if summary.is_empty() {
                     row.1.clone()
                 } else {
-                    format!("{} | {}", row.1, row.2)
+                    format!("{} | {}", row.1, summary)
                 };
                 text_batch.push((row.0, text));
                 if text_batch.len() >= embedder.batch_size() {
