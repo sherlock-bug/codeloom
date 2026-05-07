@@ -37,10 +37,12 @@ pub fn weighted_fuse(
         let score = w_bm25 * norm_bm25;
 
         let is_doc = matches!(hit.hit_type, storage::fts::HitType::Doc);
+        let is_file = matches!(hit.hit_type, storage::fts::HitType::File);
+        let ht = if is_doc { "doc" } else if is_file { "file" } else { "code" };
         let entry = entries.entry(key.clone()).or_insert(FusedResult {
             score: 0.0,
             name: hit.name.clone(),
-            hit_type: if is_doc { "doc".into() } else { "code".into() },
+            hit_type: ht.into(),
             file_path: hit.file_path.clone(),
             line_start: hit.line_start,
             kind: hit.kind.clone(),
@@ -100,16 +102,18 @@ pub fn hybrid_search(
     // Run BM25 keyword search (FTS5)
     let bm25_symbols = storage::fts::search_symbols(conn, query, repo, branch, fetch_limit, kind_filter)?;
     let bm25_docs = storage::fts::search_docs(conn, query, repo, fetch_limit)?;
+    let bm25_files = storage::fts::search_files(conn, query, repo, fetch_limit)?;
 
     // Run vec0 vector search
     let vec_results = run_vector_search(conn, query, repo, branch, fetch_limit);
-    eprintln!("[DEBUG hybrid_search] bm25_sym={} bm25_doc={} vec={}", 
-        bm25_symbols.len(), bm25_docs.len(), vec_results.len());
+    eprintln!("[DEBUG hybrid_search] bm25_sym={} bm25_doc={} bm25_file={} vec={}", 
+        bm25_symbols.len(), bm25_docs.len(), bm25_files.len(), vec_results.len());
 
-    // Combine bm25 symbols + docs
+    // Combine bm25 symbols + docs + files
     let mut all_bm25: Vec<storage::fts::SearchHit> = Vec::new();
     all_bm25.extend(bm25_symbols);
     all_bm25.extend(bm25_docs);
+    all_bm25.extend(bm25_files);
 
     // Weighted fuse (equal weights, fall back if one side is empty)
     let has_bm25 = !all_bm25.is_empty();
@@ -184,6 +188,21 @@ fn run_vector_search(
                 let sim = 1.0 / (1.0 + dist as f64);
                 let snippet: String = content.chars().take(200).collect();
                 results.push((sim, title, "doc".into(), file_path, 0, snippet, rowid));
+            }
+        }
+    }
+
+    // File vector search
+    let file_table = format!("file_vec_{}", repo.replace('-', "_"));
+    if let Ok(rows) = crate::storage::vector::knn_search(conn, &file_table, &query_emb, limit) {
+        for (rowid, dist) in rows {
+            if let Ok((file_path, summary)) = conn.query_row(
+                "SELECT file_path, COALESCE(summary, '') FROM files WHERE rowid=?1",
+                rusqlite::params![rowid],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            ) {
+                let sim = 1.0 / (1.0 + dist as f64);
+                results.push((sim, file_path.clone(), "file".into(), file_path, 0, summary, 0));
             }
         }
     }

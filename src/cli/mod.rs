@@ -254,12 +254,20 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 Ok(n) => if n > 0 { eprintln!("  FTS5: {} docs indexed", n); },
                 Err(e) => eprintln!("  FTS5 doc warning: {}", e),
             }
+            match crate::storage::fts::fill_files_fts(&conn, &repo) {
+                Ok(n) => if n > 0 { eprintln!("  FTS5: {} files indexed", n); },
+                Err(e) => eprintln!("  FTS5 file warning: {}", e),
+            }
             let t3 = t0.elapsed();
-            // Symbol + Doc vectors (batch process)
-            let embedder = crate::embedding::get_embedder()?;
-            match crate::embedding::index_vectors(&conn, &repo, embedder.as_ref()) {
-                Ok((sym_n, doc_n)) => eprintln!("  Vectors: {} symbols, {} docs", sym_n, doc_n),
-                Err(e) => eprintln!("  Vector warning: {}", e),
+            // Symbol + Doc + File vectors — run in spawn_blocking to avoid reqwest::blocking tokio conflict
+            let (sym_n, doc_n, file_n) = tokio::task::spawn_blocking(move || -> anyhow::Result<(usize, usize, usize)> {
+                let embedder = crate::embedding::get_embedder()?;
+                let (sym_n, doc_n) = crate::embedding::index_vectors(&conn, &repo, embedder.as_ref())?;
+                let file_n = crate::embedding::index_file_vectors(&conn, &repo, embedder.as_ref())?;
+                Ok((sym_n, doc_n, file_n))
+            }).await??;
+            if sym_n + doc_n + file_n > 0 {
+                eprintln!("  Vectors: {} symbols, {} docs, {} files", sym_n, doc_n, file_n);
             }
             let t4 = t0.elapsed();
             eprintln!("  ⏱  parse+db: {:.1}s | docs+fts: {:.1}s | vectors: {:.1}s | total: {:.1}s",

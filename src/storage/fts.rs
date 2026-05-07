@@ -18,17 +18,18 @@ pub struct SearchHit {
 pub enum HitType {
     Code,
     Doc,
+    File,
 }
 
 /// Fill FTS5 symbol index from symbols table (filtered by repo).
-/// Uses 4-column FTS5: name, file_path, signature, kind.
+/// Uses 4-column FTS5: name, file_path, signature, kind, doc_comment.
 pub fn fill_symbols_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
     // Clear old data first (FTS5 doesn't support WHERE DELETE on content tables)
     conn.execute("DELETE FROM fts5_sym", [])?;
 
     let count = conn.execute(
-        "INSERT INTO fts5_sym(name, file_path, signature, kind)
-         SELECT name, file_path, COALESCE(signature, ''), kind FROM symbols WHERE repo=?1 ORDER BY rowid",
+        "INSERT INTO fts5_sym(name, file_path, signature, kind, doc_comment)
+         SELECT name, file_path, COALESCE(signature, ''), kind, COALESCE(doc_comment, '') FROM symbols WHERE repo=?1 ORDER BY rowid",
         rusqlite::params![repo],
     )?;
     Ok(count)
@@ -48,8 +49,55 @@ pub fn fill_docs_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
 
 /// Clear all FTS5 data
 pub fn clear_fts(conn: &Connection) -> anyhow::Result<()> {
-    conn.execute_batch("DELETE FROM fts5_sym; DELETE FROM fts5_doc;")?;
+    conn.execute_batch("DELETE FROM fts5_sym; DELETE FROM fts5_doc; DELETE FROM fts5_files;")?;
     Ok(())
+}
+
+/// Fill FTS5 file index from files table (filtered by repo).
+pub fn fill_files_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
+    conn.execute("DELETE FROM fts5_files", [])?;
+    let count = conn.execute(
+        "INSERT INTO fts5_files(file_path, summary)
+         SELECT file_path, summary FROM files WHERE repo=?1 ORDER BY rowid",
+        rusqlite::params![repo],
+    )?;
+    Ok(count)
+}
+
+/// FTS5 BM25 keyword search on files (by file_path or summary)
+pub fn search_files(
+    conn: &Connection,
+    query: &str,
+    repo: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let safe_query = escape_fts5(query);
+    let mut sql = String::from(
+        "SELECT fts5_files.rowid, bm25(fts5_files) as score, f.file_path, f.summary
+         FROM fts5_files
+         JOIN files f ON fts5_files.rowid = f.rowid
+         WHERE fts5_files MATCH ?1 AND f.repo = ?2
+         ORDER BY score
+         LIMIT ?3",
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let hits = stmt
+        .query_map(rusqlite::params![safe_query, repo, limit as i64], |r| {
+            let summary: String = r.get(3)?;
+            Ok(SearchHit {
+                rowid: r.get(0)?,
+                score: r.get(1)?,
+                hit_type: HitType::File,
+                name: r.get(2)?, // file_path as name
+                file_path: r.get(2)?,
+                line_start: 0,
+                kind: String::new(),
+                snippet: summary,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(hits)
 }
 
 /// FTS5 BM25 keyword search on symbols only (used by hybrid search).

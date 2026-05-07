@@ -158,9 +158,9 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
 
     // Symbol vectors — smart batch by character count
     let mut sym_count = 0; let mut sym_skipped = 0; let mut sym_total = 0;
-    if let Ok(mut stmt) = conn.prepare("SELECT id, name, kind FROM symbols WHERE repo=?1") {
+    if let Ok(mut stmt) = conn.prepare("SELECT id, name, kind, doc_comment FROM symbols WHERE repo=?1") {
         if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
         }) {
             let all: Vec<_> = rows.flatten().collect();
             sym_total = all.len();
@@ -170,7 +170,11 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
             let mut batch_chars = 0usize;
             for row in all {
                 if existing_sym_ids.contains(&row.0) { sym_skipped += 1; processed += 1; continue; }
-                let text = format!("{} {}", row.2, row.1);
+                let text = if row.3.is_empty() {
+                    format!("{} | {}", row.2, row.1)
+                } else {
+                    format!("{} | {} | {}", row.2, row.1, row.3)
+                };
                 let chars = text.len();
                 batch_chars += chars;
                 text_batch.push((row.0, text));
@@ -335,6 +339,53 @@ fn insert_vec_batch(
     )?;
     vec_batch.clear();
     Ok(count)
+}
+
+/// Index file vectors — embed "file_path | summary" for each file
+pub fn index_file_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> anyhow::Result<usize> {
+    if !crate::storage::vector::try_load(conn) { return Ok(0); }
+    let file_table = format!("file_vec_{}", repo.replace('-', "_"));
+    crate::storage::vector::create_tables(conn, repo, embedder.dimension())?;
+
+    let existing_ids: HashSet<i64> = {
+        let mut s = HashSet::new();
+        if let Ok(mut st) = conn.prepare(&format!("SELECT rowid FROM {file_table}")) {
+            if let Ok(rows) = st.query_map([], |r| r.get::<_, i64>(0)) {
+                for r in rows.flatten() { s.insert(r); }
+            }
+        }
+        s
+    };
+
+    let mut file_count = 0;
+    if let Ok(mut stmt) = conn.prepare("SELECT id, file_path, summary FROM files WHERE repo=?1") {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        }) {
+            let all: Vec<_> = rows.flatten().collect();
+            let mut text_batch: Vec<(i64, String)> = Vec::new();
+            let mut vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
+            for row in all {
+                if existing_ids.contains(&row.0) { continue; }
+                let text = if row.2.is_empty() {
+                    row.1.clone()
+                } else {
+                    format!("{} | {}", row.1, row.2)
+                };
+                text_batch.push((row.0, text));
+                if text_batch.len() >= embedder.batch_size() {
+                    flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
+                    file_count += insert_vec_batch(conn, &file_table, &mut vec_batch)?;
+                    text_batch.clear();
+                }
+            }
+            if !text_batch.is_empty() {
+                flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
+                file_count += insert_vec_batch(conn, &file_table, &mut vec_batch)?;
+            }
+        }
+    }
+    Ok(file_count)
 }
 
 // ── Factory ───────────────────────────────────────────────────────────

@@ -58,6 +58,8 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
     migrate_v5(conn)?;
     // v0.5.x migration: fts5_sym column extension (definition + kind)
     migrate_v6(conn)?;
+    // v0.6.0 migration: comment + file nodes + doc chunking
+    migrate_v7(conn)?;
     Ok(())
 }
 
@@ -116,6 +118,68 @@ fn migrate_v6(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch("
             DROP TABLE IF EXISTS fts5_sym;
             CREATE VIRTUAL TABLE fts5_sym USING fts5(name, file_path, signature, definition, kind);
+        ")?;
+    }
+
+    Ok(())
+}
+
+/// v0.6.0 migration: doc_comment, parent_id, file nodes, doc_comment in FTS5
+fn migrate_v7(conn: &Connection) -> anyhow::Result<()> {
+    // 1. symbols.doc_comment
+    let has_doc_comment: bool = conn
+        .prepare("SELECT doc_comment FROM symbols LIMIT 0")
+        .is_ok();
+    if !has_doc_comment {
+        conn.execute_batch("ALTER TABLE symbols ADD COLUMN doc_comment TEXT NOT NULL DEFAULT '';")?;
+    }
+
+    // 2. doc_nodes.parent_id
+    let has_parent_id: bool = conn
+        .prepare("SELECT parent_id FROM doc_nodes LIMIT 0")
+        .is_ok();
+    if !has_parent_id {
+        conn.execute_batch("
+            ALTER TABLE doc_nodes ADD COLUMN parent_id INTEGER REFERENCES doc_nodes(id);
+            CREATE INDEX IF NOT EXISTS idx_doc_parent ON doc_nodes(parent_id);
+        ")?;
+    }
+
+    // 3. files table
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY,
+            repo TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_type TEXT NOT NULL CHECK(file_type IN ('code', 'doc')),
+            summary TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL DEFAULT '',
+            branch_name TEXT DEFAULT 'main',
+            UNIQUE(repo, file_path, branch_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_files_repo ON files(repo);
+    ")?;
+
+    // 4. fts5_files FTS5 index
+    let has_fts_files: bool = {
+        let test_sql = "SELECT file_path FROM fts5_files LIMIT 0";
+        conn.prepare(test_sql).is_ok()
+    };
+    if !has_fts_files {
+        conn.execute_batch("
+            CREATE VIRTUAL TABLE fts5_files USING fts5(file_path, summary);
+        ")?;
+    }
+
+    // 5. Rebuild fts5_sym with doc_comment column
+    let has_doc_comment_fts: bool = {
+        let test_sql = "SELECT doc_comment FROM fts5_sym LIMIT 0";
+        conn.prepare(test_sql).is_ok()
+    };
+    if !has_doc_comment_fts {
+        conn.execute_batch("
+            DROP TABLE IF EXISTS fts5_sym;
+            CREATE VIRTUAL TABLE fts5_sym USING fts5(name, file_path, signature, kind, doc_comment);
         ")?;
     }
 

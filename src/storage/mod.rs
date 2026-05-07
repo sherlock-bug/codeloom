@@ -1,5 +1,5 @@
 use rusqlite::Connection;
-pub mod dedup; pub mod fts; pub mod schema; pub mod symbols; pub mod vector;
+pub mod dedup; pub mod files; pub mod fts; pub mod schema; pub mod symbols; pub mod vector;
 
 pub fn open(path: &str) -> anyhow::Result<Connection> {
     let conn = Connection::open(path)?;
@@ -165,6 +165,7 @@ mod tests {
             signature: Some("void my_func()".into()),
             parent_class: None,
             namespace: None,
+            doc_comment: String::new(),
         };
         let id = sym.insert(&conn).unwrap();
         assert!(id > 0);
@@ -192,6 +193,7 @@ mod tests {
             signature: None,
             parent_class: None,
             namespace: None,
+            doc_comment: String::new(),
         };
         let id1 = sym.insert(&conn).unwrap();
         let id2 = sym.insert(&conn).unwrap();

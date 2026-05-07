@@ -1,4 +1,3 @@
-use crate::embedding::Embedder;
 use crate::indexer::{
     git,
     tree_sitter::{self, FileInfo},
@@ -47,12 +46,10 @@ fn _smart_index(
     let head = git::head_commit(repo_root);
     result.head_commit = head.clone();
 
-    // Initialize embedder for vec0 tables only; batch index_vectors handles all embedding
-    let embedder = crate::embedding::get_embedder()?;
-    crate::storage::vector::create_tables(conn, repo_name, embedder.dimension())?;
+    // Vec0 tables are created by index_vectors() — skip eager init here
 
     let Some(ref head_commit) = head else {
-        full_scan(conn, repo_root, repo_name, branch, &mut result, None)?;
+        full_scan(conn, repo_root, repo_name, branch, &mut result)?;
         return Ok(result);
     };
 
@@ -77,7 +74,7 @@ fn _smart_index(
         result.files_changed = files.len();
         result.files_scanned = files.len();
         for fp in &files {
-            match index_one(conn, fp, repo_root, repo_name, branch, None) {
+            match index_one(conn, fp, repo_root, repo_name, branch) {
                 Ok(c) => result.symbols_new += c,
                 Err(e) => eprintln!("Warning: {}: {}", fp, e),
             }
@@ -101,7 +98,7 @@ fn _smart_index(
         result.files_scanned = files.len();
         result.from_commit = Some(base);
         for fp in &files {
-            match index_one(conn, fp, repo_root, repo_name, branch, None) {
+            match index_one(conn, fp, repo_root, repo_name, branch) {
                 Ok(c) => result.symbols_new += c,
                 Err(e) => eprintln!("Warning: {}: {}", fp, e),
             }
@@ -112,7 +109,7 @@ fn _smart_index(
         return Ok(result);
     }
 
-    full_scan(conn, repo_root, repo_name, branch, &mut result, None)?;
+    full_scan(conn, repo_root, repo_name, branch, &mut result)?;
     update_state(
         conn, repo_name, branch, head_commit, None, result.files_changed,
     )?;
@@ -125,7 +122,6 @@ fn full_scan(
     repo_name: &str,
     branch: &str,
     result: &mut IndexResult,
-    embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<()> {
     let files: Vec<String> = tree_sitter::collect_files(repo_root)
         .into_iter()
@@ -138,7 +134,7 @@ fn full_scan(
         if total > 20 && (i % 20 == 0 || i == total - 1) {
             eprintln!("  [{:>3}/{}] parsing + vectorizing...", i + 1, total);
         }
-        match index_one(conn, fp, repo_root, repo_name, branch, embedder) {
+        match index_one(conn, fp, repo_root, repo_name, branch) {
             Ok(c) => result.symbols_new += c,
             Err(e) => eprintln!("Warning: {}: {}", fp, e),
         }
@@ -150,15 +146,12 @@ fn full_scan(
     Ok(())
 }
 
-// ... (find_parent, commit_time unchanged)
-
 fn index_one(
     conn: &Connection,
     file_path: &str,
     _repo_root: &str,
     repo_name: &str,
     branch: &str,
-    embedder: Option<&dyn Embedder>,
 ) -> anyhow::Result<usize> {
     let lang = match tree_sitter::detect_language(file_path) {
         Some(l) => l,
@@ -176,7 +169,6 @@ fn index_one(
     let (symbols, edges_data) = tree_sitter::parse_file(&fi, &mut parser, repo_name)?;
     let count = symbols.len();
     let mut id_map = Vec::new();
-    let sym_table = format!("symbol_vec_{}", repo_name.replace('-', "_"));
 
     for sym in &symbols {
         let db_id = sym.insert(conn)?;
@@ -185,9 +177,6 @@ fn index_one(
             "INSERT OR IGNORE INTO branches (symbol_id,repo,branch_name,override_def,override_hash) VALUES (?1,?2,?3,NULL,NULL)",
             rusqlite::params![db_id, repo_name, branch],
         )?;
-
-        // Inline vectorization disabled — defer to index_vectors batch processing
-        let _ = embedder;  // silence unused warning
     }
     // Resolve target IDs: same-file by name first, then DB by name
     for (src_idx, _tgt_idx, edge) in &edges_data {
@@ -199,6 +188,25 @@ fn index_one(
             );
         }
     }
+    // Create file node with comment summary for code search
+    let summary: String = symbols
+        .iter()
+        .filter(|s| !s.doc_comment.is_empty())
+        .map(|s| s.doc_comment.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let fn_hash = crate::storage::dedup::hash_content(file_path);
+    crate::storage::files::FileNode {
+        id: None,
+        repo: repo_name.to_string(),
+        file_path: file_path.to_string(),
+        file_type: "code".to_string(),
+        summary,
+        content_hash: fn_hash,
+        branch_name: branch.to_string(),
+    }
+    .insert(conn)?;
+
     Ok(count)
 }
 

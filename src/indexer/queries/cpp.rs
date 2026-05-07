@@ -107,6 +107,7 @@ fn extract_func(
         file_path: file.path.clone(), line_start: node.start_position().row as u32+1, 
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: Some(full), parent_class: parent_class.map(|s| s.into()), namespace: None,
+    doc_comment: comment,
     });
     let idx = symbols.len() - 1;
     // contains edge: class → method
@@ -179,6 +180,7 @@ fn extract_class(
         file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: Some(name.into()), parent_class: None, namespace: None,
+    doc_comment: comment,
     });
     let class_idx = symbols.len() - 1;
 
@@ -215,6 +217,7 @@ fn extract_enum(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols:
         file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: None, parent_class: None, namespace: None,
+    doc_comment: comment,
     });
     let enum_idx = symbols.len() - 1;
     // Extract enum values from enumerator_list
@@ -235,6 +238,7 @@ fn extract_enum(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols:
                                 line_end: enumerator.end_position().row as u32+1,
                                 language: Some("cpp".into()), signature: Some(full),
                                 parent_class: Some(name.to_string()), namespace: None,
+                            doc_comment: String::new(),
                             });
                             let vi = symbols.len() - 1;
                             edges.push((enum_idx, vi, format!("contains:{}", vname)));
@@ -277,6 +281,7 @@ fn extract_field(
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: Some(format!("{}: {}", name, type_name)),
         parent_class: parent_class.map(|s| s.into()), namespace: None,
+    doc_comment: comment,
     });
     let field_idx = symbols.len() - 1;
 
@@ -305,7 +310,7 @@ fn extract_decl(source: &str, node: &Node, file: &FileInfo, repo: &str, parent_c
                 None => name.to_string(),
             };
             let kind = if is_static { "static_var" } else if is_global { "global" } else { "variable" };
-            let def = extract_text(source, node.start_position().row as u32+1, node.end_position().row as u32+1);
+            let comment = collect_comments(source, node);
             symbols.push(Symbol {
                 id: None, repo: repo.into(), name: full,
                 kind: kind.into(),
@@ -313,6 +318,7 @@ fn extract_decl(source: &str, node: &Node, file: &FileInfo, repo: &str, parent_c
         file_path: file.path.clone(), line_start: node.start_position().row as u32+1,
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
         signature: None,parent_class: parent_class.map(|s| s.into()), namespace: None,
+                doc_comment: comment,
             });
         }
     }
@@ -325,28 +331,52 @@ fn emit_contains(symbols: &[Symbol], class_name: &str, member_idx: usize, member
     }
 }
 
-/// Collect doc comments (///, /** */) preceding a node using source text scanning.
+/// Collect doc comments (///, /** */) preceding a node + inline // on same line.
 fn collect_comments(source: &str, node: &Node) -> String {
     let start_byte = node.start_byte();
-    if start_byte == 0 { return String::new(); }
-    let before = &source[..start_byte];
-    let mut lines: Vec<&str> = before.lines().collect();
-    let mut comments = Vec::new();
-    // walk backwards from the line before the node
-    while let Some(line) = lines.pop() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("///") || trimmed.starts_with("//!") || trimmed.starts_with("/**") || trimmed.starts_with(" *") || trimmed == "*/" {
-            comments.push(trimmed);
-        } else if trimmed.is_empty() {
-            // blank line — stop unless we're in a block comment
-            continue;
-        } else {
-            break; // non-comment, non-blank line — stop
+    let mut parts = Vec::new();
+
+    // 1. Preceding doc comments
+    if start_byte > 0 {
+        let before = &source[..start_byte];
+        let mut lines: Vec<&str> = before.lines().collect();
+        let mut comments = Vec::new();
+        while let Some(line) = lines.pop() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("///") || trimmed.starts_with("//!") || trimmed.starts_with("/**") || trimmed.starts_with(" *") || trimmed == "*/" {
+                comments.push(trimmed);
+            } else if trimmed.is_empty() {
+                continue;
+            } else {
+                break;
+            }
+        }
+        comments.reverse();
+        if !comments.is_empty() {
+            parts.push(comments.join("\n"));
         }
     }
-    comments.reverse();
-    if comments.is_empty() { return String::new(); }
-    comments.join("\n")
+
+    // 2. Inline comment on same line (// ... after node text)
+    let end_byte = node.end_byte();
+    let rest_of_line = &source[end_byte..];
+    if let Some(comment_start) = rest_of_line.find("//") {
+        let before_comment = &rest_of_line[..comment_start];
+        if before_comment.trim().is_empty() {
+            let inline = rest_of_line[comment_start..]
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_start_matches("//")
+                .trim();
+            if !inline.is_empty() {
+                parts.push(inline.to_string());
+            }
+        }
+    }
+
+    parts.join(" | ")
 }
 
 fn extract_calls(source: &str, node: &Node, caller_idx: usize, edges: &mut Vec<(usize, usize, String)>) {
