@@ -98,7 +98,12 @@ fn extract_func(
     if name.is_empty() || name.contains("HEDLEY") { name = "anon".into(); }
     let full = match parent_class { Some(c) => format!("{}::{}", c, name), None => name.clone() };
     let mut def = extract_text(source, node.start_position().row as u32+1, node.end_position().row as u32+1);
-    let comment = collect_comments(source, node);
+    let mut comment = collect_comments(source, node);
+    let body_comments = collect_body_comments(source, node);
+    if !body_comments.is_empty() {
+        if !comment.is_empty() { comment.push_str(" | "); }
+        comment.push_str(&body_comments);
+    }
     if !comment.is_empty() { def = format!("{}\n{}", comment, def); }
     symbols.push(Symbol {
         id: None, repo: repo.into(), name: full.clone(),
@@ -172,7 +177,12 @@ fn extract_class(
         .and_then(|n| n.utf8_text(source.as_bytes()).ok())
         .unwrap_or("anonymous");
     let mut def = extract_text(source, node.start_position().row as u32+1, node.end_position().row as u32+1);
-    let comment = collect_comments(source, node);
+    let mut comment = collect_comments(source, node);
+    let body_comments = collect_body_comments(source, node);
+    if !body_comments.is_empty() {
+        if !comment.is_empty() { comment.push_str(" | "); }
+        comment.push_str(&body_comments);
+    }
     if !comment.is_empty() { def = format!("{}\n{}", comment, def); }
     symbols.push(Symbol {
         id: None, repo: repo.into(), name: name.into(), kind: kind.into(),
@@ -209,7 +219,12 @@ fn extract_class(
 fn extract_enum(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols: &mut Vec<Symbol>, edges: &mut Vec<(usize, usize, String)>) {
     let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(source.as_bytes()).ok()).unwrap_or("anonymous");
     let mut def = extract_text(source, node.start_position().row as u32+1, node.end_position().row as u32+1);
-    let comment = collect_comments(source, node);
+    let mut comment = collect_comments(source, node);
+    let body_comments = collect_body_comments(source, node);
+    if !body_comments.is_empty() {
+        if !comment.is_empty() { comment.push_str(" | "); }
+        comment.push_str(&body_comments);
+    }
     if !comment.is_empty() { def = format!("{}\n{}", comment, def); }
     symbols.push(Symbol {
         id: None, repo: repo.into(), name: name.into(), kind: "enum".into(),
@@ -377,6 +392,31 @@ fn collect_comments(source: &str, node: &Node) -> String {
     }
 
     parts.join(" | ")
+}
+
+/// Collect comment nodes inside a function/class body (tree-sitter 'comment' nodes).
+fn collect_body_comments(source: &str, node: &Node) -> String {
+    let mut comments = Vec::new();
+    collect_comments_recursive(source, node, &mut comments);
+    if comments.is_empty() {
+        return String::new();
+    }
+    comments.join(" | ")
+}
+
+fn collect_comments_recursive(source: &str, node: &Node, comments: &mut Vec<String>) {
+    if node.kind() == "comment" {
+        if let Ok(text) = node.utf8_text(source.as_bytes()) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                comments.push(trimmed.to_string());
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_comments_recursive(source, &child, comments);
+    }
 }
 
 fn extract_calls(source: &str, node: &Node, caller_idx: usize, edges: &mut Vec<(usize, usize, String)>) {
