@@ -7,7 +7,11 @@ use crate::storage::symbols::Symbol;
 pub fn extract(
     source: &str, root: Node, file: &FileInfo, repo: &str,
     symbols: &mut Vec<Symbol>, edges: &mut Vec<(usize, usize, String)>,
-) { walk_children(source, &root, file, repo, None, symbols, edges); }
+) {
+    walk_children(source, &root, file, repo, None, symbols, edges);
+    // Full-tree string literal collection (string_literals are deep children)
+    collect_all_string_literals(source, &root, file, repo, symbols);
+}
 
 fn walk_children(
     source: &str, node: &Node, file: &FileInfo, repo: &str,
@@ -35,6 +39,8 @@ fn walk_children(
                 } else {
                     extract_decl(source, &child, file, repo, parent_class, symbols);
                 }
+                // Recurse into children for nested string_literals, macros, etc.
+                walk_children(source, &child, file, repo, parent_class, symbols, edges);
             }
             "template_declaration" | "namespace_definition" | "linkage_specification" => {
                 let body = child.child_by_field_name("body")
@@ -65,6 +71,9 @@ fn walk_children(
                     }
                 }
             }
+            "preproc_def" | "preproc_function_def" => extract_macro(source, &child, file, repo, symbols),
+            "preproc_if" | "preproc_ifdef" | "preproc_else" => walk_children(source, &child, file, repo, parent_class, symbols, edges),
+            "string_literal" | "raw_string_literal" | "concatenated_string" | "system_lib_string" => extract_string_literal(source, &child, file, repo, symbols),
             _ => {}
         }
     }
@@ -447,3 +456,87 @@ fn extract_calls(source: &str, node: &Node, caller_idx: usize, edges: &mut Vec<(
         }
     }
 }
+
+// ── Macro extraction ──────────────────────────────────────────────────
+
+fn is_noise_macro(name: &str) -> bool {
+    let n = name.trim();
+    if n.is_empty() { return true; }
+    if n.ends_with("_H") || n.ends_with("_H_") || n.contains("INCLUDED") || n.contains("_h_") { return true; }
+    if n.starts_with("__") { return true; }
+    if matches!(n, "NDEBUG" | "_WIN32" | "_MSC_VER" | "_GLIBCXX_" | "LEVELDB_EXPORT") { return true; }
+    false
+}
+
+fn extract_macro(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols: &mut Vec<Symbol>) {
+    let name = node.child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source.as_bytes()).ok()).unwrap_or("");
+    if is_noise_macro(name) { return; }
+    let mut def = extract_text(source, node.start_position().row as u32 + 1, node.end_position().row as u32 + 1);
+    let mut comment = collect_comments(source, node);
+    let body_comments = collect_body_comments(source, node);
+    if !body_comments.is_empty() {
+        if !comment.is_empty() { comment.push_str(" | "); }
+        comment.push_str(&body_comments);
+    }
+    if !comment.is_empty() { def = format!("{}\n{}", comment, def); }
+    symbols.push(Symbol {
+        id: None, repo: repo.into(), name: name.into(), kind: "macro".into(),
+        content_hash: dedup::hash_content(name),
+        file_path: file.path.clone(), line_start: node.start_position().row as u32 + 1,
+        line_end: node.end_position().row as u32 + 1, language: Some("cpp".into()),
+        signature: Some(def), parent_class: None, namespace: None, doc_comment: comment,
+    });
+}
+
+// ── String literal extraction ────────────────────────────────────────
+
+fn strip_string_delimiters(s: &str) -> &str {
+    let s = s.trim();
+    // "..." or u8"..." etc
+    if s.len() >= 2 && s.ends_with('"') {
+        let start = s.find('"').unwrap_or(0);
+        return &s[start+1..s.len()-1];
+    }
+    // R"(...)" or R"foo(...)foo"
+    if s.starts_with("R\"") {
+        if let Some(open) = s.find('(') {
+            if let Some(close) = s.rfind(')') {
+                return &s[open+1..close];
+            }
+        }
+    }
+    // <...>
+    if s.len() >= 2 && s.starts_with('<') && s.ends_with('>') {
+        return &s[1..s.len()-1];
+    }
+    s
+}
+
+fn collect_all_string_literals(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols: &mut Vec<Symbol>) {
+    let kind = node.kind();
+    if kind == "string_literal" || kind == "raw_string_literal" || kind == "concatenated_string" || kind == "system_lib_string" {
+        extract_string_literal(source, node, file, repo, symbols);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_all_string_literals(source, &child, file, repo, symbols);
+    }
+}
+
+fn extract_string_literal(source: &str, node: &Node, file: &FileInfo, repo: &str, symbols: &mut Vec<Symbol>) {
+    let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("");
+    let name = strip_string_delimiters(raw);
+    if name.is_empty() { return; }
+    let mut def = extract_text(source, node.start_position().row as u32 + 1, node.end_position().row as u32 + 1);
+    let comment = collect_comments(source, node);
+    if !comment.is_empty() { def = format!("{}\n{}", comment, def); }
+    symbols.push(Symbol {
+        id: None, repo: repo.into(), name: name.into(), kind: "string_literal".into(),
+        content_hash: String::new(),
+        file_path: file.path.clone(), line_start: node.start_position().row as u32 + 1,
+        line_end: node.end_position().row as u32 + 1, language: Some("cpp".into()),
+        signature: Some(def), parent_class: None, namespace: None, doc_comment: comment,
+    });
+}
+
