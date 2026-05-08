@@ -28,7 +28,7 @@ codeloom_search(query="memory allocation")  → 英文功能描述搜索
 ### 获取定义
 ```
 codeloom_list_symbols(pattern="method") → 模糊匹配找到完整符号名
-codeloom_get_definition(name="ClassName::method") → 获取完整定义
+codeloom_inspect(name="ClassName::method") → 获取完整定义
 ```
 
 ### 关系分析（grep 无法替代）
@@ -47,7 +47,7 @@ codeloom_get_call_graph(name="ClassName::method", direction="callers") → 谁�
 | `codeloom_status` | 索引状态统计 | branch, repo |
 | `codeloom_search` | **唯一搜索入口**（混合 BM25+向量） | query, branch, repo |
 | `codeloom_list_symbols` | 模糊搜索符号名 | pattern, branch, repo |
-| `codeloom_get_definition` | 获取符号完整定义 | name, branch, repo |
+| `codeloom_inspect` | 查看节点全部信息 | name, branch, repo |
 | `codeloom_get_call_graph` | 调用关系分析 | name, branch, repo |
 | `codeloom_index` | ⚠️ 不执行索引（需CLI） | path, branch |
 

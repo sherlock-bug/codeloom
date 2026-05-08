@@ -11,12 +11,14 @@ pub struct SearchHit {
     pub file_path: String,
     pub line_start: i64,
     pub kind: String,     // symbol kind (function/class/enum_value...), empty for docs
-    pub snippet: String,  // empty (definition removed in v0.6.0)
+    pub sig: String,      // signature for function/method, empty otherwise
+    pub snippet: String,  // doc_comment or doc content
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HitType {
-    Code,
+    CodeName,     // search_symbols_name — name+signature+kind hit
+    CodeComment,  // search_symbols_comment — doc_comment hit
     Doc,
     File,
 }
@@ -28,8 +30,8 @@ pub fn fill_symbols_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> 
     conn.execute("DELETE FROM fts5_sym", [])?;
 
     let count = conn.execute(
-        "INSERT INTO fts5_sym(name, file_path, signature, kind, doc_comment)
-         SELECT name, file_path, COALESCE(signature, ''), kind, COALESCE(doc_comment, '') FROM symbols WHERE repo=?1 ORDER BY rowid",
+        "INSERT INTO fts5_sym(rowid, name, file_path, signature, kind, doc_comment)
+         SELECT s.rowid, s.name, s.file_path, COALESCE(s.signature, ''), s.kind, COALESCE(s.doc_comment, '') FROM symbols s WHERE s.repo=?1",
         rusqlite::params![repo],
     )?;
     Ok(count)
@@ -92,6 +94,7 @@ pub fn search_files(
                 file_path: r.get(2)?,
                 line_start: 0,
                 kind: String::new(),
+                sig: String::new(),
                 snippet: summary,
             })
         })?
@@ -100,9 +103,8 @@ pub fn search_files(
     Ok(hits)
 }
 
-/// FTS5 BM25 keyword search on symbols only (used by hybrid search).
-/// If kind_filter is Some, only returns symbols of that kind.
-pub fn search_symbols(
+/// FTS5 BM25 keyword search on symbol names (name + signature + kind columns).
+pub fn search_symbols_name(
     conn: &Connection,
     query: &str,
     repo: &str,
@@ -110,13 +112,35 @@ pub fn search_symbols(
     limit: usize,
     kind_filter: Option<&str>,
 ) -> anyhow::Result<Vec<SearchHit>> {
-    let safe_query = escape_fts5(query);
-    if cfg!(debug_assertions) {
-        eprintln!("[DEBUG search_symbols] query={:?} safe={:?} repo={:?} branch={:?} limit={} kind={:?}", query, safe_query, repo, branch, limit, kind_filter);
-    }
+    let fts5_query = build_column_query(query, &["name", "signature", "kind"]);
+    search_symbols_with_query(conn, &fts5_query, repo, branch, limit, kind_filter, HitType::CodeName)
+}
 
+/// FTS5 BM25 keyword search on symbol doc_comment column.
+pub fn search_symbols_comment(
+    conn: &Connection,
+    query: &str,
+    repo: &str,
+    branch: &str,
+    limit: usize,
+    kind_filter: Option<&str>,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let fts5_query = build_column_query(query, &["doc_comment"]);
+    search_symbols_with_query(conn, &fts5_query, repo, branch, limit, kind_filter, HitType::CodeComment)
+}
+
+/// Internal helper: execute FTS5 symbol query with given MATCH string and HitType tag.
+fn search_symbols_with_query(
+    conn: &Connection,
+    fts5_query: &str,
+    repo: &str,
+    branch: &str,
+    limit: usize,
+    kind_filter: Option<&str>,
+    hit_type: HitType,
+) -> anyhow::Result<Vec<SearchHit>> {
     let mut sql = String::from(
-        "SELECT fts5_sym.rowid, bm25(fts5_sym) as score, s.name, s.file_path, s.line_start, s.kind, COALESCE(s.doc_comment, '')
+        "SELECT fts5_sym.rowid, bm25(fts5_sym) as score, s.name, s.file_path, s.line_start, s.kind, COALESCE(s.doc_comment, ''), COALESCE(s.signature, '')
          FROM fts5_sym
          JOIN symbols s ON s.rowid = fts5_sym.rowid
          JOIN branches b ON b.symbol_id = s.id
@@ -133,44 +157,77 @@ pub fn search_symbols(
 
     let hits: Vec<SearchHit> = if let Some(kind) = kind_filter {
         stmt.query_map(
-            rusqlite::params![safe_query, repo, branch, limit as i64, kind],
-            |r| map_symbol_hit(r),
+            rusqlite::params![fts5_query, repo, branch, limit as i64, kind],
+            |r| map_symbol_hit_with_type(r, &hit_type),
         )?
         .filter_map(|r| r.ok())
         .collect()
     } else {
         stmt.query_map(
-            rusqlite::params![safe_query, repo, branch, limit as i64],
-            |r| map_symbol_hit(r),
+            rusqlite::params![fts5_query, repo, branch, limit as i64],
+            |r| map_symbol_hit_with_type(r, &hit_type),
         )?
         .filter_map(|r| r.ok())
         .collect()
     };
 
-    if cfg!(debug_assertions) {
-        eprintln!("[DEBUG search_symbols] got {} hits: {:?}", 
-            hits.len(), 
-            hits.iter().map(|h| (h.name.as_str(), h.score, h.file_path.as_str())).collect::<Vec<_>>());
-    }
-
     Ok(hits)
 }
 
-fn map_symbol_hit(r: &rusqlite::Row) -> rusqlite::Result<SearchHit> {
-    let doc_comment: String = r.get(6)?;
-    let snippet = if doc_comment.is_empty() {
-        String::new()
+/// Build FTS5 column-filtered query: for column "name" and query "snappy",
+/// produces 'name:"snappy" OR name:snappy* OR signature:"snappy" OR ...'
+fn build_column_query(query: &str, columns: &[&str]) -> String {
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    let mut parts = Vec::new();
+    for col in columns {
+        for &term in &terms {
+            let escaped_term = escape_fts5_term(term);
+            parts.push(format!("{}:{}", col, escaped_term));
+        }
+    }
+    parts.join(" OR ")
+}
+
+/// Escape a single term for FTS5 query (wrapped for use with column: prefix)
+fn escape_fts5_term(term: &str) -> String {
+    if term.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        format!("\"{}\" OR {}*", term, term)
     } else {
-        doc_comment.chars().take(120).collect()
+        format!("\"{}\"", term)
+    }
+}
+
+/// Legacy: search_symbols forwards to name search only (backward compat for tests)
+pub fn search_symbols(
+    conn: &Connection,
+    query: &str,
+    repo: &str,
+    branch: &str,
+    limit: usize,
+    kind_filter: Option<&str>,
+) -> anyhow::Result<Vec<SearchHit>> {
+    search_symbols_name(conn, query, repo, branch, limit, kind_filter)
+}
+
+fn map_symbol_hit_with_type(r: &rusqlite::Row, hit_type: &HitType) -> rusqlite::Result<SearchHit> {
+    let doc_comment: String = r.get(6)?;
+    let signature: String = r.get(7)?;
+    let snippet = if !doc_comment.is_empty() {
+        doc_comment.trim().chars().take(500).collect()
+    } else if !signature.is_empty() {
+        signature.chars().take(500).collect()
+    } else {
+        String::new()
     };
     Ok(SearchHit {
         rowid: r.get(0)?,
         score: r.get(1)?,
-        hit_type: HitType::Code,
+        hit_type: hit_type.clone(),
         name: r.get(2)?,
         file_path: r.get(3)?,
         line_start: r.get(4)?,
         kind: r.get(5)?,
+        sig: signature,
         snippet,
     })
 }
@@ -206,6 +263,7 @@ pub fn search_docs(
                     file_path: r.get(3)?,
                     line_start: r.get(4)?,
                     kind: String::new(),
+                    sig: String::new(),
                     snippet,
                 })
             },

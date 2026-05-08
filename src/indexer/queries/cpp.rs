@@ -97,6 +97,13 @@ fn extract_func(
     }
     if name.is_empty() || name.contains("HEDLEY") { name = "anon".into(); }
     let full = match parent_class { Some(c) => format!("{}::{}", c, name), None => name.clone() };
+    // Build signature: return_type + name + parameters (e.g. "Status Delete(const Slice& key)")
+    let sig = if let (Some(ty), Some(decl)) = (node.child_by_field_name("type"), node.child_by_field_name("declarator")) {
+        let ty_text = ty.utf8_text(source.as_bytes()).unwrap_or("").trim().to_string();
+        let decl_text = decl.utf8_text(source.as_bytes()).unwrap_or("").trim().to_string();
+        if ty_text.is_empty() { decl_text }
+        else { format!("{} {}", ty_text, decl_text) }
+    } else { full.clone() };
     let mut def = extract_text(source, node.start_position().row as u32+1, node.end_position().row as u32+1);
     let mut comment = collect_comments(source, node);
     let body_comments = collect_body_comments(source, node);
@@ -111,7 +118,7 @@ fn extract_func(
         content_hash: dedup::hash_content(&full),
         file_path: file.path.clone(), line_start: node.start_position().row as u32+1, 
         line_end: node.end_position().row as u32+1, language: Some("cpp".into()),
-        signature: Some(full), parent_class: parent_class.map(|s| s.into()), namespace: None,
+        signature: Some(sig), parent_class: parent_class.map(|s| s.into()), namespace: None,
     doc_comment: comment,
     });
     let idx = symbols.len() - 1;

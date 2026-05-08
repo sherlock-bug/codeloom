@@ -128,8 +128,8 @@ pub enum Command {
         limit: usize,
     },
 
-    /// 获取符号完整定义
-    GetDefinition {
+    /// 查看节点全部信息：定义、注释、所有关联边
+    Inspect {
         /// 符号完整名称（C++ 类方法用 ClassName::methodName）
         name: String,
         /// 仓库标识名（默认自动检测）
@@ -319,16 +319,18 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
             let docs: i64 = conn.query_row("SELECT COUNT(*) FROM doc_nodes WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
             let resolved: i64 = conn.query_row("SELECT COUNT(*) FROM edges WHERE target_id!=0", [], |r| r.get(0)).unwrap_or(0);
-            let sym_table = format!("symbol_vec_{}", repo.replace('-', "_"));
+            let sym_name_table = format!("symbol_name_vec_{}", repo.replace('-', "_"));
+            let sym_comment_table = format!("symbol_comment_vec_{}", repo.replace('-', "_"));
             let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
-            let vec_syms: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {sym_table}"), [], |r| r.get(0)).unwrap_or(0);
+            let vec_syms_name: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {sym_name_table}"), [], |r| r.get(0)).unwrap_or(0);
+            let vec_syms_comment: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {sym_comment_table}"), [], |r| r.get(0)).unwrap_or(0);
             let vec_docs: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {doc_table}"), [], |r| r.get(0)).unwrap_or(0);
             let fts5_syms: i64 = conn.query_row("SELECT COUNT(*) FROM fts5_sym", [], |r| r.get(0)).unwrap_or(0);
             let fts5_docs: i64 = conn.query_row("SELECT COUNT(*) FROM fts5_doc", [], |r| r.get(0)).unwrap_or(0);
             let meta = std::fs::metadata(&dbp).ok();
             println!("Repo: {}", repo);
             println!("  Symbols: {}  |  Edges: {} (resolved: {} / {:.0}%)  |  Docs: {}", syms, edges, resolved, if edges>0 {resolved as f64/edges as f64*100.0}else{0.0}, docs);
-            println!("  Vectors: {} symbols + {} docs indexed", vec_syms, vec_docs);
+            println!("  Vectors: {} name + {} comment + {} docs indexed", vec_syms_name, vec_syms_comment, vec_docs);
             println!("  FTS5: {} symbols + {} docs indexed", fts5_syms, fts5_docs);
             if let Some(m) = meta { println!("  DB size: {:.1} MB", m.len() as f64 / 1_048_576.0); }
         }
@@ -569,7 +571,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             }
             if count == 0 { println!("  (none)"); }
         }
-        Command::GetDefinition { name, repo, branch } => {
+        Command::Inspect { name, repo, branch } => {
             let repo = repo.unwrap_or_else(autodetect_repo);
             let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
             if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
@@ -577,22 +579,70 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let dbp = dd.join(format!("{}.rag.db", repo));
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
-            let sql = "SELECT s.name, s.kind, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 AND (b.branch_name=?3 OR b.branch_name IS NULL) LIMIT 5";
+            // Fetch symbol with all fields
+            let sql = "SELECT s.id, s.name, s.kind, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class, s.namespace, s.language, s.doc_comment FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 AND (b.branch_name=?3 OR b.branch_name IS NULL) LIMIT 5";
             let mut stmt = conn.prepare(sql)?;
             let rows = stmt.query_map(rusqlite::params![repo, name, branch], |r| {
-                Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
-                    r.get::<_,i64>(3)?, r.get::<_,i64>(4)?,
-                    r.get::<_,Option<String>>(5)?, r.get::<_,Option<String>>(6)?))
+                Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
+                    r.get::<_,String>(3)?, r.get::<_,i64>(4)?, r.get::<_,i64>(5)?,
+                    r.get::<_,Option<String>>(6)?, r.get::<_,Option<String>>(7)?,
+                    r.get::<_,Option<String>>(8)?, r.get::<_,Option<String>>(9)?,
+                    r.get::<_,Option<String>>(10)?))
             })?;
             let mut found = false;
-            for (i, row) in rows.flatten().enumerate() {
+            for (_i, row) in rows.flatten().enumerate() {
                 found = true;
-                let (sname, kind, file, lstart, lend, sig, parent) = row;
-                if i > 0 { println!("---"); }
-                print!("[{}] {}", kind, sname);
-                if let Some(ref p) = parent { print!("  (in {})", p); }
-                println!("\n  File: {}:{}-{}", file, lstart, lend);
-                if let Some(ref s) = sig { println!("  Signature: {}", s); }
+                let (sid, sname, kind, file, lstart, lend, sig, parent, ns, lang, doc) = row;
+                println!("╔══ {} ══╗", sname);
+                println!("║ Kind:     {}", kind);
+                if let Some(ref l) = lang { println!("║ Language: {}", l); }
+                if let Some(ref n) = ns { println!("║ Namespace: {}", n); }
+                if let Some(ref p) = parent { println!("║ In class: {}", p); }
+                println!("║ File:     {}:{}-{}", file, lstart, lend);
+                if let Some(ref s) = sig { println!("║ Signature: {}", s); }
+                if let Some(ref d) = doc {
+                    let doc_trimmed = d.trim();
+                    if !doc_trimmed.is_empty() {
+                        println!("╟── Documentation ──");
+                        for line in doc_trimmed.lines() {
+                            println!("║ {}", line);
+                        }
+                    }
+                }
+                // ── Edges ──
+                let mut edge_count = 0usize;
+                if let Ok(mut e_stmt) = conn.prepare(
+                    "SELECT e.edge_type, s.name, s.kind, s.file_path, s.line_start
+                     FROM edges e LEFT JOIN symbols s ON (
+                        (e.source_id=?1 AND s.id=e.target_id) OR (e.target_id=?1 AND s.id=e.source_id)
+                     ) WHERE (e.source_id=?1 OR e.target_id=?1) AND s.id IS NOT NULL
+                     ORDER BY e.edge_type LIMIT 200") {
+                    if let Ok(e_rows) = e_stmt.query_map(rusqlite::params![sid], |r| {
+                        Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
+                            r.get::<_,String>(3)?, r.get::<_,Option<i64>>(4)?))
+                    }) {
+                        // Group by edge type category
+                        use std::collections::BTreeMap;
+                        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                        for row in e_rows.flatten() {
+                            let (etype, ename, ekind, efile, eline) = row;
+                            let loc = if let Some(l) = eline { format!(" @ {}:{}", &efile[..60.min(efile.len())], l) } else { String::new() };
+                            let entry = format!("  {} [{}]{}", ename, ekind, loc);
+                            let cat = categorize_edge(&etype).to_string();
+                            groups.entry(cat).or_default().push(entry);
+                        }
+                        for (cat, entries) in &groups {
+                            if !entries.is_empty() {
+                                println!("╟── {} ──", cat);
+                                for e in entries.iter().take(15) { println!("{}", e); }
+                                if entries.len() > 15 { println!("  ... and {} more", entries.len() - 15); }
+                                edge_count += entries.len();
+                            }
+                        }
+                    }
+                }
+                if edge_count == 0 { println!("╟── (no edges)"); }
+                println!("╚{}", "═".repeat(sname.len() + 4));
             }
             if !found { println!("Symbol '{}' not found.", name); }
         }
@@ -656,6 +706,19 @@ fn traverse_calls_cli(conn: &rusqlite::Connection, sym_id: i64, direction: &str,
         }
     }
 }
+
+/// Group raw edge types into display categories
+fn categorize_edge(etype: &str) -> &str {
+    if etype.starts_with("calls:") { return "📞 Calls"; }
+    if etype.starts_with("inherits:") { return "🧬 Inherits"; }
+    if etype.starts_with("overrides:") { return "🔄 Overrides"; }
+    if etype.starts_with("contains:") { return "📦 Contains"; }
+    if etype.starts_with("param_type:") { return "📥 Parameters"; }
+    if etype.starts_with("returns:") { return "📤 Returns"; }
+    if etype.starts_with("field_type:") { return "⚡ Fields"; }
+    "🔗 Other"
+}
+
 fn index_docs(conn: &rusqlite::Connection, dir: &str, repo: &str) {
     let mut doc_count = 0;
     let ignore_patterns = crate::ignore::load_patterns(dir);

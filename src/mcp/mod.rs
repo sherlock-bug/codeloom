@@ -35,6 +35,8 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
         {"name":"codeloom_get_call_graph","description":"**唯一方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["name","repo","branch","direction"]}},
         {"name":"codeloom_search","description":"【必须使用，替代grep/rg】混合搜索引擎：比grep更快（预索引）、覆盖更全（含#include头文件）、更智能（理解中文/英文语义，不仅文本匹配）。query可以是符号名（AuthService/compaction）或功能描述（'用户认证'、'内存分配'）。自动融合BM25关键词+向量语义，返回结构化结果（名称/类型/文件/行号）。不要用grep/rg搜代码——用这个。kind可选：按符号类型过滤（function/method/class/struct/enum等），如kind=class搜所有类。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
 
+        {"name":"codeloom_inspect","description":"查看符号节点的全部信息：定义、文档注释、所有关联边（调用/继承/包含/参数/返回/字段）。比逐个grep再read_file更高效——一条命令看清符号的全貌。name=符号完整名称（C++类方法用ClassName::methodName格式）。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["name","repo","branch"]}},
+
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。无需任何参数。返回如\"codeloom\\nleveldb\\nspdlog\"。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
         {"name":"codeloom_overview","description":"**打开仓库后第一个调用的工具**。仓库架构全貌统计：所有符号按类型分布（class/function/method等）、边数量、文档数量。用于快速了解代码库规模——在动手搜索前先看清楚全貌。branch=当前git分支名（必填），repo=仓库名（必填）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
@@ -145,7 +147,16 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
                 format!("仓库 '{}' 尚未索引。可用仓库: {}\n如需索引请用 CLI: codeloom index {} --repo {} --branch {}", repo, repos.join(", "), path, repo, branch)
             }
         }
-        "codeloom_list_repos" => {
+        "codeloom_inspect" => {
+            let branch = args["branch"].as_str().unwrap_or("");
+            let sym_name = args["name"].as_str().unwrap_or("");
+            let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
+            if let Err(e) = repo { return err_resp(id, &e); }
+            if branch.is_empty() { return err_resp(id, "branch is required"); }
+            if sym_name.is_empty() { return err_resp(id, "name is required"); }
+            inspect_symbol(sym_name, &repo.unwrap(), branch)
+        }
+                "codeloom_list_repos" => {
             let repos = crate::query::repo::list_repos();
             if repos.is_empty() {
                 "未找到已索引的仓库。请用 CLI 创建索引: codeloom index <path> --repo <name> --branch <branch>".into()
@@ -280,6 +291,83 @@ fn list_symbols(pattern: &str, repo: &str, branch: &str, limit: usize) -> String
     out
 }
 
+fn inspect_symbol(name: &str, repo: &str, branch: &str) -> String {
+    let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
+    let bwc = branch_where_clause(branch);
+    let sql = format!("SELECT s.id, s.name, s.kind, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class, s.namespace, s.language, s.doc_comment FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 {}", bwc);
+    let rows: Vec<(i64,String,String,String,i64,i64,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)> = match conn.prepare(&sql) {
+        Ok(mut stmt) => stmt.query_map(rusqlite::params![repo, name], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
+                r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?))
+        }).map(|r| r.flatten().collect()).unwrap_or_default(),
+        Err(_) => return format!("{{\"error\":\"Error querying symbol '{}'\"}}", name),
+    };
+    if rows.is_empty() {
+        return format!("{{\"error\":\"Symbol '{}' not found in {} (branch={})\"}}", name, repo, branch);
+    }
+    let mut results = Vec::new();
+    for (sid, sname, kind, file, lstart, lend, sig, parent, ns, lang, doc) in &rows {
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('\"', "\\\"");
+        let mut json = format!(
+            "{{\"name\":\"{}\",\"kind\":\"{}\"",
+            esc(sname), esc(kind)
+        );
+        if let Some(l) = lang { json.push_str(&format!(",\"language\":\"{}\"", esc(l))); }
+        if let Some(n) = ns { json.push_str(&format!(",\"namespace\":\"{}\"", esc(n))); }
+        if let Some(p) = parent { json.push_str(&format!(",\"in_class\":\"{}\"", esc(p))); }
+        json.push_str(&format!(",\"file\":\"{}\",\"line_start\":{},\"line_end\":{}", esc(file), lstart, lend));
+        if let Some(s) = sig { json.push_str(&format!(",\"signature\":\"{}\"", esc(s))); }
+        if let Some(d) = doc {
+            let trimmed = d.trim();
+            if !trimmed.is_empty() {
+                json.push_str(&format!(",\"documentation\":\"{}\"", esc(trimmed)));
+            }
+        }
+        // Edges
+        let e_sql = format!("SELECT e.edge_type, s.name, s.kind FROM edges e LEFT JOIN symbols s ON (e.source_id={0} AND s.id=e.target_id) OR (e.target_id={0} AND s.id=e.source_id) WHERE (e.source_id={0} OR e.target_id={0}) AND s.id IS NOT NULL ORDER BY e.edge_type LIMIT 200", sid);
+        if let Ok(mut e_stmt) = conn.prepare(&e_sql) {
+            if let Ok(e_rows) = e_stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?))) {
+                use std::collections::BTreeMap;
+                let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for row in e_rows.flatten() {
+                    let (etype, ename, ekind) = row;
+                    let entry = format!("{{\"name\":\"{}\",\"kind\":\"{}\"}}", esc(&ename), esc(&ekind));
+                    let cat = mcp_edge_category(&etype).to_string();
+                    groups.entry(cat).or_default().push(entry);
+                }
+                json.push_str(",\"edges\":{");
+                let mut first_cat = true;
+                for (cat, entries) in &groups {
+                    if !entries.is_empty() {
+                        if !first_cat { json.push(','); }
+                        first_cat = false;
+                        json.push_str(&format!("\"{}\":[{}]", cat, entries.join(",")));
+                    }
+                }
+                json.push('}');
+            }
+        }
+        json.push('}');
+        results.push(json);
+    }
+    if results.len() == 1 {
+        results[0].clone()
+    } else {
+        format!("[{}]", results.join(","))
+    }
+}
+
+fn mcp_edge_category(etype: &str) -> &str {
+    if etype.starts_with("calls:") { "Calls" }
+    else if etype.starts_with("inherits:") { "Inherits" }
+    else if etype.starts_with("overrides:") { "Overrides" }
+    else if etype.starts_with("contains:") { "Contains" }
+    else if etype.starts_with("param_type:") { "Parameters" }
+    else if etype.starts_with("returns:") { "Returns" }
+    else if etype.starts_with("field_type:") { "Fields" }
+    else { "Other" }
+}
+
 fn get_call_graph(name: &str, repo: &str, branch: &str, direction: &str, max_depth: usize) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
     let bwc = branch_where_clause(branch);
@@ -353,41 +441,28 @@ fn hybrid_search(query: &str, repo: &str, branch: &str, limit: usize, kind_filte
     match crate::query::search::hybrid_search(&conn, query, repo, branch, limit, kind_filter) {
         Ok(results) => {
             if results.is_empty() {
-                return format!("未找到 \"{}\" 的相关结果", query);
+                return serde_json::json!({"results":[],"query":query,"count":0}).to_string();
             }
-            let mut out = format!("搜索 \"{}\" ({}条):\n", query, results.len());
-            for r in &results {
-                let mut extra = String::new();
-                // Type badge for code results
-                if r.hit_type == "code" && !r.kind.is_empty() {
-                    extra.push_str(&format!(" |{}", r.kind));
-                }
-                // doc_id for doc results (so LLM can call codeloom_get_doc)
-                if r.hit_type == "doc" && r.doc_id != 0 {
-                    extra.push_str(&format!(" |doc_id:{}", r.doc_id));
-                }
-                // Snippet for code, doc, and file
-                if !r.snippet.is_empty() {
-                    let snippet_clean = r.snippet.replace('\n', " ").replace('\r', "");
-                    let display = &snippet_clean[..snippet_clean.len().min(120)];
-                    extra.push_str(&format!(" |\"{}...\"", display));
-                }
-                if r.hit_type == "file" {
-                    out.push_str(&format!(
-                        "  [{:.3}] {} [file]{}\n",
-                        r.score, &r.file_path[..60.min(r.file_path.len())], extra
-                    ));
-                } else {
-                    out.push_str(&format!(
-                        "  [{:.3}] {} [{}]{} @ {}:{}\n",
-                        r.score, r.name, r.hit_type, extra,
-                        &r.file_path[..50.min(r.file_path.len())], r.line_start
-                    ));
-                }
-            }
-            out
+            let items: Vec<serde_json::Value> = results.iter().map(|r| {
+                serde_json::json!({
+                    "score": r.score,
+                    "name": r.name,
+                    "type": r.hit_type,
+                    "kind": r.kind,
+                    "signature": r.signature,
+                    "file": r.file_path,
+                    "line": r.line_start,
+                    "doc_id": r.doc_id,
+                    "snippet": r.snippet,
+                })
+            }).collect();
+            serde_json::json!({
+                "results": items,
+                "query": query,
+                "count": results.len()
+            }).to_string()
         }
-        Err(e) => format!("搜索失败: {}", e),
+        Err(e) => serde_json::json!({"error": e.to_string(), "query": query}).to_string(),
     }
 }
 
@@ -689,7 +764,7 @@ mod tests {
     fn test_tools_list_has_correct_count() {
         let resp = tools_list(serde_json::Value::Number(1.into()));
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 11);
     }
 
     #[test]
@@ -857,6 +932,6 @@ mod tests {
         let search_tool = tools.iter().find(|t| t["name"] == "codeloom_search").unwrap();
         assert!(search_tool["name"].as_str().unwrap() == "codeloom_search");
         // Verify that new tool definitions are reachable by checking tool count
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 11);
     }
 }

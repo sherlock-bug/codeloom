@@ -12,8 +12,9 @@ pub struct FusedResult {
     pub file_path: String,
     pub line_start: i64,
     pub kind: String,     // symbol kind (function/class/enum_value etc.), empty for docs
-    pub snippet: String,  // first 200 chars of definition, empty for docs without content
-    pub doc_id: i64,      // doc_nodes rowid (= doc_id for codeloom_get_doc), 0 for code results
+    pub signature: String, // function/method signature, empty for non-code or no-sig
+    pub snippet: String,   // doc_comment for code, content for docs
+    pub doc_id: i64,       // doc_nodes rowid (= doc_id for codeloom_get_doc), 0 for code results
 }
 
 /// Weighted fusion: normalize BM25 scores to (0,1] then combine with vector cosine similarity.
@@ -23,7 +24,7 @@ pub struct FusedResult {
 /// Final: max(w_bm25 * norm_bm25, w_vec * cosine_sim) — takes the stronger channel.
 pub fn weighted_fuse(
     bm25_hits: &[storage::fts::SearchHit],
-    vec_results: &[(f64, String, String, String, i64, String, i64)],
+    vec_results: &[(f64, String, String, String, i64, String, String, String, i64)],
     w_bm25: f64,
     w_vec: f64,
 ) -> Vec<FusedResult> {
@@ -47,6 +48,7 @@ pub fn weighted_fuse(
             file_path: hit.file_path.clone(),
             line_start: hit.line_start,
             kind: hit.kind.clone(),
+            signature: hit.sig.clone(),
             snippet: hit.snippet.clone(),
             doc_id: if is_doc { hit.rowid } else { 0 },
         });
@@ -55,7 +57,7 @@ pub fn weighted_fuse(
     }
 
     // Vector side — normalize similarity and merge
-    for (sim, name, hit_type, file_path, line_start, snippet, doc_id) in vec_results {
+    for (sim, name, hit_type, file_path, line_start, kind, sig, snippet, doc_id) in vec_results {
         let key = (name.clone(), file_path.clone());
         let score = w_vec * sim;
 
@@ -72,7 +74,8 @@ pub fn weighted_fuse(
                 hit_type: hit_type.clone(),
                 file_path: file_path.clone(),
                 line_start: *line_start,
-                kind: String::new(),
+                kind: kind.clone(),
+                signature: sig.clone(),
                 snippet: snippet.clone(),
                 doc_id: *doc_id,
             });
@@ -89,7 +92,65 @@ pub fn weighted_fuse(
     fused
 }
 
-/// Hybrid search: runs FTS5 BM25 + vec0 ANN in parallel, weighted fuses results.
+/// Fuse a single channel (BM25 + vector) with given weights.
+/// Returns vec of FusedResult with scores already weighted.
+fn weighted_fuse_single(
+    bm25_hits: &[storage::fts::SearchHit],
+    vec_results: &[(f64, String, String, String, i64, String, String, String, i64)],
+    default_hit_type: &str,
+    w_bm25: f64,
+    w_vec: f64,
+) -> Vec<FusedResult> {
+    let mut entries: HashMap<(String, String), FusedResult> = HashMap::new();
+
+    // BM25 side
+    for hit in bm25_hits {
+        let key = (hit.name.clone(), hit.file_path.clone());
+        let norm_bm25 = 1.0 / (0.5 + hit.score.abs());
+        let score = w_bm25 * norm_bm25;
+        let is_doc = matches!(hit.hit_type, storage::fts::HitType::Doc);
+        let ht = if is_doc { "doc" } else { default_hit_type };
+        let entry = entries.entry(key.clone()).or_insert(FusedResult {
+            score: 0.0,
+            name: hit.name.clone(),
+            hit_type: ht.into(),
+            file_path: hit.file_path.clone(),
+            line_start: hit.line_start,
+            kind: hit.kind.clone(),
+            signature: hit.sig.clone(),
+            snippet: hit.snippet.clone(),
+            doc_id: if is_doc { hit.rowid } else { 0 },
+        });
+        entry.score = entry.score.max(score);
+    }
+
+    // Vector side
+    for (sim, name, hit_type, file_path, line_start, kind, sig, snippet, doc_id) in vec_results {
+        let key = (name.clone(), file_path.clone());
+        let score = w_vec * sim;
+        if let Some(entry) = entries.get_mut(&key) {
+            entry.score = entry.score.max(score);
+            if *doc_id != 0 { entry.doc_id = *doc_id; }
+        } else {
+            entries.insert(key, FusedResult {
+                score,
+                name: name.clone(),
+                hit_type: hit_type.clone(),
+                file_path: file_path.clone(),
+                line_start: *line_start,
+                kind: kind.clone(),
+                signature: sig.clone(),
+                snippet: snippet.clone(),
+                doc_id: *doc_id,
+            });
+        }
+    }
+
+    let mut result: Vec<FusedResult> = entries.into_values().collect();
+    result.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    result
+}
+/// Symbol name hits get weight 0.7, comment hits get 0.3. Doc/File get 0.5 each.
 pub fn hybrid_search(
     conn: &Connection,
     query: &str,
@@ -100,55 +161,63 @@ pub fn hybrid_search(
 ) -> anyhow::Result<Vec<FusedResult>> {
     let fetch_limit = (limit * 2).max(10);
 
-    // Run BM25 keyword search (FTS5)
-    let bm25_symbols = storage::fts::search_symbols(conn, query, repo, branch, fetch_limit, kind_filter)?;
+    // FTS5: split name / comment / doc / file
+    let bm25_name = storage::fts::search_symbols_name(conn, query, repo, branch, fetch_limit, kind_filter)?;
+    let bm25_comment = storage::fts::search_symbols_comment(conn, query, repo, branch, fetch_limit, kind_filter)?;
     let bm25_docs = storage::fts::search_docs(conn, query, repo, fetch_limit)?;
     let bm25_files = storage::fts::search_files(conn, query, repo, fetch_limit)?;
 
-    // Run vec0 vector search
-    let vec_results = run_vector_search(conn, query, repo, branch, fetch_limit);
-    if cfg!(debug_assertions) {
-        eprintln!("[DEBUG hybrid_search] bm25_sym={} bm25_doc={} bm25_file={} vec={}", 
-            bm25_symbols.len(), bm25_docs.len(), bm25_files.len(), vec_results.len());
+    // Vector: split name / comment / doc / file
+    let vec_name = run_vector_search(conn, query, repo, branch, fetch_limit, "name");
+    let vec_comment = run_vector_search(conn, query, repo, branch, fetch_limit, "comment");
+    let vec_doc = run_vector_search(conn, query, repo, branch, fetch_limit, "doc");
+    let vec_file = run_vector_search(conn, query, repo, branch, fetch_limit, "file");
+
+    // Fuse each channel independently, then merge
+    let mut entries: HashMap<(String, String), FusedResult> = HashMap::new();
+
+    // Code name channel: weight 0.7
+    let name_fused = weighted_fuse_single(&bm25_name, &vec_name, "code", 0.7, 0.7);
+    for r in name_fused {
+        let key = (r.name.clone(), r.file_path.clone());
+        entries.entry(key).or_insert(r);
     }
 
-    // Combine bm25 symbols + docs + files
-    let mut all_bm25: Vec<storage::fts::SearchHit> = Vec::new();
-    all_bm25.extend(bm25_symbols);
-    all_bm25.extend(bm25_docs);
-    all_bm25.extend(bm25_files);
-
-    // Weighted fuse (equal weights, fall back if one side is empty)
-    let has_bm25 = !all_bm25.is_empty();
-    let has_vec = !vec_results.is_empty();
-    let (w_bm25, w_vec) = match (has_bm25, has_vec) {
-        (true, true) => (0.5, 0.5),
-        (true, false) => (1.0, 0.0),
-        (false, true) => (0.0, 1.0),
-        (false, false) => (0.0, 0.0),
-    };
-
-    let mut fused = weighted_fuse(&all_bm25, &vec_results, w_bm25, w_vec);
-
-    // If query is a substring of the result name, boost score.
-    // One simple rule for all types — no per-type special casing.
-    let query_lower = query.to_lowercase();
-    for r in &mut fused {
-        if r.name.to_lowercase().contains(&query_lower) {
-            r.score = (r.score + 0.3).min(1.0);
-        }
+    // Code comment channel: weight 0.3 (additive with name)
+    let comment_fused = weighted_fuse_single(&bm25_comment, &vec_comment, "code", 0.3, 0.3);
+    for r in comment_fused {
+        let key = (r.name.clone(), r.file_path.clone());
+        entries.entry(key)
+            .and_modify(|e| e.score += r.score)
+            .or_insert(r);
     }
-    fused.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
 
+    // Doc channel: weight 0.5
+    let doc_fused = weighted_fuse_single(&bm25_docs, &vec_doc, "doc", 0.5, 0.5);
+    for r in doc_fused {
+        let key = (r.name.clone(), r.file_path.clone());
+        entries.entry(key)
+            .and_modify(|e| { if r.score > e.score { e.score = r.score; e.doc_id = r.doc_id; } })
+            .or_insert(r);
+    }
+
+    // File channel: weight 0.5
+    let file_fused = weighted_fuse_single(&bm25_files, &vec_file, "file", 0.5, 0.5);
+    for r in file_fused {
+        let key = (r.name.clone(), r.file_path.clone());
+        entries.entry(key)
+            .and_modify(|e| { if r.score > e.score { e.score = r.score; } })
+            .or_insert(r);
+    }
+
+    // Sort and truncate
+    let mut fused: Vec<FusedResult> = entries.into_values().collect();
+    fused.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     fused.truncate(limit);
     Ok(fused)
 }
 
-/// Run vec0 vector search, returns (similarity, name, hit_type, file_path, line_start, snippet, doc_id).
+/// Run vec0 vector search, returns (similarity, name, hit_type, file_path, line_start, kind, signature, snippet, doc_id).
 /// doc_id is doc_nodes.rowid for doc results, 0 for code results.
 fn run_vector_search(
     conn: &Connection,
@@ -156,7 +225,8 @@ fn run_vector_search(
     repo: &str,
     branch: &str,
     limit: usize,
-) -> Vec<(f64, String, String, String, i64, String, i64)> {
+    channel: &str,
+) -> Vec<(f64, String, String, String, i64, String, String, String, i64)> {
     let mut results = Vec::new();
 
     let Ok(embedder) = crate::embedding::get_embedder() else { return results; };
@@ -169,58 +239,77 @@ fn run_vector_search(
         return results; // vec0 not loaded
     }
 
-    let sym_table = format!("symbol_vec_{}", repo.replace('-', "_"));
-    let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
+    let sym_table = match channel {
+        "name" => format!("symbol_name_vec_{}", repo.replace('-', "_")),
+        "comment" => format!("symbol_comment_vec_{}", repo.replace('-', "_")),
+        _ => String::new(),
+    };
 
-    // Symbol vector search
-    if let Ok(rows) = crate::storage::vector::knn_search(conn, &sym_table, &query_emb, limit) {
-        for (rowid, dist) in rows {
-            if let Ok((name, kind, file_path, line_start)) = conn.query_row(
-                "SELECT s.name, s.kind, s.file_path, s.line_start FROM symbols s \
-                 JOIN branches b ON b.symbol_id = s.id \
-                 WHERE s.rowid=?1 AND b.branch_name=?2",
-                rusqlite::params![rowid, branch],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, i64>(3)?,
-                    ))
-                },
-            ) {
-                let sim = 1.0 / (1.0 + dist as f64);
-                results.push((sim, name, "code".into(), file_path, line_start, String::new(), 0));
+    // Symbol vector search — only for name/comment channels
+    if channel == "name" || channel == "comment" {
+        if let Ok(rows) = crate::storage::vector::knn_search(conn, &sym_table, &query_emb, limit) {
+            for (rowid, dist) in rows {
+                if let Ok((name, kind, file_path, line_start, doc_comment, signature)) = conn.query_row(
+                    "SELECT s.name, s.kind, s.file_path, s.line_start, COALESCE(s.doc_comment,''), COALESCE(s.signature,'') FROM symbols s \
+                     JOIN branches b ON b.symbol_id = s.id \
+                     WHERE s.rowid=?1 AND b.branch_name=?2",
+                    rusqlite::params![rowid, branch],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, i64>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, String>(5)?,
+                        ))
+                    },
+                ) {
+                    let sim = 1.0 / (1.0 + dist as f64);
+                    let vsnip: String = if !doc_comment.is_empty() {
+                        doc_comment.chars().take(500).collect()
+                    } else if !signature.is_empty() {
+                        signature.chars().take(500).collect()
+                    } else {
+                        String::new()
+                    };
+                    results.push((sim, name, "code".into(), file_path, line_start, kind, signature, vsnip, 0));
+                }
             }
         }
     }
 
     // Doc vector search
-    if let Ok(rows) = crate::storage::vector::knn_search(conn, &doc_table, &query_emb, limit) {
-        for (rowid, dist) in rows {
-            if let Ok((title, file_path, content)) = conn.query_row(
-                "SELECT title, file_path, COALESCE(content, '') FROM doc_nodes WHERE rowid=?1",
-                rusqlite::params![rowid],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-            ) {
-                let sim = 1.0 / (1.0 + dist as f64);
-                let snippet: String = content.chars().take(200).collect();
-                results.push((sim, title, "doc".into(), file_path, 0, snippet, rowid));
+    let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
+    if channel == "doc" {
+        if let Ok(rows) = crate::storage::vector::knn_search(conn, &doc_table, &query_emb, limit) {
+            for (rowid, dist) in rows {
+                if let Ok((title, file_path, content)) = conn.query_row(
+                    "SELECT title, file_path, COALESCE(content, '') FROM doc_nodes WHERE rowid=?1",
+                    rusqlite::params![rowid],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+                ) {
+                    let sim = 1.0 / (1.0 + dist as f64);
+                    let snippet: String = content.chars().take(500).collect();
+                    results.push((sim, title, "doc".into(), file_path, 0, String::new(), String::new(), snippet, rowid));
+                }
             }
         }
     }
 
     // File vector search
     let file_table = format!("file_vec_{}", repo.replace('-', "_"));
-    if let Ok(rows) = crate::storage::vector::knn_search(conn, &file_table, &query_emb, limit) {
-        for (rowid, dist) in rows {
-            if let Ok((file_path, summary)) = conn.query_row(
-                "SELECT file_path, COALESCE(summary, '') FROM files WHERE rowid=?1",
-                rusqlite::params![rowid],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            ) {
-                let sim = 1.0 / (1.0 + dist as f64);
-                results.push((sim, file_path.clone(), "file".into(), file_path, 0, summary, 0));
+    if channel == "file" {
+        if let Ok(rows) = crate::storage::vector::knn_search(conn, &file_table, &query_emb, limit) {
+            for (rowid, dist) in rows {
+                if let Ok((file_path, summary)) = conn.query_row(
+                    "SELECT file_path, COALESCE(summary, '') FROM files WHERE rowid=?1",
+                    rusqlite::params![rowid],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                ) {
+                    let sim = 1.0 / (1.0 + dist as f64);
+                    results.push((sim, file_path.clone(), "file".into(), file_path, 0, String::new(), String::new(), summary, 0));
+                }
             }
         }
     }
@@ -242,6 +331,7 @@ mod tests {
             file_path: file_path.into(),
             line_start: 1,
             kind: String::new(),
+            sig: String::new(),
             snippet: String::new(),
         }
     }
@@ -249,16 +339,16 @@ mod tests {
     #[test]
     fn test_weighted_fuse_both_sides() {
         let bm25 = vec![
-            make_bm25_hit("AuthService", "src/auth.cpp", -2.5, storage::fts::HitType::Code, 0),
-            make_bm25_hit("LoginManager", "src/auth.cpp", -1.8, storage::fts::HitType::Code, 0),
+            make_bm25_hit("AuthService", "src/auth.cpp", -2.5, storage::fts::HitType::CodeName, 0),
+            make_bm25_hit("LoginManager", "src/auth.cpp", -1.8, storage::fts::HitType::CodeName, 0),
         ];
 
         let vec_results = vec![
-            (0.91, "AuthService".into(), "code".into(), "src/auth.cpp".into(), 10, String::new(), 0),
-            (0.85, "AuthenticateUser".into(), "code".into(), "src/auth.cpp".into(), 30, String::new(), 0),
+            (0.91, "AuthService".into(), "code".into(), "src/auth.cpp".into(), 10, String::new(), String::new(), String::new(), 0),
+            (0.85, "AuthenticateUser".into(), "code".into(), "src/auth.cpp".into(), 30, String::new(), String::new(), String::new(), 0),
         ];
 
-        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
+        let fused = weighted_fuse_single(&bm25, &vec_results, "code", 0.5, 0.5);
         // AuthService should be top (appears in both lists, gets max of BM25 and vec)
         assert_eq!(fused[0].name, "AuthService");
         assert!(fused.len() >= 2);
@@ -266,10 +356,10 @@ mod tests {
 
     #[test]
     fn test_weighted_fuse_one_side_empty() {
-        let bm25 = vec![make_bm25_hit("OnlyBM25", "src/test.cpp", -2.5, storage::fts::HitType::Code, 0)];
-        let vec_results: Vec<(f64, String, String, String, i64, String, i64)> = vec![];
+        let bm25 = vec![make_bm25_hit("OnlyBM25", "src/test.cpp", -2.5, storage::fts::HitType::CodeName, 0)];
+        let vec_results: Vec<(f64, String, String, String, i64, String, String, String, i64)> = vec![];
 
-        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
+        let fused = weighted_fuse_single(&bm25, &vec_results, "code", 0.5, 0.5);
         assert_eq!(fused.len(), 1);
         assert_eq!(fused[0].name, "OnlyBM25");
     }
@@ -278,16 +368,16 @@ mod tests {
     fn test_weighted_fuse_sorting() {
         // "BothHave" appears in both lists → should rank higher than single-list entries
         let bm25 = vec![
-            make_bm25_hit("BothHave", "a.cpp", -2.5, storage::fts::HitType::Code, 0),
-            make_bm25_hit("OnlyBM25", "b.cpp", -1.8, storage::fts::HitType::Code, 0),
+            make_bm25_hit("BothHave", "a.cpp", -2.5, storage::fts::HitType::CodeName, 0),
+            make_bm25_hit("OnlyBM25", "b.cpp", -1.8, storage::fts::HitType::CodeName, 0),
         ];
 
         let vec_results = vec![
-            (0.9, "BothHave".into(), "code".into(), "a.cpp".into(), 1, String::new(), 0),
-            (0.8, "OnlyVec".into(), "code".into(), "c.cpp".into(), 3, String::new(), 0),
+            (0.9, "BothHave".into(), "code".into(), "a.cpp".into(), 1, String::new(), String::new(), String::new(), 0),
+            (0.8, "OnlyVec".into(), "code".into(), "c.cpp".into(), 3, String::new(), String::new(), String::new(), 0),
         ];
 
-        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
+        let fused = weighted_fuse_single(&bm25, &vec_results, "code", 0.5, 0.5);
         // "BothHave" (in both lists) should rank #1
         assert_eq!(fused[0].name, "BothHave");
         assert!(fused[0].score > fused[1].score);
@@ -302,10 +392,10 @@ mod tests {
         ];
 
         let vec_results = vec![
-            (0.85, "impl".into(), "doc".into(), "./doc/impl.md".into(), 0, String::new(), 42),
+            (0.85, "impl".into(), "doc".into(), "./doc/impl.md".into(), 0, String::new(), String::new(), String::new(), 42),
         ];
 
-        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
+        let fused = weighted_fuse_single(&bm25, &vec_results, "code", 0.5, 0.5);
         // Should have exactly 1 result for impl.md, not 3 separate ones
         assert_eq!(fused.len(), 1, "Expected 1 result for impl.md, got {}", fused.len());
         assert_eq!(fused[0].name, "impl");
@@ -316,17 +406,17 @@ mod tests {
     fn test_exact_match_ranks_first() {
         // Exact function name match should score highest
         let bm25 = vec![
-            make_bm25_hit("DoCompactionWork", "db/db_impl.cc", -0.5, storage::fts::HitType::Code, 0),
-            make_bm25_hit("CompactPointer", "db/version_edit.cc", -8.0, storage::fts::HitType::Code, 0),
-            make_bm25_hit("PrevLogNumber", "db/version_edit.cc", -10.0, storage::fts::HitType::Code, 0),
+            make_bm25_hit("DoCompactionWork", "db/db_impl.cc", -0.5, storage::fts::HitType::CodeName, 0),
+            make_bm25_hit("CompactPointer", "db/version_edit.cc", -8.0, storage::fts::HitType::CodeName, 0),
+            make_bm25_hit("PrevLogNumber", "db/version_edit.cc", -10.0, storage::fts::HitType::CodeName, 0),
         ];
 
         let vec_results = vec![
-            (0.92, "DoCompactionWork".into(), "code".into(), "db/db_impl.cc".into(), 898, String::new(), 0),
-            (0.45, "CompactPointer".into(), "code".into(), "db/version_edit.cc".into(), 19, String::new(), 0),
+            (0.92, "DoCompactionWork".into(), "code".into(), "db/db_impl.cc".into(), 898, String::new(), String::new(), String::new(), 0),
+            (0.45, "CompactPointer".into(), "code".into(), "db/version_edit.cc".into(), 19, String::new(), String::new(), String::new(), 0),
         ];
 
-        let fused = weighted_fuse(&bm25, &vec_results, 0.5, 0.5);
+        let fused = weighted_fuse_single(&bm25, &vec_results, "code", 0.5, 0.5);
         assert_eq!(fused[0].name, "DoCompactionWork");
         // Score gap should be significant (exact vs fuzzy)
         assert!(fused[0].score > fused[1].score + 0.1,

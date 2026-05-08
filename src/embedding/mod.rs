@@ -133,13 +133,23 @@ impl Embedder for ApiEmbedder {
 pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> anyhow::Result<(usize, usize)> {
     if !crate::storage::vector::try_load(conn) { return Ok((0, 0)); }
     crate::storage::vector::create_tables(conn, repo, embedder.dimension())?;
-    let sym_table = format!("symbol_vec_{}", repo.replace('-', "_"));
+    let sym_name_table = format!("symbol_name_vec_{}", repo.replace('-', "_"));
+    let sym_comment_table = format!("symbol_comment_vec_{}", repo.replace('-', "_"));
     let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
     let batch_limit = embedder.batch_size();
 
-    let existing_sym_ids: HashSet<i64> = {
+    let existing_name_ids: HashSet<i64> = {
         let mut s = HashSet::new();
-        if let Ok(mut st) = conn.prepare(&format!("SELECT rowid FROM {sym_table}")) {
+        if let Ok(mut st) = conn.prepare(&format!("SELECT rowid FROM {sym_name_table}")) {
+            if let Ok(rows) = st.query_map([], |r| r.get::<_, i64>(0)) {
+                for r in rows.flatten() { s.insert(r); }
+            }
+        }
+        s
+    };
+    let existing_comment_ids: HashSet<i64> = {
+        let mut s = HashSet::new();
+        if let Ok(mut st) = conn.prepare(&format!("SELECT rowid FROM {sym_comment_table}")) {
             if let Ok(rows) = st.query_map([], |r| r.get::<_, i64>(0)) {
                 for r in rows.flatten() { s.insert(r); }
             }
@@ -156,44 +166,79 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
         s
     };
 
-    // Symbol vectors — smart batch by character count
+    // Symbol name vectors — embed name + kind + signature (NO doc_comment)
+    // Symbol comment vectors — embed doc_comment only (when non-empty)
     let mut sym_count = 0; let mut sym_skipped = 0; let mut sym_total = 0;
-    if let Ok(mut stmt) = conn.prepare("SELECT id, name, kind, doc_comment FROM symbols WHERE repo=?1") {
+    let mut comment_count = 0;
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, name, kind, COALESCE(doc_comment,''), COALESCE(signature,'') FROM symbols WHERE repo=?1"
+    ) {
         if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
         }) {
             let all: Vec<_> = rows.flatten().collect();
             sym_total = all.len();
             let mut processed = 0;
-            let mut text_batch: Vec<(i64, String)> = Vec::new();
-            let mut vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
-            let mut batch_chars = 0usize;
+            let mut name_text_batch: Vec<(i64, String)> = Vec::new();
+            let mut name_vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
+            let mut name_chars = 0usize;
+            let mut comment_text_batch: Vec<(i64, String)> = Vec::new();
+            let mut comment_vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
+            let mut comment_chars = 0usize;
+
             for row in all {
-                if existing_sym_ids.contains(&row.0) { sym_skipped += 1; processed += 1; continue; }
-                let text = if row.3.is_empty() {
-                    format!("{} | {}", row.1, row.2)
-                } else {
-                    format!("{} | {} | {}", row.1, row.2, row.3)
-                };
-                let chars = text.len();
-                batch_chars += chars;
-                text_batch.push((row.0, text));
-                processed += 1;
-                if batch_chars >= embedder.max_chars_per_batch() || text_batch.len() >= embedder.batch_size() {
-                    flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
-                    sym_count += insert_vec_batch(conn, &sym_table, &mut vec_batch)?;
-                    text_batch.clear();
-                    batch_chars = 0;
+                let sym_id = row.0;
+                let need_name = !existing_name_ids.contains(&sym_id);
+                let has_comment = !row.3.is_empty();
+                let need_comment = has_comment && !existing_comment_ids.contains(&sym_id);
+
+                if !need_name && !need_comment { sym_skipped += 1; processed += 1; continue; }
+
+                // Name embedding: "name signature [kind]"
+                if need_name {
+                    let sig_str = if row.4.is_empty() { String::new() } else { format!(" {}", row.4) };
+                    let name_text = format!("{} [{}]{}", row.1, row.2, sig_str);
+                    name_chars += name_text.len();
+                    name_text_batch.push((sym_id, name_text));
                 }
+                // Comment embedding: just doc_comment
+                if need_comment {
+                    let comment_text = row.3.clone();
+                    comment_chars += comment_text.len();
+                    comment_text_batch.push((sym_id, comment_text));
+                }
+
+                processed += 1;
+
+                // Flush name batch
+                if need_name && (name_chars >= embedder.max_chars_per_batch() || name_text_batch.len() >= embedder.batch_size()) {
+                    flush_symbol_batch(&texts_of(&name_text_batch), embedder, &mut name_vec_batch, &name_text_batch);
+                    sym_count += insert_vec_batch(conn, &sym_name_table, &mut name_vec_batch)?;
+                    name_text_batch.clear();
+                    name_chars = 0;
+                }
+                // Flush comment batch
+                if need_comment && (comment_chars >= embedder.max_chars_per_batch() || comment_text_batch.len() >= embedder.batch_size()) {
+                    flush_symbol_batch(&texts_of(&comment_text_batch), embedder, &mut comment_vec_batch, &comment_text_batch);
+                    comment_count += insert_vec_batch(conn, &sym_comment_table, &mut comment_vec_batch)?;
+                    comment_text_batch.clear();
+                    comment_chars = 0;
+                }
+
                 if processed % (sym_total/10).max(1) == 0 {
                     eprint!("\r  Vectors: {}/{} symbols ({}%)...", processed, sym_total, processed*100/sym_total);
                 }
             }
-            if !text_batch.is_empty() {
-                flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
-                sym_count += insert_vec_batch(conn, &sym_table, &mut vec_batch)?;
+            // Final flush
+            if !name_text_batch.is_empty() {
+                flush_symbol_batch(&texts_of(&name_text_batch), embedder, &mut name_vec_batch, &name_text_batch);
+                sym_count += insert_vec_batch(conn, &sym_name_table, &mut name_vec_batch)?;
             }
-            if sym_total > 0 { eprint!("\r  Vectors: {}/{} symbols done.\n", processed, sym_total); }
+            if !comment_text_batch.is_empty() {
+                flush_symbol_batch(&texts_of(&comment_text_batch), embedder, &mut comment_vec_batch, &comment_text_batch);
+                comment_count += insert_vec_batch(conn, &sym_comment_table, &mut comment_vec_batch)?;
+            }
+            if sym_total > 0 { eprint!("\r  Vectors: {}/{} symbols + {} comments done.\n", processed, sym_total, comment_count); }
         }
     }
 
@@ -232,9 +277,9 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
     }
 
     if sym_total > 0 || doc_count > 0 {
-        eprintln!("  Vectors: {} symbols ({} skipped), {} docs ({} skipped)", sym_count, sym_skipped, doc_count, doc_skipped);
+        eprintln!("  Vectors: {} symbols (+{} comments) ({} skipped), {} docs ({} skipped)", sym_count, comment_count, sym_skipped, doc_count, doc_skipped);
     }
-    Ok((sym_count, doc_count))
+    Ok((sym_count + comment_count, doc_count))
 }
 
 pub fn index_doc_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> anyhow::Result<usize> {

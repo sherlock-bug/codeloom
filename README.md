@@ -26,7 +26,7 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 | **Git 驱动增量** | 自动跟踪 commit，`git diff` 只扫变更文件；新分支从父分支继承符号 |
 | **分支过滤** | 所有 MCP 工具 `branch` 参数必传；`branch_name IS NULL` 的数据所有分支可见 |
 | **多仓支持** | 前后端独立索引，跨仓依赖自动识别 |
-| **MCP 原生** | 10 个 MCP 工具（含 get_doc + query_excel），OpenCode/Claude Code 零配置对接 |
+| **MCP 原生** | 11 个 MCP 工具（含 inspect + get_doc + query_excel），OpenCode/Claude Code 零配置对接 |
 | **自动化测试** | 73 测试（66 单元 + 7 集成），本地素材自洽，`cargo test` 一键验证 |
 
 ## 安装
@@ -89,7 +89,7 @@ OpenCode 里直接用：
 ```
 /codeloom:overview
 /codeloom:search "用户认证流程"
-/codeloom:get-definition  login
+/codeloom:inspect      login
 /codeloom:call-graph       login --direction callers
 ```
 
@@ -121,7 +121,7 @@ OpenCode 里直接用：
 
 ## MCP 工具
 
-9 个 MCP 工具，所有搜索/查询工具的 `branch` 参数必传。**打开仓库后第一步先调 `codeloom_list_repos` 获取可用仓库名。**
+11 个 MCP 工具，所有搜索/查询工具的 `branch` 参数必传。**打开仓库后第一步先调 `codeloom_list_repos` 获取可用仓库名。**
 
 ### 仓库与状态管理
 
@@ -139,7 +139,7 @@ OpenCode 里直接用：
 |------|------|------|
 | `codeloom_search` | `query`, `branch`, `limit?`, `repo` | **首选搜索工具**：同时理解精确命名和中文/英文功能意图。自动融合关键词 BM25 和语义向量，返回统一排序。query 可以是符号名或功能描述。 |
 | `codeloom_list_symbols` | `pattern`, `branch`, `limit?`, `repo` | 模糊搜索符号名（SQL LIKE）。C++ 类方法用 `ClassName::methodName` 格式。 |
-| `codeloom_get_definition` | `name`, `branch`, `repo` | 获取符号完整定义。返回精确代码区间不浪费 token。**先用 `codeloom_list_symbols` 查确切名称。** |
+| `codeloom_inspect` | `name`, `branch`, `repo` | 查看节点全部信息：定义、注释、所有关联边（调用/继承/参数/返回/字段）。**先 search 再 inspect。** |
 
 ### 关系分析
 
@@ -155,7 +155,7 @@ OpenCode 里直接用：
 
 **「找到登录相关代码」：**
 1. `codeloom_search(query="用户登录认证")` → 混合搜索找到相关符号和文档
-2. `codeloom_get_definition(name="AuthService::login")` → 查看具体实现
+2. `codeloom_inspect(name="AuthService::login")` → 查看全部信息
 
 **「了解某个类的继承关系」：**
 `codeloom_list_symbols(pattern="ClassName")` → 查看类及其所有方法
