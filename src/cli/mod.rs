@@ -265,8 +265,8 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             // Symbol + Doc + File vectors — run in spawn_blocking to avoid reqwest::blocking tokio conflict
             let (sym_n, doc_n, file_n) = tokio::task::spawn_blocking(move || -> anyhow::Result<(usize, usize, usize)> {
                 let embedder = crate::embedding::get_embedder()?;
-                let (sym_n, doc_n) = crate::embedding::index_vectors(&conn, &repo, embedder.as_ref())?;
-                let file_n = crate::embedding::index_file_vectors(&conn, &repo, embedder.as_ref())?;
+                let (sym_n, doc_n) = crate::embedding::index_vectors(&conn, &repo, embedder)?;
+                let file_n = crate::embedding::index_file_vectors(&conn, &repo, embedder)?;
                 Ok((sym_n, doc_n, file_n))
             }).await??;
             if sym_n + doc_n + file_n > 0 {

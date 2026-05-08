@@ -167,11 +167,15 @@ pub fn hybrid_search(
     let bm25_docs = storage::fts::search_docs(conn, query, repo, fetch_limit)?;
     let bm25_files = storage::fts::search_files(conn, query, repo, fetch_limit)?;
 
-    // Vector: split name / comment / doc / file
-    let vec_name = run_vector_search(conn, query, repo, branch, fetch_limit, "name");
-    let vec_comment = run_vector_search(conn, query, repo, branch, fetch_limit, "comment");
-    let vec_doc = run_vector_search(conn, query, repo, branch, fetch_limit, "doc");
-    let vec_file = run_vector_search(conn, query, repo, branch, fetch_limit, "file");
+    // Embed once — shared across all 4 vector channels
+    let embedder = crate::embedding::get_embedder().ok();
+    let query_emb = embedder.and_then(|e| e.embed(query).ok());
+
+    // Vector: split name / comment / doc / file (share same pre-computed embedding)
+    let vec_name = run_vector_search(conn, query_emb.as_deref(), repo, branch, fetch_limit, "name");
+    let vec_comment = run_vector_search(conn, query_emb.as_deref(), repo, branch, fetch_limit, "comment");
+    let vec_doc = run_vector_search(conn, query_emb.as_deref(), repo, branch, fetch_limit, "doc");
+    let vec_file = run_vector_search(conn, query_emb.as_deref(), repo, branch, fetch_limit, "file");
 
     // Fuse each channel independently, then merge
     let mut entries: HashMap<(String, String), FusedResult> = HashMap::new();
@@ -223,98 +227,149 @@ pub fn hybrid_search(
     Ok(fused)
 }
 
-/// Run vec0 vector search, returns (similarity, name, hit_type, file_path, line_start, kind, signature, snippet, doc_id).
+/// Run vec0 vector search with a pre-computed embedding.
+/// Returns (similarity, name, hit_type, file_path, line_start, kind, signature, snippet, doc_id).
 /// doc_id is doc_nodes.rowid for doc results, 0 for code results.
+/// When query_emb is None or empty, returns empty (no embedding available).
 fn run_vector_search(
     conn: &Connection,
-    query: &str,
+    query_emb: Option<&[f32]>,
     repo: &str,
     branch: &str,
     limit: usize,
     channel: &str,
 ) -> Vec<(f64, String, String, String, i64, String, String, String, i64)> {
-    let mut results = Vec::new();
-
-    let Ok(embedder) = crate::embedding::get_embedder() else { return results; };
-    let query_emb = match embedder.embed(query) {
-        Ok(e) => e,
-        Err(_) => return results,
+    let query_emb = match query_emb {
+        Some(e) if !e.is_empty() => e,
+        _ => return Vec::new(),
     };
-
     if !crate::storage::vector::try_load(conn) {
-        return results; // vec0 not loaded
+        return Vec::new();
     }
 
-    let sym_table = match channel {
-        "name" => format!("symbol_name_vec_{}", repo.replace('-', "_")),
-        "comment" => format!("symbol_comment_vec_{}", repo.replace('-', "_")),
-        _ => String::new(),
-    };
+    let mut results = Vec::new();
 
     // Symbol vector search — only for name/comment channels
     if channel == "name" || channel == "comment" {
-        if let Ok(rows) = crate::storage::vector::knn_search(conn, &sym_table, &query_emb, limit) {
-            for (rowid, dist) in rows {
-                if let Ok((name, kind, file_path, line_start, doc_comment, signature)) = conn.query_row(
-                    "SELECT s.name, s.kind, s.file_path, s.line_start, COALESCE(s.doc_comment,''), COALESCE(s.signature,'') FROM symbols s \
-                     JOIN branches b ON b.symbol_id = s.id \
-                     WHERE s.rowid=?1 AND b.branch_name=?2",
-                    rusqlite::params![rowid, branch],
-                    |r| {
+        let sym_table = format!("symbol_{}_vec_{}", channel, repo.replace('-', "_"));
+        if let Ok(rows) = crate::storage::vector::knn_search(conn, &sym_table, query_emb, limit) {
+            if !rows.is_empty() {
+                // Batch fetch: collect all rowids, query once with IN (...)
+                let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+                let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "SELECT s.rowid, s.name, s.kind, s.file_path, s.line_start, \
+                     COALESCE(s.doc_comment,''), COALESCE(s.signature,'') \
+                     FROM symbols s JOIN branches b ON b.symbol_id = s.id \
+                     WHERE s.rowid IN ({}) AND b.branch_name=?",
+                    placeholders
+                );
+                let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = rowids.iter()
+                    .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+                    .collect();
+                params.push(Box::new(branch.to_string()));
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+                    let mut detail_map: HashMap<i64, (String, String, String, i64, String, String)> = HashMap::new();
+                    if let Ok(detail_rows) = stmt.query_map(refs.as_slice(), |r| {
                         Ok((
-                            r.get::<_, String>(0)?,
+                            r.get::<_, i64>(0)?,
                             r.get::<_, String>(1)?,
                             r.get::<_, String>(2)?,
-                            r.get::<_, i64>(3)?,
-                            r.get::<_, String>(4)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, i64>(4)?,
                             r.get::<_, String>(5)?,
+                            r.get::<_, String>(6)?,
                         ))
-                    },
-                ) {
-                    let sim = 1.0 / (1.0 + dist as f64);
-                    let vsnip: String = if !doc_comment.is_empty() {
-                        doc_comment.chars().take(500).collect()
-                    } else if !signature.is_empty() {
-                        signature.chars().take(500).collect()
-                    } else {
-                        String::new()
-                    };
-                    results.push((sim, name, "code".into(), file_path, line_start, kind, signature, vsnip, 0));
+                    }) {
+                        for dr in detail_rows.flatten() {
+                            detail_map.insert(dr.0, (dr.1, dr.2, dr.3, dr.4, dr.5, dr.6));
+                        }
+                    }
+                    // Re-join with knn results to preserve distance order
+                    for (rowid, dist) in &rows {
+                        if let Some((name, kind, file_path, line_start, doc_comment, signature)) = detail_map.get(rowid) {
+                            let sim = 1.0 / (1.0 + *dist as f64);
+                            let vsnip: String = if !doc_comment.is_empty() {
+                                doc_comment.chars().take(500).collect()
+                            } else if !signature.is_empty() {
+                                signature.chars().take(500).collect()
+                            } else {
+                                String::new()
+                            };
+                            results.push((sim, name.clone(), "code".into(), file_path.clone(),
+                                *line_start, kind.clone(), signature.clone(), vsnip, 0));
+                        }
+                    }
                 }
             }
         }
     }
 
     // Doc vector search
-    let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
     if channel == "doc" {
-        if let Ok(rows) = crate::storage::vector::knn_search(conn, &doc_table, &query_emb, limit) {
-            for (rowid, dist) in rows {
-                if let Ok((title, file_path, content)) = conn.query_row(
-                    "SELECT title, file_path, COALESCE(content, '') FROM doc_nodes WHERE rowid=?1",
-                    rusqlite::params![rowid],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-                ) {
-                    let sim = 1.0 / (1.0 + dist as f64);
-                    let snippet: String = content.chars().take(500).collect();
-                    results.push((sim, title, "doc".into(), file_path, 0, String::new(), String::new(), snippet, rowid));
+        let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
+        if let Ok(rows) = crate::storage::vector::knn_search(conn, &doc_table, query_emb, limit) {
+            if !rows.is_empty() {
+                let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+                let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "SELECT rowid, title, file_path, COALESCE(content,'') FROM doc_nodes WHERE rowid IN ({})",
+                    placeholders
+                );
+                let params: Vec<Box<dyn rusqlite::types::ToSql>> = rowids.iter()
+                    .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+                    .collect();
+                let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+                let mut detail_map: HashMap<i64, (String, String, String)> = HashMap::new();
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    if let Ok(dr) = stmt.query_map(refs.as_slice(), |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+                    }) {
+                        for d in dr.flatten() { detail_map.insert(d.0, (d.1, d.2, d.3)); }
+                    }
+                }
+                for (rowid, dist) in &rows {
+                    if let Some((title, file_path, content)) = detail_map.get(rowid) {
+                        let sim = 1.0 / (1.0 + *dist as f64);
+                        let snippet: String = content.chars().take(500).collect();
+                        results.push((sim, title.clone(), "doc".into(), file_path.clone(), 0,
+                            String::new(), String::new(), snippet, *rowid));
+                    }
                 }
             }
         }
     }
 
     // File vector search
-    let file_table = format!("file_vec_{}", repo.replace('-', "_"));
     if channel == "file" {
-        if let Ok(rows) = crate::storage::vector::knn_search(conn, &file_table, &query_emb, limit) {
-            for (rowid, dist) in rows {
-                if let Ok((file_path, summary)) = conn.query_row(
-                    "SELECT file_path, COALESCE(summary, '') FROM files WHERE rowid=?1",
-                    rusqlite::params![rowid],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                ) {
-                    let sim = 1.0 / (1.0 + dist as f64);
-                    results.push((sim, file_path.clone(), "file".into(), file_path, 0, String::new(), String::new(), summary, 0));
+        let file_table = format!("file_vec_{}", repo.replace('-', "_"));
+        if let Ok(rows) = crate::storage::vector::knn_search(conn, &file_table, query_emb, limit) {
+            if !rows.is_empty() {
+                let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+                let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "SELECT rowid, file_path, COALESCE(summary,'') FROM files WHERE rowid IN ({})",
+                    placeholders
+                );
+                let params: Vec<Box<dyn rusqlite::types::ToSql>> = rowids.iter()
+                    .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+                    .collect();
+                let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+                let mut detail_map: HashMap<i64, (String, String)> = HashMap::new();
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    if let Ok(dr) = stmt.query_map(refs.as_slice(), |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                    }) {
+                        for d in dr.flatten() { detail_map.insert(d.0, (d.1, d.2)); }
+                    }
+                }
+                for (rowid, dist) in &rows {
+                    if let Some((file_path, summary)) = detail_map.get(rowid) {
+                        let sim = 1.0 / (1.0 + *dist as f64);
+                        results.push((sim, file_path.clone(), "file".into(), file_path.clone(), 0,
+                            String::new(), String::new(), summary.clone(), 0));
+                    }
                 }
             }
         }

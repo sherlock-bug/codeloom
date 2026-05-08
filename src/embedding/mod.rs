@@ -441,13 +441,23 @@ pub fn index_file_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder
 
 // ── Factory ───────────────────────────────────────────────────────────
 
-pub fn get_embedder() -> anyhow::Result<Box<dyn Embedder + Send + Sync>> {
+use std::sync::OnceLock;
+
+/// Statically cached embedder — initialized on first call, reused globally.
+/// Avoids creating a new HTTP client + "init" embedding call on every search.
+static EMBEDDER: OnceLock<Box<dyn Embedder + Send + Sync>> = OnceLock::new();
+
+pub fn get_embedder() -> anyhow::Result<&'static (dyn Embedder + Send + Sync)> {
+    if let Some(e) = EMBEDDER.get() {
+        return Ok(e.as_ref());
+    }
     let config = crate::config::Config::load().unwrap_or_default();
     match &config.embedding {
         Some(cfg) => {
             let embedder = ApiEmbedder::new(cfg)?;
             embedder.embed("init")?; // auto-detect dimension
-            Ok(Box::new(embedder))
+            EMBEDDER.set(Box::new(embedder)).map_err(|_| anyhow::anyhow!("Embedder already set"))?;
+            Ok(EMBEDDER.get().unwrap().as_ref())
         }
         None => anyhow::bail!("No embedding config. Add to ~/.codeloom/config.yaml:\n  embedding:\n    api_base: \"http://host:port/v1\"\n    model: \"bge-m3\""),
     }
