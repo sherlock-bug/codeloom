@@ -275,6 +275,19 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let t4 = t0.elapsed();
             eprintln!("  ⏱  parse+db: {:.1}s | docs+fts: {:.1}s | vectors: {:.1}s | total: {:.1}s",
                 t1.as_secs_f64(), (t3-t2).as_secs_f64(), (t4-t3).as_secs_f64(), t4.as_secs_f64());
+
+            // 噪声标定（同样在 spawn_blocking 中执行，避免 reqwest::blocking 与 tokio 冲突）
+            let calib_result = tokio::task::spawn_blocking(|| crate::calib::calibrate()).await?;
+            match calib_result {
+                Ok(profile) => {
+                    crate::calib::save_noise_profile(&profile).ok();
+                    eprintln!("  [OK]  Noise ceiling: {:.3} (mean={:.3}, σ={:.3})",
+                        profile.noise_ceiling, profile.noise_mean, profile.noise_std);
+                }
+                Err(e) => {
+                    eprintln!("  [WARN] Noise calibration failed: {}", e);
+                }
+            }
         }
         Command::Branch(cmd) => match cmd {
             BranchCmd::SetAlias { alias, branch, desc, repo } => {

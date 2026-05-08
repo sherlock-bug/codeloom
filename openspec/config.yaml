@@ -1,0 +1,14 @@
+# CodeLoom OpenSpec Config
+context: |
+  CodeLoom 是一个代码库语义搜索工具，将 C++/Python 等项目索引为 SQLite 数据库，
+  提供混合搜索（BM25 FTS5 + 向量嵌入）和 MCP 服务。
+  技术栈：Rust，SQLite（含 FTS5/vec0），tree-sitter 解析，embedding API。
+  项目位于 /mnt/d/RagMcpHermes/codeloom，分支 master。
+  模块：cli, config, doc, embedding, ignore, indexer, linking, mcp, query, storage, util。
+  测试：cargo test（66 单元 + 7 集成 = 73 测试）。
+
+rules:
+  proposal: ["使用中文撰写", "每个 SDD 阶段暂停等待用户确认"]
+  specs: ["使用中文撰写", "保留 SHALL 关键词"]
+  design: ["使用中文撰写"]
+  tasks: ["使用中文撰写", "最后一项任务为更新 README.md"]

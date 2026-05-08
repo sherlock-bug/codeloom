@@ -1,4 +1,4 @@
-# CodeLoom v0.5.3
+# CodeLoom v0.5.5
 
 > 代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 
@@ -27,7 +27,8 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 | **分支过滤** | 所有 MCP 工具 `branch` 参数必传；`branch_name IS NULL` 的数据所有分支可见 |
 | **多仓支持** | 前后端独立索引，跨仓依赖自动识别 |
 | **MCP 原生** | 11 个 MCP 工具（含 inspect + get_doc + query_excel），OpenCode/Claude Code 零配置对接 |
-| **自动化测试** | 73 测试（66 单元 + 7 集成），本地素材自洽，`cargo test` 一键验证 |
+| **自动化测试** | 76 测试（69 单元 + 7 集成），本地素材自洽，`cargo test` 一键验证 |
+| **噪声过滤** | 内置标定语料库 + 探针系统，自动计算噪声基线（mean+2.5σ），`check`/首次`index` 标定，搜索结果自动过滤低置信度条目 |
 
 ## 安装
 
@@ -76,10 +77,10 @@ embedding:
 YAML
 
 # 2. 索引 + 搜索
-codeloom check                              # 检查环境（含 API 连通性）
-codeloom index /path/to/your/cpp/repo       # 索引代码库 + 文档
+codeloom check                              # 检查环境 + 噪声标定（自动过滤低质量搜索结果）
+codeloom index /path/to/your/cpp/repo       # 索引代码库 + 文档（首次自动标定）
 codeloom status                             # 查看状态
-codeloom search "auth token"                # FTS5 + 向量混合搜索
+codeloom search "auth token"                # FTS5 + 向量混合搜索（自动过滤噪声）
 
 # 注册到 OpenCode
 opencode mcp add codeloom -- codeloom mcp

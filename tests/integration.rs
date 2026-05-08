@@ -147,3 +147,34 @@ fn test_multi_format_index() {
     let _ = std::fs::remove_file(db);
 }
 
+#[test]
+fn test_chinese_semantic_search() {
+    // Use semantic_search fixture: auth.cpp + README.md
+    let fixture = "tests/fixtures/semantic_search";
+    codeloom(&["index", fixture, "--repo", "zhsearch", "--branch", "main"]);
+
+    // Chinese query: should match AuthService via embedding model's cross-lingual ability
+    let out = codeloom(&["search", "用户身份验证", "--repo", "zhsearch", "--branch", "main", "--limit", "3"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "chinese search failed: {}", stdout);
+    assert!(!stdout.contains("No results"), "should find auth with chinese query");
+
+    // Another Chinese query: 缓存管理 → CacheManager
+    let out = codeloom(&["search", "缓存数据管理", "--repo", "zhsearch", "--branch", "main", "--limit", "3"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "chinese cache search failed: {}", stdout);
+    assert!(!stdout.contains("No results"), "should find cache with chinese query");
+}
+
+#[test]
+fn test_noise_calibration_with_5_probes() {
+    // Index leveldb (largest test repo) and verify calibration succeeds with 5 probes
+    let fixture = "tests/fixtures/semantic_search";
+    codeloom(&["index", fixture, "--repo", "cal5", "--branch", "main"]);
+
+    let out = codeloom(&["index", fixture, "--repo", "cal5", "--branch", "main"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Calibration should succeed and report noise ceiling
+    assert!(stderr.contains("Noise ceiling"), "calibration should run with 5 probes: {}", stderr);
+}
+

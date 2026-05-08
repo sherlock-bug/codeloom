@@ -39,10 +39,10 @@ release-zip: release
 	for f in models/bge-small-zh/pytorch_model.bin models/bge-small-zh/config.json models/bge-small-zh/tokenizer.json models/sqlite-vec/vec0.so; do \
 		test -f $$f || { echo "ERROR: model file missing: $$f"; exit 1; }; \
 	done; \
-	cp target/release/codeloom $$TMPDIR/; \
-	cp -r models/ $$TMPDIR/; \
-	cp scripts/install.sh $$TMPDIR/; \
-	cd $$TMPDIR && zip -r $$ZIP_NAME codeloom models/ install.sh; \
+	cp target/release/codeloom $$TMPDIR/;
+	cp -r models/ $$TMPDIR/;
+	cp scripts/install.sh $$TMPDIR/;
+	cd $$TMPDIR && zip -r $$ZIP_NAME codeloom models/ install.sh;
 	mv $$TMPDIR/$$ZIP_NAME .; \
 	rm -rf $$TMPDIR; \
 	ls -lh $$ZIP_NAME; \

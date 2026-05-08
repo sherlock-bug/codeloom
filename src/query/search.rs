@@ -210,9 +210,15 @@ pub fn hybrid_search(
             .or_insert(r);
     }
 
-    // Sort and truncate
+    // Sort and filter noise
     let mut fused: Vec<FusedResult> = entries.into_values().collect();
     fused.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Filter below noise ceiling (if calibrated)
+    if let Some(ceiling) = crate::calib::noise_ceiling() {
+        fused.retain(|r| r.score >= ceiling);
+    }
+
     fused.truncate(limit);
     Ok(fused)
 }
