@@ -150,7 +150,7 @@ fn weighted_fuse_single(
     result.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     result
 }
-/// Symbol name hits get weight 0.7, comment hits get 0.3. Doc/File get 0.5 each.
+/// Symbol name hits get weight 0.6, comment hits get 0.4. Doc/File get 0.5 each.
 pub fn hybrid_search(
     conn: &Connection,
     query: &str,
@@ -180,15 +180,15 @@ pub fn hybrid_search(
     // Fuse each channel independently, then merge
     let mut entries: HashMap<(String, String), FusedResult> = HashMap::new();
 
-    // Code name channel: weight 0.7
-    let name_fused = weighted_fuse_single(&bm25_name, &vec_name, "code", 0.7, 0.7);
+    // Code name channel: weight 0.6
+    let name_fused = weighted_fuse_single(&bm25_name, &vec_name, "code", 0.6, 0.6);
     for r in name_fused {
         let key = (r.name.clone(), r.file_path.clone());
         entries.entry(key).or_insert(r);
     }
 
-    // Code comment channel: weight 0.3 (additive with name)
-    let comment_fused = weighted_fuse_single(&bm25_comment, &vec_comment, "code", 0.3, 0.3);
+    // Code comment channel: weight 0.4 (additive with name)
+    let comment_fused = weighted_fuse_single(&bm25_comment, &vec_comment, "code", 0.4, 0.4);
     for r in comment_fused {
         let key = (r.name.clone(), r.file_path.clone());
         entries.entry(key)
