@@ -21,6 +21,26 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools
 
+      - name: Generate sqlite-vec amalgamation
+        run: |
+          cd vendor/sqlite-vec
+          # gen header
+          sed 's/@VERSION@/0.1.0/' sqlite-vec.h.tmpl > sqlite-vec.h
+          # gen amalgamated source
+          echo '// stub' > sqlite-vec.c
+          python3 scripts/amalgamate.py sqlite-vec.c > amalg.c 2>/dev/null || {
+            # fallback: concat manually
+            echo '#include "sqlite-vec.h"' > sqlite-vec.c
+            echo '#include <stdint.h>' >> sqlite-vec.c
+            echo '#include "sqlite3ext.h"' >> sqlite-vec.c
+            for f in sqlite-vec-*.c; do
+              echo "/* $f */" >> sqlite-vec.c
+              cat "$f" >> sqlite-vec.c
+            done
+          }
+          mv amalg.c sqlite-vec.c 2>/dev/null || true
+          wc -l sqlite-vec.c
+
       - name: Install Rust musl target
         run: rustup target add x86_64-unknown-linux-musl
 
@@ -32,7 +52,7 @@ jobs:
 
       - name: Verify
         run: |
-          file codeloom | grep -q "statically linked" && echo "✓ static" || echo "⚠ not static"
+          file codeloom | grep -q "statically linked" && echo "static" || echo "not-static"
           strings codeloom | grep -F "CodeLoom v" | head -1
 
       - name: Upload to Release
