@@ -21,9 +21,8 @@ const NOISE_PROBES: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct NoiseProfile {
-    pub noise_mean: f64,
-    pub noise_std: f64,
-    pub noise_ceiling: f64,
+    pub top1_mean: f64,
+    pub top1_std: f64,
     pub samples: usize,
     pub model: String,
     pub calibrated_at: String,
@@ -44,9 +43,8 @@ fn open_config_db() -> anyhow::Result<Connection> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS noise_profile (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            noise_mean REAL NOT NULL,
-            noise_std REAL NOT NULL,
-            noise_ceiling REAL NOT NULL,
+            top1_mean REAL NOT NULL,
+            top1_std REAL NOT NULL,
             samples INTEGER NOT NULL,
             model TEXT NOT NULL,
             calibrated_at TEXT NOT NULL
@@ -58,12 +56,11 @@ fn open_config_db() -> anyhow::Result<Connection> {
 pub fn save_noise_profile(profile: &NoiseProfile) -> anyhow::Result<()> {
     let conn = open_config_db()?;
     conn.execute(
-        "INSERT OR REPLACE INTO noise_profile (id, noise_mean, noise_std, noise_ceiling, samples, model, calibrated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR REPLACE INTO noise_profile (id, top1_mean, top1_std, samples, model, calibrated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![
-            profile.noise_mean,
-            profile.noise_std,
-            profile.noise_ceiling,
+            profile.top1_mean,
+            profile.top1_std,
             profile.samples as i64,
             profile.model,
             profile.calibrated_at,
@@ -75,25 +72,24 @@ pub fn save_noise_profile(profile: &NoiseProfile) -> anyhow::Result<()> {
 pub fn load_noise_profile() -> Option<NoiseProfile> {
     let conn = open_config_db().ok()?;
     conn.query_row(
-        "SELECT noise_mean, noise_std, noise_ceiling, samples, model, calibrated_at
+        "SELECT top1_mean, top1_std, samples, model, calibrated_at
          FROM noise_profile WHERE id = 1",
         [],
         |row| {
             Ok(NoiseProfile {
-                noise_mean: row.get(0)?,
-                noise_std: row.get(1)?,
-                noise_ceiling: row.get(2)?,
-                samples: row.get::<_, i64>(3)? as usize,
-                model: row.get(4)?,
-                calibrated_at: row.get(5)?,
+                top1_mean: row.get(0)?,
+                top1_std: row.get(1)?,
+                samples: row.get::<_, i64>(2)? as usize,
+                model: row.get(3)?,
+                calibrated_at: row.get(4)?,
             })
         },
     )
     .ok()
 }
 
-pub fn noise_ceiling() -> Option<f64> {
-    load_noise_profile().map(|p| p.noise_ceiling)
+pub fn noise_profile() -> Option<NoiseProfile> {
+    load_noise_profile()
 }
 
 // ── 标定 ──────────────────────────────────────────────────
@@ -150,25 +146,26 @@ pub fn calibrate() -> anyhow::Result<NoiseProfile> {
     let db_path = data_dir.join(format!("{}.rag.db", best_repo));
     let conn = crate::storage::open(&db_path.to_string_lossy())?;
 
-    let mut all_scores: Vec<f64> = Vec::new();
+    let mut top1_scores: Vec<f64> = Vec::new();
     for &probe in NOISE_PROBES {
         if let Ok(results) =
             crate::query::search::hybrid_search(&conn, probe, &best_repo, &best_branch, 5, None)
         {
-            all_scores.extend(results.iter().map(|r| r.score));
+            if let Some(top) = results.first() {
+                top1_scores.push(top.score);
+            }
         }
     }
     drop(conn);
 
-    if all_scores.is_empty() {
+    if top1_scores.is_empty() {
         return Err(anyhow::anyhow!("噪声探针未返回任何结果"));
     }
 
-    let n = all_scores.len() as f64;
-    let mean: f64 = all_scores.iter().sum::<f64>() / n;
-    let variance = all_scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
+    let n = top1_scores.len() as f64;
+    let mean: f64 = top1_scores.iter().sum::<f64>() / n;
+    let variance = top1_scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
     let std = variance.sqrt();
-    let ceiling = mean + 2.5 * std;
 
     let model = crate::config::Config::load()
         .ok()
@@ -179,10 +176,9 @@ pub fn calibrate() -> anyhow::Result<NoiseProfile> {
     let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
 
     Ok(NoiseProfile {
-        noise_mean: mean,
-        noise_std: std,
-        noise_ceiling: ceiling,
-        samples: all_scores.len(),
+        top1_mean: mean,
+        top1_std: std,
+        samples: top1_scores.len(),
         model,
         calibrated_at: now,
     })

@@ -218,9 +218,10 @@ pub fn hybrid_search(
     let mut fused: Vec<FusedResult> = entries.into_values().collect();
     fused.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Filter below noise ceiling (if calibrated)
-    if let Some(ceiling) = crate::calib::noise_ceiling() {
-        fused.retain(|r| r.score >= ceiling);
+    // z-score filter: drop results within 1.5σ of noise top1_mean
+    if let Some(profile) = crate::calib::noise_profile() {
+        let threshold = 1.0;
+        fused.retain(|r| (r.score - profile.top1_mean) / profile.top1_std.max(0.001) >= threshold);
     }
 
     fused.truncate(limit);

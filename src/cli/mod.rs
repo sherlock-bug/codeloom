@@ -281,8 +281,8 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             match calib_result {
                 Ok(profile) => {
                     crate::calib::save_noise_profile(&profile).ok();
-                    eprintln!("  [OK]  Noise ceiling: {:.3} (mean={:.3}, σ={:.3})",
-                        profile.noise_ceiling, profile.noise_mean, profile.noise_std);
+                    eprintln!("  [OK]  Noise z-score: top1_mean={:.3}, σ={:.3}",
+                        profile.top1_mean, profile.top1_std);
                 }
                 Err(e) => {
                     eprintln!("  [WARN] Noise calibration failed: {}", e);

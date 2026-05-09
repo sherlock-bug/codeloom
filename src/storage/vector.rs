@@ -20,7 +20,7 @@ pub fn create_tables(conn: &Connection, repo: &str, dim: usize) -> anyhow::Resul
     let file_table = format!("file_vec_{}", repo.replace('-', "_"));
 
     conn.execute_batch(&format!(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS {sym_name_table} USING vec0(embedding FLOAT[{dim}]);\n\
+        "CREATE VIRTUAL TABLE IF NOT EXISTS {sym_name_table} USING vec0(embedding FLOAT[{dim}] distance_metric=cosine);\n\
          CREATE VIRTUAL TABLE IF NOT EXISTS {sym_comment_table} USING vec0(embedding FLOAT[{dim}]);\n\
          CREATE VIRTUAL TABLE IF NOT EXISTS {doc_table} USING vec0(embedding FLOAT[{dim}]);\n\
          CREATE VIRTUAL TABLE IF NOT EXISTS {file_table} USING vec0(embedding FLOAT[{dim}]);"

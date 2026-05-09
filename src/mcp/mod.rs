@@ -30,7 +30,7 @@ pub async fn serve_stdio() -> anyhow::Result<()> {
 fn tools_list(id: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
         {"name":"codeloom_index","description":"⚠️ 此工具不通过MCP执行索引（索引需用CLI命令：codeloom index <path> --repo <name> --branch <branch>）。调用前请先用codeloom_list_repos检查是否已索引，用codeloom_status确认状态。path=项目根目录，branch（必填），repo（可选，默认取目录名）","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"branch":{"type":"string"},"repo":{"type":"string"}},"required":["path","branch"]}},
-        {"name":"codeloom_status","description":"查看索引状态：符号数、边数、文档数、数据库大小。在用其他MCP工具前先调用此工具确认仓库已索引且数据非空。branch/repo（必填）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
+        // DISABLED: {"name":"codeloom_status","description":"查看索引状态：符号数、边数、文档数、数据库大小。在用其他MCP工具前先调用此工具确认仓库已索引且数据非空。branch/repo（必填）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
         {"name":"codeloom_list_symbols","description":"**优先使用**：按名称模糊搜索已索引的符号。优先于grep/rg使用——索引覆盖项目所有文件及#include的第三方头文件（grep只能搜当前目录）。返回结构化结果：名称、类型、文件路径、行号。C++类方法用ClassName::methodName格式。如pattern=\"login\"匹配handleLogin、loginUser等。branch/repo（必填）","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["pattern","repo","branch"]}},
         {"name":"codeloom_get_call_graph","description":"**唯一方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。branch/repo（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["name","repo","branch","direction"]}},
         {"name":"codeloom_search","description":"【必须使用，替代grep/rg】混合搜索引擎：比grep更快（预索引）、覆盖更全（含#include头文件）、更智能（理解中文/英文语义，不仅文本匹配）。query可以是符号名（AuthService/compaction）或功能描述（'用户认证'、'内存分配'）。自动融合BM25关键词+向量语义，返回结构化结果（名称/类型/文件/行号）。不要用grep/rg搜代码——用这个。kind可选：按符号类型过滤（function/method/class/struct/enum等），如kind=class搜所有类。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
@@ -39,8 +39,8 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
 
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。无需任何参数。返回如\"codeloom\\nleveldb\\nspdlog\"。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
-        {"name":"codeloom_get_doc","description":"获取文档节点的完整内容及嵌入图片。doc_id=文档节点ID（从搜索或overview结果中获得），repo=仓库名，branch=分支名。返回标题、章节路径、层级、内容、文件路径、格式、节点类型及图片列表（base64编码）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["doc_id","repo","branch"]}},
-        {"name":"codeloom_query_excel","description":"回答Excel表格问题（筛选、查找行列数据等）。doc_id=文档节点ID（Excel文档内节点），repo=仓库名，branch=分支名（必填）。mode可选：row（返回整行键值对）、column（返回整列）、filter（按条件过滤，filter参数为过滤表达式如'销售额 > 5000'）、auto（根据节点类型自动推断）。limit最多返回行数（默认20）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["row","column","filter","auto"]},"filter":{"type":"string"},"search":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["doc_id","repo","branch"]}},
+        // DISABLED: {"name":"codeloom_get_doc","description":"获取文档节点的完整内容及嵌入图片。doc_id=文档节点ID（从搜索或overview结果中获得），repo=仓库名，branch=分支名。返回标题、章节路径、层级、内容、文件路径、格式、节点类型及图片列表（base64编码）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["doc_id","repo","branch"]}},
+        // DISABLED: {"name":"codeloom_query_excel","description":"回答Excel表格问题（筛选、查找行列数据等）。doc_id=文档节点ID（Excel文档内节点），repo=仓库名，branch=分支名（必填）。mode可选：row（返回整行键值对）、column（返回整列）、filter（按条件过滤，filter参数为过滤表达式如'销售额 > 5000'）、auto（根据节点类型自动推断）。limit最多返回行数（默认20）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["row","column","filter","auto"]},"filter":{"type":"string"},"search":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["doc_id","repo","branch"]}},
         {"name":"codeloom_schema","description":"导出CodeLoom所有元数据：节点类型（symbol kind）及其说明、边类型（edge_type前缀）及其方向语义和参与节点类型。调用codeloom_path_analysis/codeloom_impact_analysis/codeloom_neighbor_graph前必须优先调用此工具，否则你不知道edge_filter参数有哪些边类型可选。无需任何参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_path_analysis","description":"回答『A到B怎么走』『A和B有什么关系』：在两个符号之间搜索关系路径，跨函数调用、数据流、继承等多种边类型。优于逐层调用codeloom_call_graph：一次调用自动跨边类型搜索最短路径，一键覆盖calls/inherits/param_type等多类边。source=起始符号名，target=目标符号名，mode=shortest|all（默认shortest），edge_filter可选限定边类型（如['calls','calls_override']只看调用路径），direction=forward|reverse|both（默认both）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"target":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["shortest","all"]},"max_paths":{"type":"integer","default":20},"max_depth":{"type":"integer","default":10},"direction":{"type":"string","enum":["forward","reverse","both"]},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["source","target","repo","branch"]}},
         {"name":"codeloom_impact_analysis","description":"回答『改了X会影响谁』『X被谁依赖』：沿边传递闭包N跳分析影响范围。优于codeloom_call_graph：自动N跳递归，不仅是直接调用者。优于codeloom_neighbor_graph：传递闭包而非只看1跳邻居。symbol=要分析的符号名，direction=forward|reverse|both（默认reverse），radius=跳数（默认3），edge_filter可选限定边类型。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]},"radius":{"type":"integer","default":3},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["symbol","repo","branch"]}},
@@ -65,35 +65,12 @@ fn validate_repo(repo: &str) -> Result<String, String> {
 fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value) -> serde_json::Value {
     let result = match name {
         
-        "codeloom_get_doc" => {
-            let doc_id = args["doc_id"].as_i64().unwrap_or(0);
-            let branch = args["branch"].as_str().unwrap_or("");
-            let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
-            if let Err(e) = repo { return err_resp(id, &e); }
-            if branch.is_empty() { return err_resp(id, "branch is required"); }
-            if doc_id == 0 { return err_resp(id, "doc_id is required"); }
-            get_doc(doc_id, &repo.unwrap(), branch)
-        }
-        "codeloom_query_excel" => {
-            let doc_id = args["doc_id"].as_i64().unwrap_or(0);
-            let branch = args["branch"].as_str().unwrap_or("");
-            let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
-            let mode = args["mode"].as_str().unwrap_or("auto");
-            let filter_expr = args["filter"].as_str().unwrap_or("");
-            let search = args["search"].as_str().unwrap_or("");
-            let limit = args["limit"].as_u64().unwrap_or(20) as usize;
-            if let Err(e) = repo { return err_resp(id, &e); }
-            if branch.is_empty() { return err_resp(id, "branch is required"); }
-            if doc_id == 0 { return err_resp(id, "doc_id is required"); }
-            query_excel(doc_id, &repo.unwrap(), branch, mode, filter_expr, search, limit)
-        }
-        "codeloom_status" => {
-            let branch = args["branch"].as_str().unwrap_or("");
-            let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
-            if let Err(e) = repo { return err_resp(id, &e); }
-            if branch.is_empty() { return err_resp(id, "branch is required"); }
-            status(&repo.unwrap(), branch)
-        }
+        // DISABLED: codeloom_get_doc
+        /* "codeloom_get_doc" => { ... } */
+        // DISABLED: codeloom_query_excel
+        /* "codeloom_query_excel" => { ... } */
+        // DISABLED: codeloom_status
+        /* "codeloom_status" => { ... } */
         "codeloom_schema" => {
             schema_meta()
         }
@@ -869,7 +846,7 @@ mod tests {
     fn test_tools_list_has_correct_count() {
         let resp = tools_list(serde_json::Value::Number(1.into()));
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 12);  // 3 tools disabled: status, get_doc, query_excel
     }
 
     #[test]
@@ -927,13 +904,12 @@ mod tests {
     fn test_handle_tool_call_missing_branch() {
         // Need to pass a valid repo (even if DB doesn't exist), or repo validation fires first
         // We test branch validation by passing an empty branch
-        let resp = handle_tool_call(
+        // DISABLED: codeloom_status removed
+        let _resp = handle_tool_call(
             serde_json::Value::Number(1.into()),
-            "codeloom_status",
+            "codeloom_status_DISABLED",
             &serde_json::json!({"repo": "testrepo", "branch": ""}),
         );
-        // The error might be branch-related or repo-related depending on whether testrepo DB exists
-        assert!(resp["error"]["code"] == -32602 || resp["error"]["code"] == -32603);
     }
 
     #[test]
@@ -960,33 +936,32 @@ mod tests {
 
     #[test]
     fn test_get_doc_not_found() {
-        let resp = handle_tool_call(
+        // DISABLED: codeloom_get_doc removed
+        let _resp = handle_tool_call(
             serde_json::Value::Number(1.into()),
-            "codeloom_get_doc",
+            "codeloom_get_doc_DISABLED",
             &serde_json::json!({"doc_id": 999, "repo": "nonexistent", "branch": "main"}),
         );
-        // Should get repo error since "nonexistent" DB doesn't exist
-        assert!(resp["error"]["code"] == -32602 || resp["result"]["content"][0]["text"].as_str().unwrap().contains("未找到"));
     }
 
     #[test]
     fn test_get_doc_missing_doc_id() {
-        let resp = handle_tool_call(
+        // DISABLED: codeloom_get_doc removed
+        let _resp = handle_tool_call(
             serde_json::Value::Number(1.into()),
-            "codeloom_get_doc",
+            "codeloom_get_doc_DISABLED",
             &serde_json::json!({"repo": "test", "branch": "main"}),
         );
-        assert_eq!(resp["error"]["code"], -32602);
     }
 
     #[test]
     fn test_query_excel_missing_doc_id() {
-        let resp = handle_tool_call(
+        // DISABLED: codeloom_query_excel removed
+        let _resp = handle_tool_call(
             serde_json::Value::Number(1.into()),
-            "codeloom_query_excel",
+            "codeloom_query_excel_DISABLED",
             &serde_json::json!({"repo": "test", "branch": "main"}),
         );
-        assert_eq!(resp["error"]["code"], -32602);
     }
 
     #[test]
@@ -994,8 +969,9 @@ mod tests {
         let resp = tools_list(serde_json::Value::Number(1.into()));
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-        assert!(names.contains(&"codeloom_get_doc"));
-        assert!(names.contains(&"codeloom_query_excel"));
+        // DISABLED: codeloom_get_doc and codeloom_query_excel removed
+        // assert!(names.contains(&"codeloom_get_doc"));
+        // assert!(names.contains(&"codeloom_query_excel"));
     }
 
     #[test]
@@ -1009,6 +985,6 @@ mod tests {
         let search_tool = tools.iter().find(|t| t["name"] == "codeloom_search").unwrap();
         assert!(search_tool["name"].as_str().unwrap() == "codeloom_search");
         // Verify that new tool definitions are reachable by checking tool count
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 12);  // 3 tools disabled: status, get_doc, query_excel
     }
 }
