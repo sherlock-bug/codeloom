@@ -178,3 +178,68 @@ fn test_noise_calibration_with_5_probes() {
     assert!(stderr.contains("Noise ceiling"), "calibration should run with 5 probes: {}", stderr);
 }
 
+// ── Symbol usage edges test ───────────────────────────────────────────
+
+#[test]
+fn test_symbol_usage_edges() {
+    let fixture = "tests/fixtures/symbol_usage_edges";
+    let repo = "sue";
+
+    // Index the fixture
+    let out = codeloom(&["index", fixture, "--repo", repo, "--branch", "main"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Done:"), "index should succeed: {}", stdout);
+
+    // Query edges from the SQLite database directly
+    let db_path = dirs_next().unwrap_or_else(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
+        format!("{}/.codeloom", home)
+    });
+    let db_file = format!("{}/{}.rag.db", db_path, repo);
+
+    // Use Python's sqlite3 to query edges (sqlite3 CLI not installed)
+    let query_edges = |pattern: &str| -> Vec<String> {
+        let py_code = format!(
+            "import sqlite3; c=sqlite3.connect('{}'); rows=c.execute(\"SELECT e.edge_type FROM edges e JOIN symbols s ON e.source_id=s.id WHERE e.edge_type LIKE '{}%'\").fetchall(); [print(r[0]) for r in rows]",
+            db_file, pattern
+        );
+        let out = std::process::Command::new("python3")
+            .args(["-c", &py_code])
+            .output()
+            .expect("python3 sqlite3 query failed");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    };
+
+    // 1. Enum value usage edges
+    // Status::OK and Status::ERROR used in process_request
+    // Color::RED, Color::GREEN, Color::BLUE used in get_color_name
+    let enum_edges = query_edges("uses:Status");
+    assert!(!enum_edges.is_empty(), "should have Status enum edges: {:?}", enum_edges);
+
+    let color_edges = query_edges("uses:Color");
+    assert!(!color_edges.is_empty(), "should have Color enum edges: {:?}", color_edges);
+
+    // 2. Global variable reference edges
+    let global_edges = query_edges("references:g_request_count");
+    assert!(!global_edges.is_empty(), "should have g_request_count refs: {:?}", global_edges);
+
+    let static_edges = query_edges("references:s_cache_hits");
+    assert!(!static_edges.is_empty(), "should have s_cache_hits refs: {:?}", static_edges);
+
+    // 3. String literal edges
+    let str_edges = query_edges("uses:red");
+    assert!(!str_edges.is_empty(), "should have 'red' string edges: {:?}", str_edges);
+
+    let str_edges2 = query_edges("uses:initialization");
+    assert!(!str_edges2.is_empty(), "should have 'initialization complete' string edges: {:?}", str_edges2);
+}
+
+fn dirs_next() -> Option<String> {
+    // Simple home-based path resolution
+    std::env::var("HOME").ok().map(|h| format!("{}/.codeloom", h))
+}
+

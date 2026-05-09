@@ -46,6 +46,9 @@ fn _smart_index(
     let head = git::head_commit(repo_root);
     result.head_commit = head.clone();
 
+    // Seed builtin std symbols before first index
+    crate::storage::symbols::insert_builtin_symbols(conn)?;
+
     // Vec0 tables are created by index_vectors() — skip eager init here
 
     let Some(ref head_commit) = head else {
@@ -178,10 +181,17 @@ fn index_one(
             rusqlite::params![db_id, repo_name, branch],
         )?;
     }
-    // Resolve target IDs: same-file by name first, then DB by name
-    for (src_idx, _tgt_idx, edge) in &edges_data {
+    // Resolve target IDs: respect extractor's usize::MAX as unresolved,
+    // then try id_map lookup, then fall back to name-based resolution
+    for (src_idx, tgt_idx, edge) in &edges_data {
         if let Some(&src_db) = id_map.get(*src_idx) {
-            let target_db = resolve_target(conn, &symbols, &id_map, edge, repo_name);
+            let target_db = if *tgt_idx == usize::MAX {
+                0 // extractor says unresolved — trust it
+            } else if let Some(&tgt_db) = id_map.get(*tgt_idx) {
+                tgt_db // extractor resolved within same batch
+            } else {
+                resolve_target(conn, &symbols, &id_map, edge, repo_name)
+            };
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO edges (source_id,target_id,edge_type,source_repo) VALUES (?1,?2,?3,?4)",
                 rusqlite::params![src_db, target_db, edge, repo_name],
@@ -219,13 +229,26 @@ fn resolve_target(
     if target_name.is_empty() {
         return 0;
     }
+    // 0. Strip overload suffix (N) for matching — "func(2)" → "func"
+    let base_name = if let Some(open) = target_name.find('(') {
+        if target_name.ends_with(')') { &target_name[..open] } else { target_name }
+    } else { target_name };
     // 1. same-file lookup
-    if let Some(idx) = symbols.iter().position(|s| s.name == target_name) {
+    if let Some(idx) = symbols.iter().position(|s| s.name == target_name || s.name == base_name) {
         if let Some(&id) = id_map.get(idx) {
             return id;
         }
     }
-    // 2. DB lookup by exact name+repo
+    // 1b. same-file lookup with base_name (sans overload suffix)
+    if base_name != target_name {
+        if let Some(idx) = symbols.iter().position(|s| s.name == base_name) {
+            if let Some(&id) = id_map.get(idx) {
+                return id;
+            }
+        }
+    }
+    // 2. DB lookup by exact name+repo — try both target_name and base_name
+    let query_name = if base_name != target_name { base_name } else { target_name };
     if let Ok(id) = conn.query_row(
         "SELECT id FROM symbols WHERE name=?1 AND repo=?2 LIMIT 1",
         rusqlite::params![target_name, repo],
@@ -233,10 +256,27 @@ fn resolve_target(
     ) {
         return id;
     }
-    // 3. LIKE fallback (name may have prefix/suffix like ClassName::method vs method)
-    let like_pat = format!("%{}%", target_name);
+    // 3. LIKE fallback: match by qualified-name suffix (e.g., "size" matches "MyVector::size")
+    // Use '%::X' not '%X%' to avoid single-char type names matching everything
+    let like_pat = format!("%::{}", target_name);
     if let Ok(id) = conn.query_row(
         "SELECT id FROM symbols WHERE name LIKE ?1 AND repo=?2 LIMIT 1",
+        rusqlite::params![like_pat, repo],
+        |row| row.get(0),
+    ) {
+        return id;
+    }
+    // 4. Check builtin symbols (__builtin__ repo) for fully-qualified names
+    if let Ok(id) = conn.query_row(
+        "SELECT id FROM symbols WHERE name=?1 AND repo='__builtin__' LIMIT 1",
+        rusqlite::params![target_name],
+        |row| row.get(0),
+    ) {
+        return id;
+    }
+    // 5. LIKE fallback on builtin too
+    if let Ok(id) = conn.query_row(
+        "SELECT id FROM symbols WHERE name LIKE ?1 AND repo='__builtin__' LIMIT 1",
         rusqlite::params![like_pat, repo],
         |row| row.get(0),
     ) {

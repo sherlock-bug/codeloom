@@ -52,7 +52,7 @@ if $FROM_SOURCE; then
 
 else
     # ── 下载预编译二进制 ────────────────────────────────────
-    VERSION="v0.5.6"
+    VERSION="v0.6.1"
     BASE_URL="https://gitee.com/greengreensea/codeloom/releases/download/${VERSION}"
     OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)

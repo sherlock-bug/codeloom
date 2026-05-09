@@ -1,4 +1,4 @@
-# CodeLoom v0.5.6
+# CodeLoom v0.6.1
 
 > 代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 
@@ -26,7 +26,7 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 | **Git 驱动增量** | 自动跟踪 commit，`git diff` 只扫变更文件；新分支从父分支继承符号 |
 | **分支过滤** | 所有 MCP 工具 `branch` 参数必传；`branch_name IS NULL` 的数据所有分支可见 |
 | **多仓支持** | 前后端独立索引，跨仓依赖自动识别 |
-| **MCP 原生** | 11 个 MCP 工具（含 inspect + get_doc + query_excel），OpenCode/Claude Code 零配置对接 |
+| **MCP 原生** | 15 个 MCP 工具（含 schema + search + inspect + path_analysis + impact_analysis 等），OpenCode/Claude Code 零配置对接 |
 | **自动化测试** | 76 测试（69 单元 + 7 集成），本地素材自洽，`cargo test` 一键验证 |
 | **噪声过滤** | 内置标定语料库 + 探针系统，自动计算噪声基线（mean+2.5σ），`check`/首次`index` 标定，搜索结果自动过滤低置信度条目 |
 
@@ -122,7 +122,7 @@ OpenCode 里直接用：
 
 ## MCP 工具
 
-11 个 MCP 工具，所有搜索/查询工具的 `branch` 参数必传。**打开仓库后第一步先调 `codeloom_list_repos` 获取可用仓库名。**
+15 个 MCP 工具，所有搜索/查询工具的 `branch` 参数必传。**打开仓库后第一步先调 `codeloom_list_repos` 获取可用仓库名。**
 
 ### 仓库与状态管理
 
@@ -131,35 +131,33 @@ OpenCode 里直接用：
 | `codeloom_list_repos` | 无 | **第一步调用**：列出所有已索引的仓库名。 |
 | `codeloom_list_branches` | `repo` | 列出指定仓库的所有已索引分支及符号数。 |
 | `codeloom_status` | `branch`, `repo` | 查看索引状态：符号数、边数、文档数、DB 大小。 |
-| `codeloom_overview` | `branch`, `repo` | 仓库架构全貌：符号按类型分布、文件数、边数。 |
 | `codeloom_index` | `path`, `branch`, `repo?` | ⚠️ 不通过 MCP 执行索引（需 CLI）。调用前先用 `codeloom_list_repos` 检查是否已索引。 |
 
-### 符号查询（按名称）
+### 符号查询
 
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `codeloom_search` | `query`, `branch`, `limit?`, `repo` | **首选搜索工具**：同时理解精确命名和中文/英文功能意图。自动融合关键词 BM25 和语义向量，返回统一排序。query 可以是符号名或功能描述。 |
-| `codeloom_list_symbols` | `pattern`, `branch`, `limit?`, `repo` | 模糊搜索符号名（SQL LIKE）。C++ 类方法用 `ClassName::methodName` 格式。 |
+| `codeloom_search` | `query`, `branch`, `limit?`, `repo` | **首选搜索工具**：同时理解精确命名和中文/英文功能意图。自动融合关键词 BM25 和语义向量，返回统一排序。 |
+| `codeloom_list_symbols` | `pattern`, `branch`, `limit?`, `repo` | 模糊搜索符号名。C++ 类方法用 `ClassName::methodName` 格式。 |
 | `codeloom_inspect` | `name`, `branch`, `repo` | 查看节点全部信息：定义、注释、所有关联边（调用/继承/参数/返回/字段）。**先 search 再 inspect。** |
 
-### 关系分析
+### 关系与分析
 
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `codeloom_get_call_graph` | `name`, `branch`, `direction?`, `max_depth?`, `repo` | **唯一方式**（grep 无法获取调用关系）：分析调用者和被调用者。`direction="callers"` / `"callees"`。 |
+| `codeloom_get_call_graph` | `name`, `branch`, `direction?`, `max_depth?`, `repo` | 分析函数的调用者/被调用者（grep 无法获取调用关系）。`direction="callers"` / `"callees"`。 |
+| `codeloom_path_analysis` | `source`, `target`, `branch`, `repo`, `mode?`, `edge_filter?`, `max_paths?`, `direction?` | 两点间路径分析。`mode="shortest"` 最短路径 / `"all"` 全部路径，支持按边类型过滤（`edge_filter=["calls","inherits"]`）。 |
+| `codeloom_impact_analysis` | `symbol`, `branch`, `repo`, `radius?`, `direction?` | 影响分析：修改某个符号会影响哪些其他符号。`direction="reverse"` 查谁依赖它 / `"forward"` 查它依赖谁。 |
+| `codeloom_neighbor_graph` | `symbol`, `branch`, `repo`, `depth?`, `direction?` | 符号邻里图：查看某个符号周围的直接关联，按边类型分组（calls/returns/param_type/inherits 等）。 |
+| `codeloom_inheritance_tree` | `symbol`, `branch`, `repo`, `direction?`, `max_depth?` | 类继承树。`direction="down"` 查子类 / `"up"` 查父类，含虚函数 override 信息。 |
 
-### 常见查询模式
+### 文档与元数据
 
-**「查看 AClass::method1 调用了哪些函数」：**
-1. `codeloom_list_symbols(pattern="method1")` → 确认完整名称 `AClass::method1`
-2. `codeloom_get_call_graph(name="AClass::method1", direction="callees")`
-
-**「找到登录相关代码」：**
-1. `codeloom_search(query="用户登录认证")` → 混合搜索找到相关符号和文档
-2. `codeloom_inspect(name="AuthService::login")` → 查看全部信息
-
-**「了解某个类的继承关系」：**
-`codeloom_list_symbols(pattern="ClassName")` → 查看类及其所有方法
+| 工具 | 参数 | 说明 |
+|------|------|------|
+| `codeloom_get_doc` | `doc_id`, `branch`, `repo` | 获取文档节点完整内容及嵌入图片。 |
+| `codeloom_query_excel` | `doc_id`, `branch`, `repo`, `mode?`, `filter?`, `limit?` | Excel 结构化查询：row/column/filter/auto 四种模式。 |
+| `codeloom_schema` | 无 | 元数据工具：返回所有节点类型（15 种）和边类型（10 种）的定义及方向语义。
 
 **分支过滤规则：** `branch_name IS NULL` 的数据对所有分支可见；有值的仅匹配分支可见。代码和文档一视同仁。
 
@@ -319,7 +317,7 @@ codeloom index ──→ smart.rs ──→ tree_sitter.rs (收集文件+解析)
                          │
                     doc/ ──→ Markdown 解析 + 术语表
                          │
-                    mcp/ ──→ 9 个 JSON-RPC 工具 → OpenCode
+                    mcp/ ──→ 15 个 JSON-RPC 工具 → OpenCode
 ```
 
 ## 开发
