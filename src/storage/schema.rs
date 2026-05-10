@@ -8,6 +8,9 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
             content_hash TEXT NOT NULL, file_path TEXT NOT NULL,
             line_start INTEGER NOT NULL DEFAULT 0, line_end INTEGER NOT NULL DEFAULT 0,
             language TEXT, signature TEXT, parent_class TEXT, namespace TEXT,
+            sid TEXT, access TEXT DEFAULT '', is_virtual INTEGER DEFAULT 0,
+            is_definition INTEGER DEFAULT 1, is_external INTEGER DEFAULT 0,
+            template_args TEXT,
             UNIQUE(content_hash, file_path, name, repo)
         );
         CREATE INDEX IF NOT EXISTS idx_sym_name ON symbols(name);
@@ -54,12 +57,18 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
         CREATE VIRTUAL TABLE IF NOT EXISTS fts5_sym USING fts5(name, file_path, signature, definition, kind);
         CREATE VIRTUAL TABLE IF NOT EXISTS fts5_doc USING fts5(title, section_path, content);
     ")?;
+    // New indexes for Clang columns (separate batch — symbols table must exist first)
+    conn.execute_batch("
+        CREATE INDEX IF NOT EXISTS idx_sym_sid ON symbols(sid);
+        CREATE INDEX IF NOT EXISTS idx_sym_external ON symbols(is_external);
+    ")?;
     // v0.5.0 migrations: multi-format doc + image support
     migrate_v5(conn)?;
     // v0.5.x migration: fts5_sym column extension (definition + kind)
     migrate_v6(conn)?;
     // v0.6.0 migration: comment + file nodes + doc chunking
     migrate_v7(conn)?;
+    migrate_v8(conn)?;
     Ok(())
 }
 
@@ -183,5 +192,32 @@ fn migrate_v7(conn: &Connection) -> anyhow::Result<()> {
         ")?;
     }
 
+    Ok(())
+}
+
+
+/// v0.7.0 migration: Clang parser columns (sid, access, is_virtual, is_definition, is_external, template_args)
+fn migrate_v8(conn: &Connection) -> anyhow::Result<()> {
+    let has_sid: bool = conn.prepare("SELECT sid FROM symbols LIMIT 0").is_ok();
+    if !has_sid {
+        conn.execute_batch("
+            ALTER TABLE symbols ADD COLUMN sid TEXT;
+            ALTER TABLE symbols ADD COLUMN access TEXT DEFAULT '';
+            ALTER TABLE symbols ADD COLUMN is_virtual INTEGER DEFAULT 0;
+            ALTER TABLE symbols ADD COLUMN is_definition INTEGER DEFAULT 1;
+            ALTER TABLE symbols ADD COLUMN is_external INTEGER DEFAULT 0;
+            ALTER TABLE symbols ADD COLUMN template_args TEXT;
+            CREATE INDEX IF NOT EXISTS idx_sym_sid ON symbols(sid);
+            CREATE INDEX IF NOT EXISTS idx_sym_external ON symbols(is_external);
+        ")?;
+    }
+    // Rebuild FTS5 with new columns
+    let has_sid_fts: bool = conn.prepare("SELECT sid FROM fts5_sym LIMIT 0").is_ok();
+    if !has_sid_fts {
+        conn.execute_batch("
+            DROP TABLE IF EXISTS fts5_sym;
+            CREATE VIRTUAL TABLE fts5_sym USING fts5(name, file_path, signature, kind, doc_comment, sid, template_args);
+        ")?;
+    }
     Ok(())
 }

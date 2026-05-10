@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_variables)]
 mod calib; mod cli; mod config; mod doc; mod embedding; mod ignore; mod indexer; mod linking;
-mod mcp; mod query; mod storage; mod util;
+mod logger; mod mcp; mod query; mod storage; mod util;
 
 extern "C" {
     /// Register sqlite-vec extension via sqlite3_auto_extension.
@@ -36,7 +36,15 @@ struct Cli { #[command(subcommand)] command: Option<cli::Command> }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    // Initialize logger from config file
+    let cfg = config::Config::load().unwrap_or_default();
+    let log_cfg = cfg.logging.as_ref().map(|lc| logger::LoggingConfig {
+        enabled: lc.enabled,
+        level: logger::LevelFilter::from_str(&lc.level),
+        max_file_size_mb: lc.max_file_size_mb,
+        max_files: lc.max_files,
+    }).unwrap_or_default();
+    logger::init(&log_cfg);
 
     // Register sqlite-vec extension (statically compiled, no .so needed)
     // Must be called before any database connection is opened.

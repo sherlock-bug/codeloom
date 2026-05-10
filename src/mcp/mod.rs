@@ -1,3 +1,4 @@
+use crate::{log_info, log_warn, log_error, log_debug};
 use std::io::{BufRead,Write};
 
 pub async fn serve() -> anyhow::Result<()> { serve_stdio().await }
@@ -33,15 +34,16 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
         // DISABLED: {"name":"codeloom_status","description":"查看索引状态：符号数、边数、文档数、数据库大小。在用其他MCP工具前先调用此工具确认仓库已索引且数据非空。branch/repo（必填）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
         {"name":"codeloom_list_symbols","description":"**优先使用**：按名称模糊搜索已索引的符号。优先于grep/rg使用——索引覆盖项目所有文件及#include的第三方头文件（grep只能搜当前目录）。返回结构化结果：名称、类型、文件路径、行号。C++类方法用ClassName::methodName格式。如pattern=\"login\"匹配handleLogin、loginUser等。branch/repo（必填）","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["pattern","repo","branch"]}},
         {"name":"codeloom_get_call_graph","description":"**唯一方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。branch/repo（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["name","repo","branch","direction"]}},
-        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】混合搜索引擎：比grep更快（预索引）、覆盖更全（含#include头文件）、更智能（理解中文/英文语义，不仅文本匹配）。query可以是符号名（AuthService/compaction）或功能描述（'用户认证'、'内存分配'）。自动融合BM25关键词+向量语义，返回结构化结果（名称/类型/文件/行号）。不要用grep/rg搜代码——用这个。kind可选：按符号类型过滤（function/method/class/struct/enum等），如kind=class搜所有类。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
+        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】精确BM25关键词搜索：比grep更快（预索引）、覆盖更全（含#include头文件和已索引文档）。搜索符号名、注释、文档内容和文件名，符号名匹配权重高于注释匹配。query可以是符号名（AuthService/compaction）或中文关键词。kind可选按符号类型过滤。不涉及语义理解——如需语义搜索用codeloom_semantic_search。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
 
+                {"name":"codeloom_semantic_search","description":"语义向量搜索：用自然语言描述功能查找相关符号。适合「处理用户登录的函数」「内存分配的代码在哪」这类查询，不适合已知精确符号名的查找。只搜索符号不搜索文档/注释。无kind过滤。需要向量模型已加载。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
         {"name":"codeloom_inspect","description":"查看符号节点的全部信息：定义、文档注释、所有关联边（调用/继承/包含/参数/返回/字段）。比逐个grep再read_file更高效——一条命令看清符号的全貌。name=符号完整名称（C++类方法用ClassName::methodName格式）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["name","repo","branch"]}},
 
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。无需任何参数。返回如\"codeloom\\nleveldb\\nspdlog\"。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
         // DISABLED: {"name":"codeloom_get_doc","description":"获取文档节点的完整内容及嵌入图片。doc_id=文档节点ID（从搜索或overview结果中获得），repo=仓库名，branch=分支名。返回标题、章节路径、层级、内容、文件路径、格式、节点类型及图片列表（base64编码）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["doc_id","repo","branch"]}},
         // DISABLED: {"name":"codeloom_query_excel","description":"回答Excel表格问题（筛选、查找行列数据等）。doc_id=文档节点ID（Excel文档内节点），repo=仓库名，branch=分支名（必填）。mode可选：row（返回整行键值对）、column（返回整列）、filter（按条件过滤，filter参数为过滤表达式如'销售额 > 5000'）、auto（根据节点类型自动推断）。limit最多返回行数（默认20）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["row","column","filter","auto"]},"filter":{"type":"string"},"search":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["doc_id","repo","branch"]}},
-        {"name":"codeloom_schema","description":"导出CodeLoom所有元数据：节点类型（symbol kind）及其说明、边类型（edge_type前缀）及其方向语义和参与节点类型。调用codeloom_path_analysis/codeloom_impact_analysis/codeloom_neighbor_graph前必须优先调用此工具，否则你不知道edge_filter参数有哪些边类型可选。无需任何参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
+        {"name":"codeloom_schema","description":"导出CodeLoom v0.7元数据：15种节点类型（function/method/class/struct/enum/enum_value/field/global/static_var/template_function/macro/namespace/template_instance/typedef/string_literal）和11种边类型（calls/inherits/overrides/instantiates/param_type/return_type/includes/uses_type/contains/aliases/uses）。调用图类工具前须先调用此工具。无需参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_path_analysis","description":"回答『A到B怎么走』『A和B有什么关系』：在两个符号之间搜索关系路径，跨函数调用、数据流、继承等多种边类型。优于逐层调用codeloom_call_graph：一次调用自动跨边类型搜索最短路径，一键覆盖calls/inherits/param_type等多类边。source=起始符号名，target=目标符号名，mode=shortest|all（默认shortest），edge_filter可选限定边类型（如['calls','calls_override']只看调用路径），direction=forward|reverse|both（默认both）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"target":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["shortest","all"]},"max_paths":{"type":"integer","default":20},"max_depth":{"type":"integer","default":10},"direction":{"type":"string","enum":["forward","reverse","both"]},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["source","target","repo","branch"]}},
         {"name":"codeloom_impact_analysis","description":"回答『改了X会影响谁』『X被谁依赖』：沿边传递闭包N跳分析影响范围。优于codeloom_call_graph：自动N跳递归，不仅是直接调用者。优于codeloom_neighbor_graph：传递闭包而非只看1跳邻居。symbol=要分析的符号名，direction=forward|reverse|both（默认reverse），radius=跳数（默认3），edge_filter可选限定边类型。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]},"radius":{"type":"integer","default":3},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["symbol","repo","branch"]}},
         {"name":"codeloom_neighbor_graph","description":"回答『X周围都有什么』『X直接调用了什么/被什么调用』：查看符号1跳范围内的直接邻居，按边类型分组返回（calls/returns/param_type/inherits等）。优于codeloom_impact_analysis：只看直接邻居不递归；优于grep：自动关联calls/returns/param_type/uses等所有边类型，无需按类型分别搜索。symbol=符号名，direction=forward|reverse|both（默认both），depth=1|2（默认1）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]},"depth":{"type":"integer","default":1}},"required":["symbol","repo","branch"]}},
@@ -63,6 +65,9 @@ fn validate_repo(repo: &str) -> Result<String, String> {
 }
 
 fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value) -> serde_json::Value {
+    let args_str = args.to_string();
+    let args_preview = if args_str.len() > 200 { format!("{}...", &args_str[..200]) } else { args_str };
+    log_info!("mcp", "tool call: name={}, args={}", name, args_preview);
     let result = match name {
         
         // DISABLED: codeloom_get_doc
@@ -153,7 +158,7 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
             let branch = args["branch"].as_str().unwrap_or("");
             let limit = args["limit"].as_u64().unwrap_or(10) as usize;
             let kind_raw = args["kind"].as_str().unwrap_or("");
-            let valid_kinds: &[&str] = &["function", "method", "class", "struct", "enum", "enum_value", "field", "global", "static_var", "variable"];
+            let valid_kinds: &[&str] = &["function", "method", "class", "struct", "enum", "enum_value", "field", "global", "static_var", "template_function", "macro", "namespace", "template_instance", "typedef", "string_literal"];
             let kind_filter = if kind_raw.is_empty() {
                 None
             } else if valid_kinds.contains(&kind_raw) {
@@ -163,7 +168,16 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
             };
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
-            hybrid_search(query, &repo.unwrap(), branch, limit, kind_filter)
+            bm25_precise_search(query, &repo.unwrap(), branch, limit, kind_filter)
+        }
+        "codeloom_semantic_search" => {
+            let query = args["query"].as_str().unwrap_or("");
+            let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
+            let branch = args["branch"].as_str().unwrap_or("");
+            let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+            if let Err(e) = repo { return err_resp(id, &e); }
+            if branch.is_empty() { return err_resp(id, "branch is required"); }
+            semantic_search(query, &repo.unwrap(), branch, limit)
         }
         "codeloom_index" => {
             let path = args["path"].as_str().unwrap_or("");
@@ -225,6 +239,8 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
         }
         _ => format!("Unknown tool: {}", name),
     };
+    let result_len = result.len();
+    log_info!("mcp", "tool done: name={}, result_len={}, is_err={}", name, result_len, result.starts_with("Error"));
     serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":result}]}})
 }
 
@@ -270,23 +286,22 @@ fn status(repo: &str, branch: &str) -> String {
 
 fn list_symbols(pattern: &str, repo: &str, branch: &str, limit: usize) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    let like = format!("%{}%", pattern);
-    let bwc = branch_where_clause(branch);
-    let sql = format!("SELECT name, kind, file_path, line_start FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name LIKE ?2 {} ORDER BY name LIMIT ?3", bwc);
-    let mut out = format!("Symbols matching '{}' in {} (branch={}):\n", pattern, repo, branch);
-    if let Ok(mut stmt) = conn.prepare(&sql) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![repo, like, limit as i64], |r| {
-            Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,i64>(3)?))
-        }) {
-            let mut count = 0;
-            for row in rows.flatten() {
-                count += 1;
-                out.push_str(&format!("  [{:10}] {:40}  @ {}:{}\n", row.1, row.0, &row.2[..60.min(row.2.len())], row.3));
+    // Use FTS5 BM25 search on symbol names (upgraded from LIKE)
+    match crate::storage::fts::search_symbols_name(&conn, pattern, repo, branch, limit, None) {
+        Ok(hits) => {
+            let mut out = format!("Symbols matching '{}' in {} (branch={}):\n", pattern, repo, branch);
+            if hits.is_empty() {
+                out.push_str("  (none)\n");
+            } else {
+                for hit in hits {
+                    out.push_str(&format!("  [{:10}] {:40}  @ {}:{}\n",
+                        hit.kind, hit.name, &hit.file_path[..60.min(hit.file_path.len())], hit.line_start));
+                }
             }
-            if count == 0 { out.push_str("  (none)\n"); }
+            out
         }
+        Err(e) => format!("Search error: {}", e),
     }
-    out
 }
 
 fn inspect_symbol(name: &str, repo: &str, branch: &str) -> String {
@@ -366,25 +381,70 @@ fn mcp_edge_category(etype: &str) -> &str {
     else { "Other" }
 }
 
-fn hybrid_search(query: &str, repo: &str, branch: &str, limit: usize, kind_filter: Option<&str>) -> String {
+fn bm25_precise_search(query: &str, repo: &str, branch: &str, limit: usize, kind_filter: Option<&str>) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    match crate::query::search::hybrid_search(&conn, query, repo, branch, limit, kind_filter) {
+    match crate::query::search::bm25_precise_search(&conn, query, repo, branch, limit, kind_filter, false) {
         Ok(results) => {
             if results.is_empty() {
                 return serde_json::json!({"results":[],"query":query,"count":0}).to_string();
             }
             let items: Vec<serde_json::Value> = results.iter().map(|r| {
-                serde_json::json!({
+                let is_code = r.hit_type == "code";
+                let is_doc = r.hit_type == "doc";
+                let mut obj = serde_json::json!({
                     "score": r.score,
                     "name": r.name,
                     "type": r.hit_type,
-                    "kind": r.kind,
-                    "signature": r.signature,
                     "file": r.file_path,
-                    "line": r.line_start,
-                    "doc_id": r.doc_id,
-                    "snippet": r.snippet,
-                })
+                });
+                if is_code {
+                    if !r.kind.is_empty() { obj["kind"] = serde_json::Value::String(r.kind.clone()); }
+                    if !r.signature.is_empty() { obj["signature"] = serde_json::Value::String(r.signature.clone()); }
+                    if r.line_start > 0 { obj["line"] = serde_json::Value::Number(serde_json::Number::from(r.line_start)); }
+                }
+                if is_doc {
+                    obj["doc_id"] = serde_json::Value::Number(serde_json::Number::from(r.doc_id));
+                }
+                if !r.snippet.is_empty() { obj["snippet"] = serde_json::Value::String(r.snippet.clone()); }
+                obj
+            }).collect();
+            serde_json::json!({
+                "results": items,
+                "query": query,
+                "count": results.len()
+            }).to_string()
+        }
+        Err(e) => serde_json::json!({"error": e.to_string(), "query": query}).to_string(),
+    }
+}
+
+fn semantic_search(query: &str, repo: &str, branch: &str, limit: usize) -> String {
+    let embedder = match crate::embedding::get_embedder() {
+        Ok(e) => e,
+        Err(e) => return serde_json::json!({"error": format!("Embedding model unavailable: {}", e), "query": query}).to_string(),
+    };
+    let query_emb = match embedder.embed(query) {
+        Ok(emb) => emb,
+        Err(e) => return serde_json::json!({"error": format!("Embedding failed: {}", e), "query": query}).to_string(),
+    };
+    let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
+    match crate::query::search::vector_semantic_search(&conn, &query_emb, repo, branch, limit, false) {
+        Ok(results) => {
+            if results.is_empty() {
+                return serde_json::json!({"results":[],"query":query,"count":0}).to_string();
+            }
+            let items: Vec<serde_json::Value> = results.iter().map(|r| {
+                let mut obj = serde_json::json!({
+                    "score": r.score,
+                    "name": r.name,
+                    "type": "code",
+                    "file": r.file_path,
+                });
+                if !r.kind.is_empty() { obj["kind"] = serde_json::Value::String(r.kind.clone()); }
+                if !r.signature.is_empty() { obj["signature"] = serde_json::Value::String(r.signature.clone()); }
+                if r.line_start > 0 { obj["line"] = serde_json::Value::Number(serde_json::Number::from(r.line_start)); }
+                if !r.snippet.is_empty() { obj["snippet"] = serde_json::Value::String(r.snippet.clone()); }
+                obj
             }).collect();
             serde_json::json!({
                 "results": items,
@@ -846,7 +906,7 @@ mod tests {
     fn test_tools_list_has_correct_count() {
         let resp = tools_list(serde_json::Value::Number(1.into()));
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 12);  // 3 tools disabled: status, get_doc, query_excel
+        assert_eq!(tools.len(), 13);  // 3 tools disabled: status, get_doc, query_excel
     }
 
     #[test]
@@ -985,6 +1045,6 @@ mod tests {
         let search_tool = tools.iter().find(|t| t["name"] == "codeloom_search").unwrap();
         assert!(search_tool["name"].as_str().unwrap() == "codeloom_search");
         // Verify that new tool definitions are reachable by checking tool count
-        assert_eq!(tools.len(), 12);  // 3 tools disabled: status, get_doc, query_excel
+        assert_eq!(tools.len(), 13);  // 3 tools disabled: status, get_doc, query_excel
     }
 }

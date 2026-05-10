@@ -85,7 +85,7 @@ pub enum Command {
         repo: Option<String>,
     },
 
-    /// 搜索代码符号（混合搜索：BM25 关键词 + 向量语义）
+    /// 精确 BM25 关键词搜索（符号名/注释/文档/文件），不涉及向量语义。语义搜索用 codeloom_semantic_search MCP 工具
     Search {
         /// 搜索关键词或功能描述
         query: String,
@@ -279,10 +279,11 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             // 噪声标定（同样在 spawn_blocking 中执行，避免 reqwest::blocking 与 tokio 冲突）
             let calib_result = tokio::task::spawn_blocking(|| crate::calib::calibrate()).await?;
             match calib_result {
-                Ok(profile) => {
-                    crate::calib::save_noise_profile(&profile).ok();
-                    eprintln!("  [OK]  Noise z-score: top1_mean={:.3}, σ={:.3}",
-                        profile.top1_mean, profile.top1_std);
+                Ok(profiles) => {
+                    for p in &profiles {
+                        eprintln!("  [OK]  {} noise z-score: top1_mean={:.3}, σ={:.3}",
+                            p.channel, p.top1_mean, p.top1_std);
+                    }
                 }
                 Err(e) => {
                     eprintln!("  [WARN] Noise calibration failed: {}", e);
@@ -508,30 +509,23 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let q = query.clone();
             let kind_filter = kind.clone();
             let results = tokio::task::spawn_blocking(move || {
-                crate::query::search::hybrid_search(&conn, &query, &repo, &branch, limit, kind_filter.as_deref())
+                crate::query::search::bm25_precise_search(&conn, &query, &repo, &branch, limit, kind_filter.as_deref(), false)
             }).await??;
             {
                 let results = results;
-                println!("搜索 \"{}\" ({}条):", q, results.len());
-                for r in &results {
-                    let mut extra = String::new();
-                    if r.hit_type == "code" && !r.kind.is_empty() {
-                        extra.push_str(&format!(" |{}", r.kind));
-                    }
-                    if r.hit_type == "doc" && r.doc_id != 0 {
-                        extra.push_str(&format!(" |doc_id:{}", r.doc_id));
-                    }
-                    if !r.snippet.is_empty() {
-                        let s: String = r.snippet.chars().take(120).collect();
-                        extra.push_str(&format!(" |{}", s));
-                    }
-                    if r.hit_type == "file" {
-                        println!("  [{:.3}] {:60}  [file]{}",
-                            r.score, &r.file_path[..60.min(r.file_path.len())], extra);
-                    } else {
-                        println!("  [{:.3}] {:45}  [{}]{} @ {}:{}",
-                            r.score, r.name, r.hit_type, extra,
-                            &r.file_path[..50.min(r.file_path.len())], r.line_start);
+                if results.is_empty() {
+                    println!("(no results)");
+                } else {
+                    println!("搜索 \"{}\") ({}条):", q, results.len());
+                    for r in &results {
+                        let typ = if r.hit_type == "code" && !r.kind.is_empty() {
+                            r.kind.clone()
+                        } else {
+                            r.hit_type.clone()
+                        };
+                        let comment: String = r.snippet.chars().take(120).collect();
+                        println!("  [{:16}] {:40}  @ {}",
+                            typ, r.name, comment);
                     }
                 }
             }

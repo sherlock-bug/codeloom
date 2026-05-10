@@ -1,13 +1,13 @@
+use crate::storage::symbols::Symbol;
 use tree_sitter::Parser;
 use walkdir::WalkDir;
-use crate::storage::symbols::Symbol;
 
 pub struct FileInfo { pub path: String, pub language: &'static str, pub modified: std::time::SystemTime }
 
 pub fn create_parser(language: &str) -> Option<Parser> {
     let mut p = Parser::new();
     let lang = match language {
-        "cpp" => tree_sitter_cpp::LANGUAGE.into(), "python" => tree_sitter_python::LANGUAGE.into(),
+        "python" => tree_sitter_python::LANGUAGE.into(),
         "java" => tree_sitter_java::LANGUAGE.into(), "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         "go" => tree_sitter_go::LANGUAGE.into(), _ => return None,
     };
@@ -55,7 +55,7 @@ pub fn parse_file(file: &FileInfo, parser: &mut Parser, repo: &str) -> anyhow::R
     let tree = parser.parse(&source, None).ok_or_else(|| anyhow::anyhow!("parse: {}", file.path))?;
     let mut syms = Vec::new(); let mut edges: Vec<(usize,usize,String)> = Vec::new();
     match file.language {
-        "cpp" => crate::indexer::queries::cpp::extract(&source, tree.root_node(), file, repo, &mut syms, &mut edges),
+        "cpp" => {} // Clang handles C++ now
         _ => {}
     }
     Ok((syms, edges))

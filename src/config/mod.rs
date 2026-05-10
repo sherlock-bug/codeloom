@@ -5,6 +5,7 @@ use std::collections::HashMap;
 pub struct Config {
     #[serde(default)] pub projects: HashMap<String, ProjectConfig>,
     #[serde(default)] pub embedding: Option<EmbeddingConfig>,
+    #[serde(default)] pub logging: Option<LoggingConfig>,
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EmbeddingConfig {
@@ -31,6 +32,35 @@ pub struct RepoConfig {
     #[serde(default)] pub languages: Vec<String>,
 }
 fn dft() -> f64 { 0.75 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LoggingConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    #[serde(default = "default_max_file_size")]
+    pub max_file_size_mb: u64,
+    #[serde(default = "default_max_files")]
+    pub max_files: usize,
+}
+
+fn default_enabled() -> bool { true }
+fn default_log_level() -> String { "info".into() }
+fn default_max_file_size() -> u64 { 50 }
+fn default_max_files() -> usize { 10 }
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            level: "info".into(),
+            max_file_size_mb: 50,
+            max_files: 10,
+        }
+    }
+}
+
 impl Config {
     pub fn load() -> anyhow::Result<Self> {
         let p = Self::path()?;
@@ -50,4 +80,11 @@ mod tests {
     #[test] fn test_config_default() { assert!(Config::default().projects.is_empty()); }
     #[test] fn test_data_dir_returns_path() { assert!(Config::data_dir().unwrap().to_string_lossy().contains(".codeloom")); }
     #[test] fn test_dft_threshold() { assert_eq!(dft(), 0.75); }
+    #[test] fn test_logging_config_default() {
+        let lc = LoggingConfig::default();
+        assert!(lc.enabled);
+        assert_eq!(lc.level, "info");
+        assert_eq!(lc.max_file_size_mb, 50);
+        assert_eq!(lc.max_files, 10);
+    }
 }

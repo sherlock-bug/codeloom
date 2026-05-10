@@ -73,7 +73,7 @@ fn test_mcp_tools_list() {
     assert!(resp.contains("codeloom_index"));
     assert!(resp.contains("codeloom_search"));
     assert!(resp.contains("codeloom_list_repos"));
-    assert!(!resp.contains("codeloom_semantic_search"), "semantic_search should be removed (replaced by hybrid codeloom_search)");
+    assert!(resp.contains("codeloom_semantic_search"), "codeloom_semantic_search should be available as separate vector search tool");
 }
 
 #[test]
@@ -241,5 +241,69 @@ fn test_symbol_usage_edges() {
 fn dirs_next() -> Option<String> {
     // Simple home-based path resolution
     std::env::var("HOME").ok().map(|h| format!("{}/.codeloom", h))
+}
+#[test]
+fn test_clang_parser() {
+    let fixture = "tests/fixtures/clang_test";
+    let db_path = format!("{}/test_clang.rag.db", fixture);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(
+        &format!("{}/../..//.rag.db", fixture)
+    );
+
+    let output = Command::new("target/debug/codeloom")
+        .args(["index", fixture, "--repo", "clang_test", "--branch", "main"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "index failed: {} {}", stdout, stderr);
+    assert!(stdout.contains("symbols"), "should have Clang symbols: {}", stdout);
+    assert!(stdout.contains("edges"), "should have Clang edges: {}", stdout);
+
+    // Verify database
+    let conn = rusqlite::Connection::open(
+        &std::path::PathBuf::from(std::env::var("HOME").map(|h| format!("{}/.codeloom/clang_test.rag.db", h)).unwrap_or_default())
+    ).unwrap();
+
+    // Check project symbols exist
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM symbols WHERE repo='clang_test' AND namespace LIKE 'myapp%'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert!(count >= 15, "should have at least 15 myapp symbols, got {}", count);
+
+    // Check specific symbols
+    let has_config: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM symbols WHERE name='Config' AND kind='class' AND namespace='myapp::core'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert!(has_config, "should have Config class");
+
+    let has_retry: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM symbols WHERE name='RetryConfig' AND kind='class'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert!(has_retry, "should have RetryConfig class");
+
+    // Check inherited edge exists
+    let inherits: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM edges WHERE edge_type LIKE 'inherits:%'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert!(inherits > 0, "should have inheritance edges");
+
+    // Check sid is populated
+    let sids: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM symbols WHERE sid IS NOT NULL AND sid != '' AND repo='clang_test' AND namespace LIKE 'myapp%'",
+        [], |r| r.get(0)
+    ).unwrap();
+    assert!(sids >= 15, "all project symbols should have sid, got {}", sids);
+
+    // Cleanup
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(
+        std::env::var("HOME").map(|h| format!("{}/.codeloom/clang_test.rag.db", h)).unwrap_or_default()
+    );
 }
 

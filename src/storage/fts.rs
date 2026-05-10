@@ -129,6 +129,133 @@ pub fn search_symbols_comment(
     search_symbols_with_query(conn, &fts5_query, repo, branch, limit, kind_filter, HitType::CodeComment)
 }
 
+/// FTS5 BM25 column-filtered search on doc title (name channel).
+pub fn search_docs_title(
+    conn: &Connection,
+    query: &str,
+    repo: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let fts5_query = build_column_query(query, &["title"]);
+    search_docs_with_query(conn, &fts5_query, repo, limit, HitType::Doc)
+}
+
+/// FTS5 BM25 column-filtered search on doc section_path + content (content channel).
+pub fn search_docs_content(
+    conn: &Connection,
+    query: &str,
+    repo: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let fts5_query = build_column_query(query, &["section_path", "content"]);
+    search_docs_with_query(conn, &fts5_query, repo, limit, HitType::Doc)
+}
+
+/// FTS5 BM25 column-filtered search on file_path (name channel).
+pub fn search_files_name(
+    conn: &Connection,
+    query: &str,
+    repo: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let fts5_query = build_column_query(query, &["file_path"]);
+    search_files_with_query(conn, &fts5_query, repo, limit, HitType::File)
+}
+
+/// FTS5 BM25 column-filtered search on file summary (content channel).
+pub fn search_files_summary(
+    conn: &Connection,
+    query: &str,
+    repo: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let fts5_query = build_column_query(query, &["summary"]);
+    search_files_with_query(conn, &fts5_query, repo, limit, HitType::File)
+}
+
+/// Internal helper: execute FTS5 doc query with given MATCH string.
+fn search_docs_with_query(
+    conn: &Connection,
+    fts5_query: &str,
+    repo: &str,
+    limit: usize,
+    hit_type: HitType,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let sql = "SELECT fts5_doc.rowid, bm25(fts5_doc) as score, d.title, d.file_path, 0, '', COALESCE(d.content, '')
+               FROM fts5_doc
+               JOIN doc_nodes d ON d.rowid = fts5_doc.rowid
+               WHERE fts5_doc MATCH ?1 AND d.repo=?2
+               ORDER BY score
+               LIMIT ?3";
+
+    let mut stmt = conn.prepare(sql)?;
+    let hits = stmt
+        .query_map(
+            rusqlite::params![fts5_query, repo, limit as i64],
+            |r| {
+                let content: String = r.get(6)?;
+                let snippet: String = content.chars().take(200).collect();
+                let title: String = r.get(2)?;
+                let name = if title.is_empty() {
+                    content.chars().take(60).collect::<String>().trim().to_string()
+                } else {
+                    title
+                };
+                Ok(SearchHit {
+                    rowid: r.get(0)?,
+                    score: r.get(1)?,
+                    hit_type: hit_type.clone(),
+                    name,
+                    file_path: r.get(3)?,
+                    line_start: r.get(4)?,
+                    kind: String::new(),
+                    sig: String::new(),
+                    snippet,
+                })
+            },
+        )?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(hits)
+}
+
+/// Internal helper: execute FTS5 file query with given MATCH string.
+fn search_files_with_query(
+    conn: &Connection,
+    fts5_query: &str,
+    repo: &str,
+    limit: usize,
+    hit_type: HitType,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let mut sql = String::from(
+        "SELECT fts5_files.rowid, bm25(fts5_files) as score, f.file_path, f.summary
+         FROM fts5_files
+         JOIN files f ON fts5_files.rowid = f.rowid
+         WHERE fts5_files MATCH ?1 AND f.repo = ?2
+         ORDER BY score
+         LIMIT ?3",
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let hits = stmt
+        .query_map(rusqlite::params![fts5_query, repo, limit as i64], |r| {
+            let summary: String = r.get(3)?;
+            Ok(SearchHit {
+                rowid: r.get(0)?,
+                score: r.get(1)?,
+                hit_type: hit_type.clone(),
+                name: r.get(2)?, // file_path as name
+                file_path: r.get(2)?,
+                line_start: 0,
+                kind: String::new(),
+                sig: String::new(),
+                snippet: summary,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(hits)
+}
+
 /// Internal helper: execute FTS5 symbol query with given MATCH string and HitType tag.
 fn search_symbols_with_query(
     conn: &Connection,

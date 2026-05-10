@@ -1,4 +1,4 @@
-# CodeLoom v0.6.1
+# CodeLoom v0.7.0
 
 > 代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 
@@ -12,22 +12,24 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 
 | 能力 | 说明 |
 |------|------|
-| **代码知识图谱** | tree-sitter 解析 C++/Python/Java/TypeScript/Go，提取符号定义、调用图、继承链、include 关系 |
+| **代码知识图谱** | Clang 解析 C/C++（编译器精度：宏展开/模板实例化/重载消歧），tree-sitter 解析 Python/Java/TypeScript/Go。15 种节点 × 11 种边，含调用图/继承链/类型约束/别名/外部符号 |
 | **多格式文档** | 支持 md/rst/xlsx/docx/pdf/xml/html 文档索引与搜索，统一格式路由 |
 | **Excel 结构化查询** | 智能表头检测 + 四层节点模型（sheet→header→row→cell），MCP SQL-like 查询 |
 | **文档图片提取** | MD/HTML/DOCX/XLSX 内图片自动提取，WebP 智能压缩，SQLite BLOB 存储 |
 | **图片 base64 返回** | MCP 返回图片时 base64 编码，远程部署无路径依赖 |
 | **编码兼容** | UTF-8 / GB2312 / GBK / GB18030 自动检测，中文编码源码零配置索引 |
 | **语义嵌入** | OpenAI 兼容 API（`/v1/embeddings`），支持 bge-m3 / text-embedding-3 等任意嵌入模型 |
-| **混合搜索** | FTS5 BM25 关键词 + vec0 向量语义，加权融合统一排名。搜索返回 snippet + 注释 + 图片提示 |
+| **精确 BM25 搜索** | `codeloom_search` — 纯 FTS5 BM25 关键词搜索，覆盖符号名(×0.7)+注释(×0.3)+文档标题(×0.7)+内容(×0.3)+文件名(×0.7)+摘要(×0.3) |
+|| **向量语义搜索** | `codeloom_semantic_search` — 纯 vec0 INT8 KNN 向量搜索，用自然语言描述功能找符号 |
+|| **分通道噪音标定** | BM25 和向量各自独立标定噪音基线，互不干扰 |
 | **注释索引** | C++ 行内注释 + 体内注释自动收集，支持中文/英文注释搜索 |
 | **文件节点** | 代码文件元信息索引 + 注释摘要，支持文件名和内容搜索 |
 | **文档切分** | 长文档按 ≤500 字自动切分为 chunk，标点优先级切割，保留文档层级结构 |
 | **Git 驱动增量** | 自动跟踪 commit，`git diff` 只扫变更文件；新分支从父分支继承符号 |
 | **分支过滤** | 所有 MCP 工具 `branch` 参数必传；`branch_name IS NULL` 的数据所有分支可见 |
 | **多仓支持** | 前后端独立索引，跨仓依赖自动识别 |
-| **MCP 原生** | 15 个 MCP 工具（含 schema + search + inspect + path_analysis + impact_analysis 等），OpenCode/Claude Code 零配置对接 |
-| **自动化测试** | 76 测试（69 单元 + 7 集成），本地素材自洽，`cargo test` 一键验证 |
+| **MCP 原生** | 16 个 MCP 工具（含 schema/search/semantic_search/inspect/path_analysis/impact_analysis），OpenCode/Claude Code 零配置对接 |
+| **自动化测试** | 80 测试（73 单元 + 7 集成），本地素材自洽，`cargo test` 一键验证 |
 | **噪声过滤** | 内置标定语料库 + 探针系统，自动计算噪声基线（mean+2.5σ），`check`/首次`index` 标定，搜索结果自动过滤低置信度条目 |
 
 ## 安装
@@ -280,6 +282,37 @@ embedding:
 ```bash
 codeloom check    # 会尝试调一次 /v1/embeddings，报告状态
 ```
+
+### 日志
+
+日志默认开启。在 `config.yaml` 中配置后，CodeLoom 将关键操作（索引、搜索、错误）记录到文件：
+
+```yaml
+# ~/.codeloom/config.yaml
+logging:
+  enabled: true           # 默认 true
+  level: "info"           # error | warn | info | debug
+  max_file_size_mb: 50    # 单文件大小上限
+  max_files: 10           # 保留文件数上限
+```
+
+**日志位置**：`~/.codeloom/logs/codeloom_{YYYYMMDD-HHMMSS}_{毫秒}.log`
+
+**日志格式**：`2026-05-10 15:30:12.345 [PID:TID] LEVEL module: message`
+
+**快速查看**：
+```bash
+# 最新日志
+cat $(ls -t ~/.codeloom/logs/*.log | head -1)
+
+# 只看错误
+grep ERROR ~/.codeloom/logs/$(ls -t ~/.codeloom/logs/ | head -1)
+
+# 按模块过滤
+grep "mcp" ~/.codeloom/logs/$(ls -t ~/.codeloom/logs/ | head -1)
+```
+
+日志文件超过 `max_file_size_mb` 时自动绕接到新文件，超过 `max_files` 时删除最旧文件。
 
 ### 多仓配置
 

@@ -1,4 +1,5 @@
 use crate::indexer::{
+    clang,
     git,
     tree_sitter::{self, FileInfo},
 };
@@ -160,6 +161,18 @@ fn index_one(
         Some(l) => l,
         None => return Ok(0),
     };
+
+    // Route C++ files to Clang parser (with compile_commands from env var)
+    if lang == "cpp" {
+        let fi = FileInfo {
+            path: file_path.to_string(),
+            language: "cpp",
+            modified: std::time::SystemTime::now(),
+        };
+        let cc = std::env::var("CODELOOM_COMPILE_COMMANDS").ok();
+        return clang::index_clang(conn, &[fi], repo_name, cc.as_deref());
+    }
+
     let mut parser = match tree_sitter::create_parser(lang) {
         Some(p) => p,
         None => return Ok(0),

@@ -166,6 +166,7 @@ mod tests {
             parent_class: None,
             namespace: None,
             doc_comment: String::new(),
+            ..Default::default()
         };
         let id = sym.insert(&conn).unwrap();
         assert!(id > 0);
@@ -194,6 +195,7 @@ mod tests {
             parent_class: None,
             namespace: None,
             doc_comment: String::new(),
+            ..Default::default()
         };
         let id1 = sym.insert(&conn).unwrap();
         let id2 = sym.insert(&conn).unwrap();

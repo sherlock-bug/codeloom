@@ -1,5 +1,5 @@
 // Embedding module — API-based via OpenAI-compatible /v1/embeddings.
-use std::collections::{HashSet, HashMap};
+use std::collections::HashSet;
 use std::sync::Mutex;
 use rusqlite::Connection;
 
@@ -24,6 +24,12 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let nb: f32 = b.iter().map(|x| x*x).sum::<f32>().sqrt();
     if na < 1e-10 || nb < 1e-10 { return 0.0; }
     (dot / (na * nb)).max(0.0).min(1.0)
+}
+
+/// Quantize float32 embedding to int8: round(v * 127), clamp to [-128, 127].
+/// Embeddings are assumed to be normalized (roughly [-1, 1] range).
+pub fn quantize_f32_to_i8(vec: &[f32]) -> Vec<i8> {
+    vec.iter().map(|&v| (v * 127.0).round().clamp(-128.0, 127.0) as i8).collect()
 }
 
 pub struct ApiEmbedder {
@@ -130,13 +136,13 @@ impl Embedder for ApiEmbedder {
 
 // ── Vector indexing ───────────────────────────────────────────────────
 
+/// Index symbol name vectors (INT8) for selected symbols.
+/// Only non-external, non-template_instance, non-namespace symbols get vectors.
+/// Comment and doc vectors are removed — FTS5 covers Chinese docs sufficiently.
 pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> anyhow::Result<(usize, usize)> {
     if !crate::storage::vector::try_load(conn) { return Ok((0, 0)); }
     crate::storage::vector::create_tables(conn, repo, embedder.dimension())?;
     let sym_name_table = format!("symbol_name_vec_{}", repo.replace('-', "_"));
-    let sym_comment_table = format!("symbol_comment_vec_{}", repo.replace('-', "_"));
-    let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
-    let batch_limit = embedder.batch_size();
 
     let existing_name_ids: HashSet<i64> = {
         let mut s = HashSet::new();
@@ -147,34 +153,14 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
         }
         s
     };
-    let existing_comment_ids: HashSet<i64> = {
-        let mut s = HashSet::new();
-        if let Ok(mut st) = conn.prepare(&format!("SELECT rowid FROM {sym_comment_table}")) {
-            if let Ok(rows) = st.query_map([], |r| r.get::<_, i64>(0)) {
-                for r in rows.flatten() { s.insert(r); }
-            }
-        }
-        s
-    };
-    let existing_doc_ids: HashSet<i64> = {
-        let mut s = HashSet::new();
-        if let Ok(mut st) = conn.prepare(&format!("SELECT rowid FROM {doc_table}")) {
-            if let Ok(rows) = st.query_map([], |r| r.get::<_, i64>(0)) {
-                for r in rows.flatten() { s.insert(r); }
-            }
-        }
-        s
-    };
 
-    // Symbol name vectors — embed name + kind + signature (NO doc_comment)
-    // Symbol comment vectors — embed doc_comment only (when non-empty)
+    // Symbol name vectors — only for qualified symbols (exclude external, template_instance, namespace)
     let mut sym_count = 0; let mut sym_skipped = 0; let mut sym_total = 0;
-    let mut comment_count = 0;
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT id, name, kind, COALESCE(doc_comment,''), COALESCE(signature,'') FROM symbols WHERE repo=?1"
+        "SELECT id, name, kind, COALESCE(signature,'') FROM symbols          WHERE repo=?1 AND is_external=0 AND kind NOT IN ('template_instance','namespace')"
     ) {
         if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
         }) {
             let all: Vec<_> = rows.flatten().collect();
             sym_total = all.len();
@@ -182,47 +168,27 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
             let mut name_text_batch: Vec<(i64, String)> = Vec::new();
             let mut name_vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
             let mut name_chars = 0usize;
-            let mut comment_text_batch: Vec<(i64, String)> = Vec::new();
-            let mut comment_vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
-            let mut comment_chars = 0usize;
 
             for row in all {
                 let sym_id = row.0;
                 let need_name = !existing_name_ids.contains(&sym_id);
-                let has_comment = !row.3.is_empty();
-                let need_comment = has_comment && !existing_comment_ids.contains(&sym_id);
 
-                if !need_name && !need_comment { sym_skipped += 1; processed += 1; continue; }
+                if !need_name { sym_skipped += 1; processed += 1; continue; }
 
-                // Name embedding: "name signature [kind]"
-                if need_name {
-                    let sig_str = if row.4.is_empty() { String::new() } else { format!(" {}", row.4) };
-                    let name_text = format!("{} [{}]{}", row.1, row.2, sig_str);
-                    name_chars += name_text.len();
-                    name_text_batch.push((sym_id, name_text));
-                }
-                // Comment embedding: just doc_comment
-                if need_comment {
-                    let comment_text = row.3.clone();
-                    comment_chars += comment_text.len();
-                    comment_text_batch.push((sym_id, comment_text));
-                }
+                // Name embedding: "name [kind] signature"
+                let sig_str = if row.3.is_empty() { String::new() } else { format!(" {}", row.3) };
+                let name_text = format!("{} [{}]{}", row.1, row.2, sig_str);
+                name_chars += name_text.len();
+                name_text_batch.push((sym_id, name_text));
 
                 processed += 1;
 
                 // Flush name batch
-                if need_name && (name_chars >= embedder.max_chars_per_batch() || name_text_batch.len() >= embedder.batch_size()) {
+                if name_chars >= embedder.max_chars_per_batch() || name_text_batch.len() >= embedder.batch_size() {
                     flush_symbol_batch(&texts_of(&name_text_batch), embedder, &mut name_vec_batch, &name_text_batch);
-                    sym_count += insert_vec_batch(conn, &sym_name_table, &mut name_vec_batch)?;
+                    sym_count += insert_vec_batch_int8(conn, &sym_name_table, &mut name_vec_batch)?;
                     name_text_batch.clear();
                     name_chars = 0;
-                }
-                // Flush comment batch
-                if need_comment && (comment_chars >= embedder.max_chars_per_batch() || comment_text_batch.len() >= embedder.batch_size()) {
-                    flush_symbol_batch(&texts_of(&comment_text_batch), embedder, &mut comment_vec_batch, &comment_text_batch);
-                    comment_count += insert_vec_batch(conn, &sym_comment_table, &mut comment_vec_batch)?;
-                    comment_text_batch.clear();
-                    comment_chars = 0;
                 }
 
                 if processed % (sym_total/10).max(1) == 0 {
@@ -232,121 +198,24 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
             // Final flush
             if !name_text_batch.is_empty() {
                 flush_symbol_batch(&texts_of(&name_text_batch), embedder, &mut name_vec_batch, &name_text_batch);
-                sym_count += insert_vec_batch(conn, &sym_name_table, &mut name_vec_batch)?;
+                sym_count += insert_vec_batch_int8(conn, &sym_name_table, &mut name_vec_batch)?;
             }
-            if !comment_text_batch.is_empty() {
-                flush_symbol_batch(&texts_of(&comment_text_batch), embedder, &mut comment_vec_batch, &comment_text_batch);
-                comment_count += insert_vec_batch(conn, &sym_comment_table, &mut comment_vec_batch)?;
-            }
-            if sym_total > 0 { eprint!("\r  Vectors: {}/{} symbols + {} comments done.\n", processed, sym_total, comment_count); }
+            if sym_total > 0 { eprint!("\r  Vectors: {}/{} symbols done.\n", processed, sym_total); }
         }
     }
 
-    // Doc vectors — use embedder batch_size (API limit, typically 64)
-    let mut doc_count = 0; let mut doc_skipped = 0;
-    if let Ok(mut stmt) = conn.prepare("SELECT id, title, section_path, content FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name!='') AND content != ''") {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
-        }) {
-            let all: Vec<_> = rows.flatten().collect();
-            let mut text_batch: Vec<(i64, String)> = Vec::new();
-            let mut vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
-            let mut batch_chars = 0usize;
-            for row in all {
-                if existing_doc_ids.contains(&row.0) { doc_skipped += 1; continue; }
-                let content: String = {
-                    let c: String = row.3.chars().take(embedder.text_limit()).collect();
-                    c.replace('\r', "")
-                };
-                let text = if !row.2.is_empty() { format!("{}: {} {}", row.1, row.2, content) } else { format!("{} {}", row.1, content) };
-                let chars = text.len();
-                batch_chars += chars;
-                text_batch.push((row.0, text));
-                if batch_chars >= embedder.max_chars_per_batch() || text_batch.len() >= embedder.batch_size() {
-                    flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
-                    doc_count += insert_vec_batch(conn, &doc_table, &mut vec_batch)?;
-                    text_batch.clear();
-                    batch_chars = 0;
-                }
-            }
-            if !text_batch.is_empty() {
-                flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
-                doc_count += insert_vec_batch(conn, &doc_table, &mut vec_batch)?;
-            }
-        }
-    }
+    // Doc vectors: REMOVED — FTS5 sufficient for Chinese document search
+    let doc_count = 0; let doc_skipped = 0;
 
     if sym_total > 0 || doc_count > 0 {
-        eprintln!("  Vectors: {} symbols (+{} comments) ({} skipped), {} docs ({} skipped)", sym_count, comment_count, sym_skipped, doc_count, doc_skipped);
+        eprintln!("  Vectors: {} symbols ({} skipped), {} docs ({} skipped)", sym_count, sym_skipped, doc_count, doc_skipped);
     }
-    Ok((sym_count + comment_count, doc_count))
+    Ok((sym_count, doc_count))
 }
 
-pub fn index_doc_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> anyhow::Result<usize> {
-    if !crate::storage::vector::try_load(conn) { return Ok(0); }
-    let doc_table = format!("doc_vec_{}", repo.replace('-', "_"));
-    let batch_limit = embedder.batch_size();
-
-    let existing_doc_ids: HashSet<i64> = {
-        let mut s = HashSet::new();
-        if let Ok(mut st) = conn.prepare(&format!("SELECT rowid FROM {doc_table}")) {
-            if let Ok(rows) = st.query_map([], |r| r.get::<_, i64>(0)) {
-                for r in rows.flatten() { s.insert(r); }
-            }
-        }
-        s
-    };
-
-    let mut doc_count = 0;
-    if let Ok(mut stmt) = conn.prepare("SELECT id, title, section_path, content FROM doc_nodes WHERE repo=?1") {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
-        }) {
-            let all: Vec<_> = rows.flatten().collect();
-            let mut text_batch: Vec<(i64, String)> = Vec::new();
-            let mut vec_batch: Vec<(i64, Vec<f32>)> = Vec::new();
-            for row in all {
-                if existing_doc_ids.contains(&row.0) { continue; }
-                let limit = embedder.text_limit();
-                let content: String = if row.3.len() > limit { row.3.chars().take(limit).collect() } else { row.3.clone() };
-                text_batch.push((row.0, format!("{} {} {}", row.1, row.2, content)));
-                if text_batch.len() >= batch_limit {
-                    let texts: Vec<&str> = text_batch.iter().map(|(_, t)| t.as_str()).collect();
-                    match embedder.embed_batch(&texts) {
-                        Ok(embs) => {
-                            for ((id, _), emb) in text_batch.iter().zip(embs) {
-                                if !emb.is_empty() { vec_batch.push((*id, emb)); }
-                            }
-                        }
-                        Err(e) => eprintln!("  ⚠ embed batch failed ({} texts, sample: {:?}): {}", 
-                            texts.len(), 
-                            texts.first().map(|s| &s[..s.len().min(100)]).unwrap_or(""),
-                            e),
-                    }
-                    text_batch.clear();
-                    if !vec_batch.is_empty() {
-                        doc_count += crate::storage::vector::insert_vectors(conn, &doc_table, &vec_batch.iter().map(|(i,v)| (*i, v.as_slice())).collect::<Vec<_>>())?;
-                        vec_batch.clear();
-                    }
-                }
-            }
-            if !text_batch.is_empty() {
-                let texts: Vec<&str> = text_batch.iter().map(|(_, t)| t.as_str()).collect();
-                match embedder.embed_batch(&texts) {
-                    Ok(embs) => {
-                        for ((id, _), emb) in text_batch.iter().zip(embs) {
-                            if !emb.is_empty() { vec_batch.push((*id, emb)); }
-                        }
-                    }
-                    Err(e) => eprintln!("  ⚠ embed remainder batch failed: {}", e),
-                }
-            }
-            if !vec_batch.is_empty() {
-                doc_count += crate::storage::vector::insert_vectors(conn, &doc_table, &vec_batch.iter().map(|(i,v)| (*i, v.as_slice())).collect::<Vec<_>>())?;
-            }
-        }
-    }
-    Ok(doc_count)
+/// Index document vectors — REMOVED (FTS5 sufficient for Chinese docs). Kept for API compatibility.
+pub fn index_doc_vectors(_conn: &Connection, _repo: &str, _embedder: &dyn Embedder) -> anyhow::Result<usize> {
+    Ok(0)
 }
 
 // ── Smart batching helpers ─────────────────────────────────────────────
@@ -374,21 +243,24 @@ fn flush_symbol_batch(
     }
 }
 
-fn insert_vec_batch(
+/// Insert INT8 vector batch into vec0 table (for symbol_name_vec).
+fn insert_vec_batch_int8(
     conn: &Connection,
     table: &str,
     vec_batch: &mut Vec<(i64, Vec<f32>)>,
 ) -> anyhow::Result<usize> {
     if vec_batch.is_empty() { return Ok(0); }
-    let count = crate::storage::vector::insert_vectors(
+    let int8_rows: Vec<(i64, Vec<i8>)> = vec_batch.drain(..)
+        .map(|(id, v)| (id, quantize_f32_to_i8(&v)))
+        .collect();
+    let count = crate::storage::vector::insert_vectors_int8(
         conn, table,
-        &vec_batch.iter().map(|(i, v)| (*i, v.as_slice())).collect::<Vec<_>>(),
+        &int8_rows.iter().map(|(i, v)| (*i, v.as_slice())).collect::<Vec<_>>(),
     )?;
-    vec_batch.clear();
     Ok(count)
 }
 
-/// Index file vectors — embed "file_path | summary" for each file
+/// Index file vectors — embed "file_path | summary" for each file (FLOAT32, unchanged)
 pub fn index_file_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> anyhow::Result<usize> {
     if !crate::storage::vector::try_load(conn) { return Ok(0); }
     let file_table = format!("file_vec_{}", repo.replace('-', "_"));
@@ -425,18 +297,34 @@ pub fn index_file_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder
                 text_batch.push((row.0, text));
                 if batch_chars >= embedder.max_chars_per_batch() || text_batch.len() >= embedder.batch_size() {
                     flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
-                    file_count += insert_vec_batch(conn, &file_table, &mut vec_batch)?;
+                    file_count += insert_vec_batch_int8_file(conn, &file_table, &mut vec_batch)?;
                     text_batch.clear();
                     batch_chars = 0;
                 }
             }
             if !text_batch.is_empty() {
                 flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
-                file_count += insert_vec_batch(conn, &file_table, &mut vec_batch)?;
+                file_count += insert_vec_batch_int8_file(conn, &file_table, &mut vec_batch)?;
             }
         }
     }
     Ok(file_count)
+}
+
+fn insert_vec_batch_int8_file(
+    conn: &Connection,
+    table: &str,
+    vec_batch: &mut Vec<(i64, Vec<f32>)>,
+) -> anyhow::Result<usize> {
+    if vec_batch.is_empty() { return Ok(0); }
+    let int8_rows: Vec<(i64, Vec<i8>)> = vec_batch.drain(..)
+        .map(|(id, v)| (id, quantize_f32_to_i8(&v)))
+        .collect();
+    let count = crate::storage::vector::insert_vectors_int8(
+        conn, table,
+        &int8_rows.iter().map(|(i, v)| (*i, v.as_slice())).collect::<Vec<_>>(),
+    )?;
+    Ok(count)
 }
 
 // ── Factory ───────────────────────────────────────────────────────────
@@ -444,7 +332,6 @@ pub fn index_file_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder
 use std::sync::OnceLock;
 
 /// Statically cached embedder — initialized on first call, reused globally.
-/// Avoids creating a new HTTP client + "init" embedding call on every search.
 static EMBEDDER: OnceLock<Box<dyn Embedder + Send + Sync>> = OnceLock::new();
 
 pub fn get_embedder() -> anyhow::Result<&'static (dyn Embedder + Send + Sync)> {
@@ -455,11 +342,11 @@ pub fn get_embedder() -> anyhow::Result<&'static (dyn Embedder + Send + Sync)> {
     match &config.embedding {
         Some(cfg) => {
             let embedder = ApiEmbedder::new(cfg)?;
-            embedder.embed("init")?; // auto-detect dimension
+            embedder.embed("init")?;
             EMBEDDER.set(Box::new(embedder)).map_err(|_| anyhow::anyhow!("Embedder already set"))?;
             Ok(EMBEDDER.get().unwrap().as_ref())
         }
-        None => anyhow::bail!("No embedding config. Add to ~/.codeloom/config.yaml:\n  embedding:\n    api_base: \"http://host:port/v1\"\n    model: \"bge-m3\""),
+        None => anyhow::bail!("No embedding config."),
     }
 }
 

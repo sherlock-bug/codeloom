@@ -35,7 +35,7 @@ release-zip: release
 	ZIP_NAME="codeloom-v$${VERSION}-linux-x86_64.zip"; \
 	TMPDIR=$$(mktemp -d); \
 	echo "Packaging $$ZIP_NAME ..."; \
-	test -f target/release/codeloom || { echo "ERROR: binary not found"; exit 1; }; \
+	test -f target/release/codeloom || { echo "ERROR: binary not found"; exit 1; };
 	for f in models/bge-small-zh/pytorch_model.bin models/bge-small-zh/config.json models/bge-small-zh/tokenizer.json models/sqlite-vec/vec0.so; do \
 		test -f $$f || { echo "ERROR: model file missing: $$f"; exit 1; }; \
 	done; \
