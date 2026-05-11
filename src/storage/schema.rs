@@ -69,6 +69,9 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
     // v0.6.0 migration: comment + file nodes + doc chunking
     migrate_v7(conn)?;
     migrate_v8(conn)?;
+    // v0.9.0 migration: unified nodes table
+    migrate_v9(conn)?;
+    cleanup_v9(conn)?;
     Ok(())
 }
 
@@ -219,5 +222,75 @@ fn migrate_v8(conn: &Connection) -> anyhow::Result<()> {
             CREATE VIRTUAL TABLE fts5_sym USING fts5(name, file_path, signature, kind, doc_comment, sid, template_args);
         ")?;
     }
+    Ok(())
+}
+/// v0.9.0 migration: unified nodes table replaces symbols/doc_nodes/files
+fn migrate_v9(conn: &Connection) -> anyhow::Result<()> {
+    let has_nodes: bool = conn.prepare("SELECT node_type FROM nodes LIMIT 0").is_ok();
+    if has_nodes { return Ok(()); }
+
+    // Drop old FTS5 tables (data will be rebuilt on next index from nodes)
+    conn.execute_batch("
+        DROP TABLE IF EXISTS fts5_sym;
+        DROP TABLE IF EXISTS fts5_doc;
+        DROP TABLE IF EXISTS fts5_files;
+        DROP TABLE IF EXISTS fts5_all;
+    ")?;
+
+    // Rename branches.symbol_id → node_id (keep data intact)
+    let has_node_id: bool = conn.prepare("SELECT node_id FROM branches LIMIT 0").is_ok();
+    if !has_node_id {
+        // SQLite doesn't support RENAME COLUMN in older versions via execute_batch.
+        // We recreate branches table.
+        conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS branches_new (
+                node_id INTEGER NOT NULL, repo TEXT NOT NULL DEFAULT 'default',
+                branch_name TEXT NOT NULL, override_def TEXT, override_hash TEXT,
+                PRIMARY KEY (node_id, repo, branch_name)
+            );
+            INSERT OR IGNORE INTO branches_new(node_id, repo, branch_name, override_def, override_hash)
+            SELECT symbol_id, repo, branch_name, override_def, override_hash FROM branches;
+            DROP TABLE branches;
+            ALTER TABLE branches_new RENAME TO branches;
+        ")?;
+    }
+
+    // Create nodes table (old tables kept — other code still references them during migration)
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo TEXT NOT NULL,
+            node_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            file_path TEXT NOT NULL DEFAULT '',
+            line_start INTEGER DEFAULT 0,
+            content_hash TEXT DEFAULT '',
+            branch_name TEXT DEFAULT 'main',
+            kind TEXT DEFAULT '',
+            attrs TEXT DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_nodes_repo ON nodes(repo);
+        CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(node_type);
+        CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
+        CREATE INDEX IF NOT EXISTS idx_nodes_hash ON nodes(content_hash);
+    ")?;
+
+    // Create unified FTS5
+    conn.execute_batch("
+        CREATE VIRTUAL TABLE IF NOT EXISTS fts5_all USING fts5(name, content);
+    ")?;
+
+    Ok(())
+}
+
+/// Post-migration cleanup: drop old FTS5 tables superseded by fts5_all.
+/// Runs unconditionally (migrate_v9 only drops them on first run).
+fn cleanup_v9(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch("
+        DROP TABLE IF EXISTS fts5_sym;
+        DROP TABLE IF EXISTS fts5_doc;
+        DROP TABLE IF EXISTS fts5_files;
+    ")?;
     Ok(())
 }

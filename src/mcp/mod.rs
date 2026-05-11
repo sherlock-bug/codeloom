@@ -287,7 +287,7 @@ fn status(repo: &str, branch: &str) -> String {
 fn list_symbols(pattern: &str, repo: &str, branch: &str, limit: usize) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
     // Use FTS5 BM25 search on symbol names (upgraded from LIKE)
-    match crate::storage::fts::search_symbols_name(&conn, pattern, repo, branch, limit, None) {
+    match crate::storage::fts::search_fts5_name(&conn, pattern, repo, branch, limit, None) {
         Ok(hits) => {
             let mut out = format!("Symbols matching '{}' in {} (branch={}):\n", pattern, repo, branch);
             if hits.is_empty() {

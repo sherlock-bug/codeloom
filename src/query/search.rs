@@ -35,7 +35,7 @@ pub fn weighted_fuse(
     // BM25 side — normalize and insert
     for hit in bm25_hits {
         let key = (hit.name.clone(), hit.file_path.clone());
-        let norm_bm25 = 1.0 / (0.5 + hit.score.abs());
+        let norm_bm25 = 2.0 / (1.0 + hit.score.abs() / 8.0);
         let score = w_bm25 * norm_bm25;
 
         let is_doc = matches!(hit.hit_type, storage::fts::HitType::Doc);
@@ -57,12 +57,14 @@ pub fn weighted_fuse(
     }
 
     // Vector side — normalize similarity and merge
+    // Cross-channel bonus: +0.1 when result appears in both BM25 and vector
+    let cross_bonus = 0.1;
     for (sim, name, hit_type, file_path, line_start, kind, sig, snippet, doc_id) in vec_results {
         let key = (name.clone(), file_path.clone());
         let score = w_vec * sim;
 
         if let Some(entry) = entries.get_mut(&key) {
-            entry.score = entry.score.max(score);
+            entry.score = (entry.score + cross_bonus).max(score);
             // If vec side has a real doc_id (non-zero), carry it forward
             if *doc_id != 0 {
                 entry.doc_id = *doc_id;
@@ -106,7 +108,7 @@ fn weighted_fuse_single(
     // BM25 side
     for hit in bm25_hits {
         let key = (hit.name.clone(), hit.file_path.clone());
-        let norm_bm25 = 1.0 / (0.5 + hit.score.abs());
+        let norm_bm25 = 2.0 / (1.0 + hit.score.abs() / 8.0);
         let score = w_bm25 * norm_bm25;
         let is_doc = matches!(hit.hit_type, storage::fts::HitType::Doc);
         let ht = if is_doc { "doc" } else { default_hit_type };
@@ -124,12 +126,13 @@ fn weighted_fuse_single(
         entry.score = entry.score.max(score);
     }
 
-    // Vector side
+    // Vector side — cross-channel bonus: +0.1 for dual-channel results
+    let cross_bonus = 0.1;
     for (sim, name, hit_type, file_path, line_start, kind, sig, snippet, doc_id) in vec_results {
         let key = (name.clone(), file_path.clone());
         let score = w_vec * sim;
         if let Some(entry) = entries.get_mut(&key) {
-            entry.score = entry.score.max(score);
+            entry.score = (entry.score + cross_bonus).max(score);
             if *doc_id != 0 { entry.doc_id = *doc_id; }
         } else {
             entries.insert(key, FusedResult {
@@ -162,10 +165,10 @@ pub fn hybrid_search(
     let fetch_limit = (limit * 2).max(10);
 
     // FTS5: split name / comment / doc / file
-    let bm25_name = storage::fts::search_symbols_name(conn, query, repo, branch, fetch_limit, kind_filter)?;
-    let bm25_comment = storage::fts::search_symbols_comment(conn, query, repo, branch, fetch_limit, kind_filter)?;
-    let bm25_docs = storage::fts::search_docs(conn, query, repo, fetch_limit)?;
-    let bm25_files = storage::fts::search_files(conn, query, repo, fetch_limit)?;
+    let bm25_name = storage::fts::search_fts5_name(conn, query, repo, branch, fetch_limit, kind_filter)?;
+    let bm25_comment = storage::fts::search_fts5_content(conn, query, repo, branch, fetch_limit, kind_filter)?;
+    let bm25_docs = storage::fts::search_fts5_content(conn, query, repo, "main", fetch_limit, None)?;
+    let bm25_files = storage::fts::search_fts5_name(conn, query, repo, "main", fetch_limit, None)?;
 
     // Embed once — shared across all 4 vector channels
     let embedder = crate::embedding::get_embedder().ok();
@@ -202,11 +205,7 @@ pub fn hybrid_search(
     let mut fused: Vec<FusedResult> = entries.into_values().collect();
     fused.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-    // z-score filter: drop results within 1σ of noise top1_mean (use bm25 baseline as hybrid)
-    if let Some(profile) = crate::calib::noise_profile("bm25") {
-        let threshold = 1.0;
-        fused.retain(|r| (r.score - profile.top1_mean) / profile.top1_std.max(0.001) >= threshold);
-    }
+    // Hard threshold: drop results with normalized score < 0.5 (noise floor)
 
     fused.truncate(limit);
     Ok(fused)
@@ -234,19 +233,20 @@ fn run_vector_search(
 
     let mut results = Vec::new();
 
-    // Symbol vector search — name channel (INT8)
+    // Symbol vector search — name channel (FLOAT32)
     if channel == "name" {
         let sym_table = format!("symbol_{}_vec_{}", channel, repo.replace('-', "_"));
-        let query_i8: Vec<i8> = crate::embedding::quantize_f32_to_i8(query_emb);
-        if let Ok(rows) = crate::storage::vector::knn_search_int8(conn, &sym_table, &query_i8, limit) {
+        if let Ok(rows) = crate::storage::vector::knn_search(conn, &sym_table, query_emb, limit) {
             if !rows.is_empty() {
                 // Batch fetch: collect all rowids, query once with IN (...)
                 let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
                 let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
-                    "SELECT s.rowid, s.name, s.kind, s.file_path, s.line_start, \
-                     COALESCE(s.doc_comment,''), COALESCE(s.signature,'') \
-                     FROM symbols s JOIN branches b ON b.symbol_id = s.id \
+                    "SELECT s.rowid, n.name, n.kind, n.file_path, n.line_start, \
+                     COALESCE(json_extract(n.attrs,'$.doc_comment'),''), COALESCE(json_extract(n.attrs,'$.signature'),'') \
+                     FROM symbols s \
+                     JOIN nodes n ON n.name=s.name AND n.file_path=s.file_path AND n.line_start=s.line_start \
+                     JOIN branches b ON b.node_id = n.id \
                      WHERE s.rowid IN ({}) AND b.branch_name=?",
                     placeholders
                 );
@@ -294,11 +294,10 @@ fn run_vector_search(
 
     // Doc vector search — REMOVED (channel skipped above)
 
-    // File vector search (INT8)
+    // File vector search (FLOAT32)
     if channel == "file" {
         let file_table = format!("file_vec_{}", repo.replace('-', "_"));
-        let query_i8: Vec<i8> = crate::embedding::quantize_f32_to_i8(query_emb);
-        if let Ok(rows) = crate::storage::vector::knn_search_int8(conn, &file_table, &query_i8, limit) {
+        if let Ok(rows) = crate::storage::vector::knn_search(conn, &file_table, query_emb, limit) {
             if !rows.is_empty() {
                 let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
                 let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -349,32 +348,22 @@ pub fn bm25_precise_search(
 ) -> anyhow::Result<Vec<FusedResult>> {
     let fetch_limit = (limit * 3).max(15);
 
-    // ── Symbol: name channel (×0.7) ──
-    let bm25_sym_name = storage::fts::search_symbols_name(conn, query, repo, branch, fetch_limit, kind_filter)?;
-    // ── Symbol: comment channel (×0.3) ──
-    let bm25_sym_comment = storage::fts::search_symbols_comment(conn, query, repo, branch, fetch_limit, kind_filter)?;
-    // ── Doc: title channel (×0.7) ──
-    let bm25_doc_title = storage::fts::search_docs_title(conn, query, repo, fetch_limit)?;
-    // ── Doc: content channel (×0.3) ──
-    let bm25_doc_content = storage::fts::search_docs_content(conn, query, repo, fetch_limit)?;
-    // ── File: name channel (×0.7) ──
-    let bm25_file_name = storage::fts::search_files_name(conn, query, repo, fetch_limit)?;
-    // ── File: content channel (×0.3) ──
-    let bm25_file_summary = storage::fts::search_files_summary(conn, query, repo, fetch_limit)?;
+    // ── Name channel (×0.7): unified fts5_all across sym/doc/file ──
+    let bm25_name = storage::fts::search_fts5_name(conn, query, repo, branch, fetch_limit, kind_filter)?;
+    // ── Content channel (×0.3): unified fts5_all across sym/doc/file ──
+    let bm25_content = storage::fts::search_fts5_content(conn, query, repo, branch, fetch_limit, kind_filter)?;
 
     let mut entries: HashMap<(String, String), FusedResult> = HashMap::new();
-
     let weight_name = 0.7;
     let weight_content = 0.3;
 
-    // Helper: insert hits with weight
     let insert_weighted = |entries: &mut HashMap<(String, String), FusedResult>,
                            hits: &[storage::fts::SearchHit],
                            weight: f64,
                            default_hit_type: &str| {
         for hit in hits {
             let key = (hit.name.clone(), hit.file_path.clone());
-            let norm_bm25 = 1.0 / (0.5 + hit.score.abs());
+            let norm_bm25 = 2.0 / (1.0 + hit.score.abs() / 8.0);
             let score = weight * norm_bm25;
             let is_doc = matches!(hit.hit_type, storage::fts::HitType::Doc);
             let is_file = matches!(hit.hit_type, storage::fts::HitType::File);
@@ -382,38 +371,24 @@ pub fn bm25_precise_search(
             entries.entry(key)
                 .and_modify(|e| { if score > e.score { e.score = score; } })
                 .or_insert(FusedResult {
-                    score,
-                    name: hit.name.clone(),
-                    hit_type: ht.into(),
-                    file_path: hit.file_path.clone(),
-                    line_start: hit.line_start,
-                    kind: hit.kind.clone(),
-                    signature: hit.sig.clone(),
+                    score, name: hit.name.clone(), hit_type: ht.into(),
+                    file_path: hit.file_path.clone(), line_start: hit.line_start,
+                    kind: hit.kind.clone(), signature: hit.sig.clone(),
                     snippet: hit.snippet.clone(),
                     doc_id: if is_doc { hit.rowid } else { 0 },
                 });
         }
     };
 
-    // Name channel results (×0.7) insert first — they'll "win" ties via earlier insertion
-    insert_weighted(&mut entries, &bm25_sym_name, weight_name, "code");
-    insert_weighted(&mut entries, &bm25_doc_title, weight_name, "doc");
-    insert_weighted(&mut entries, &bm25_file_name, weight_name, "file");
-
-    // Content channel results (×0.3) — only raise score if name channel didn't have it
-    insert_weighted(&mut entries, &bm25_sym_comment, weight_content, "code");
-    insert_weighted(&mut entries, &bm25_doc_content, weight_content, "doc");
-    insert_weighted(&mut entries, &bm25_file_summary, weight_content, "file");
+    insert_weighted(&mut entries, &bm25_name, weight_name, "code");
+    insert_weighted(&mut entries, &bm25_content, weight_content, "code");
 
     let mut fused: Vec<FusedResult> = entries.into_values().collect();
     fused.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-    // BM25 noise filter (skip during calibration)
+    // Hard threshold: drop results with normalized score < 0.5
     if !skip_noise {
-        if let Some(profile) = crate::calib::noise_profile("bm25") {
-            let threshold = 1.0;
-            fused.retain(|r| (r.score - profile.top1_mean) / profile.top1_std.max(0.001) >= threshold);
-        }
+        fused.retain(|r| r.score >= 0.5);
     }
 
     fused.truncate(limit);
@@ -423,7 +398,7 @@ pub fn bm25_precise_search(
 // ── Vector Semantic Search ──────────────────────────────────────────────
 // 纯向量搜索，只搜符号名称通道，vec0 INT8 KNN。
 
-/// Vector semantic search — vec0 INT8 KNN on symbol name channel only.
+/// Vector semantic search — vec0 FLOAT32 KNN on symbol name channel only.
 /// query_emb: pre-computed embedding for the search query.
 /// skip_noise: true 时跳过噪音过滤（标定用）。
 pub fn vector_semantic_search(
@@ -443,9 +418,8 @@ pub fn vector_semantic_search(
 
     let fetch_limit = (limit * 2).max(10);
     let sym_table = format!("symbol_name_vec_{}", repo.replace('-', "_"));
-    let query_i8: Vec<i8> = crate::embedding::quantize_f32_to_i8(query_emb);
 
-    let rows = match crate::storage::vector::knn_search_int8(conn, &sym_table, &query_i8, fetch_limit) {
+    let rows = match crate::storage::vector::knn_search(conn, &sym_table, query_emb, fetch_limit) {
         Ok(r) => r,
         Err(e) => return Err(anyhow::anyhow!("KNN search failed: {}", e)),
     };
@@ -458,9 +432,11 @@ pub fn vector_semantic_search(
     let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
     let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
-        "SELECT s.rowid, s.name, s.kind, s.file_path, s.line_start, \
-         COALESCE(s.doc_comment,''), COALESCE(s.signature,'') \
-         FROM symbols s JOIN branches b ON b.symbol_id = s.id \
+        "SELECT s.rowid, n.name, n.kind, n.file_path, n.line_start, \
+         COALESCE(json_extract(n.attrs,'$.doc_comment'),''), COALESCE(json_extract(n.attrs,'$.signature'),'') \
+         FROM symbols s \
+         JOIN nodes n ON n.name=s.name AND n.file_path=s.file_path AND n.line_start=s.line_start \
+         JOIN branches b ON b.node_id = n.id \
          WHERE s.rowid IN ({}) AND b.branch_name=?",
         placeholders
     );
@@ -514,11 +490,16 @@ pub fn vector_semantic_search(
         }
     }
 
-    // Vector noise filter (skip during calibration)
+    // Z-score noise filter for vector search (similarity distribution depends on model & index)
+    // BM25 uses hard threshold 0.5 (absolute semantics); vector needs statistical calibration
     if !skip_noise {
-        if let Some(profile) = crate::calib::noise_profile("vector") {
-            let threshold = 1.0;
-            results.retain(|r| (r.score - profile.top1_mean) / profile.top1_std.max(0.001) >= threshold);
+        if let Some(p) = crate::calib::load_noise_profile() {
+            if p.noise_std > 0.0 {
+                results.retain(|r| {
+                    let z = (r.score - p.noise_mean) / p.noise_std;
+                    z > 1.0
+                });
+            }
         }
     }
 
@@ -548,8 +529,8 @@ mod tests {
     #[test]
     fn test_weighted_fuse_both_sides() {
         let bm25 = vec![
-            make_bm25_hit("AuthService", "src/auth.cpp", -2.5, storage::fts::HitType::CodeName, 0),
-            make_bm25_hit("LoginManager", "src/auth.cpp", -1.8, storage::fts::HitType::CodeName, 0),
+            make_bm25_hit("AuthService", "src/auth.cpp", -2.5, storage::fts::HitType::Sym, 0),
+            make_bm25_hit("LoginManager", "src/auth.cpp", -1.8, storage::fts::HitType::Sym, 0),
         ];
 
         let vec_results = vec![
@@ -565,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_weighted_fuse_one_side_empty() {
-        let bm25 = vec![make_bm25_hit("OnlyBM25", "src/test.cpp", -2.5, storage::fts::HitType::CodeName, 0)];
+        let bm25 = vec![make_bm25_hit("OnlyBM25", "src/test.cpp", -2.5, storage::fts::HitType::Sym, 0)];
         let vec_results: Vec<(f64, String, String, String, i64, String, String, String, i64)> = vec![];
 
         let fused = weighted_fuse_single(&bm25, &vec_results, "code", 0.5, 0.5);
@@ -577,8 +558,8 @@ mod tests {
     fn test_weighted_fuse_sorting() {
         // "BothHave" appears in both lists → should rank higher than single-list entries
         let bm25 = vec![
-            make_bm25_hit("BothHave", "a.cpp", -2.5, storage::fts::HitType::CodeName, 0),
-            make_bm25_hit("OnlyBM25", "b.cpp", -1.8, storage::fts::HitType::CodeName, 0),
+            make_bm25_hit("BothHave", "a.cpp", -2.5, storage::fts::HitType::Sym, 0),
+            make_bm25_hit("OnlyBM25", "b.cpp", -1.8, storage::fts::HitType::Sym, 0),
         ];
 
         let vec_results = vec![
@@ -615,9 +596,9 @@ mod tests {
     fn test_exact_match_ranks_first() {
         // Exact function name match should score highest
         let bm25 = vec![
-            make_bm25_hit("DoCompactionWork", "db/db_impl.cc", -0.5, storage::fts::HitType::CodeName, 0),
-            make_bm25_hit("CompactPointer", "db/version_edit.cc", -8.0, storage::fts::HitType::CodeName, 0),
-            make_bm25_hit("PrevLogNumber", "db/version_edit.cc", -10.0, storage::fts::HitType::CodeName, 0),
+            make_bm25_hit("DoCompactionWork", "db/db_impl.cc", -0.5, storage::fts::HitType::Sym, 0),
+            make_bm25_hit("CompactPointer", "db/version_edit.cc", -8.0, storage::fts::HitType::Sym, 0),
+            make_bm25_hit("PrevLogNumber", "db/version_edit.cc", -10.0, storage::fts::HitType::Sym, 0),
         ];
 
         let vec_results = vec![

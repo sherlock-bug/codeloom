@@ -112,3 +112,31 @@ install.sh SHALL 保护用户自定义模型不被覆盖，并在安装完成后
 - AND master 分支的符号 `DB::Open` 有一条 `calls:Get` 边
 - WHEN feature 分支的 `DB::Open` 也有 `calls:Get` 边
 - THEN 两条边 SHALL 各自存储，不被 UNIQUE 约束丢弃
+
+### Requirement: 向量索引仍用旧 symbols.rowid（v0.9 遗留）
+向量表（symbol_name_vec_*, file_vec_*）SHALL 使用 nodes.id 作为主键以消除对旧 symbols/files 表的依赖。
+当前偏差：migrate_to_nodes 每次索引从旧表迁移数据到 nodes，vector KNN 返回旧 symbols.rowid 需 JOIN symbols 表映射。symbols/files 表因此不能删除。
+
+#### Scenario: 向量索引重建
+- GIVEN 已执行 clean + index
+- WHEN vector KNN 搜索执行
+- THEN 返回的 rowid SHALL 直接对应 nodes.id，无需通过 symbols 表中转
+
+### Requirement: MCP 工具仍引用 doc_nodes 表（v0.9 遗留）
+MCP 文档查询工具（codeloom_get_doc 等）SHALL 从 nodes 表查询文档内容。
+当前偏差：codeloom_get_doc/list_doc_nodes/get_doc_section 直接 SQL 查询 doc_nodes 表（id/title/section_path/content），doc_nodes 因此不能删除。
+
+#### Scenario: MCP 文档查询适配
+- GIVEN 节点已迁移到 nodes 表（node_type='doc'）
+- WHEN 调用 codeloom_get_doc 工具
+- THEN 返回的文档内容 SHALL 来自 nodes 表而非 doc_nodes 表
+
+### Requirement: Indexer 暂未直写 nodes 表（v0.9 遗留）
+Indexer（Clang/tree-sitter/doc/files）SHALL 写入 nodes 表作为主存储。
+当前偏差：indexer 写入旧表（symbols/doc_nodes/files），通过 migrate_to_nodes（DELETE+REPLACE）同步到 nodes。旧表作为暂存区。
+
+#### Scenario: Indexer 直写
+- GIVEN Clang 解析器完成一个翻译单元的符号提取
+- WHEN 写入数据库
+- THEN INSERT SHALL 直接进入 nodes 表，node_type='sym'
+- AND 同步插入 branches 表（node_id = 刚插入的 nodes.id）

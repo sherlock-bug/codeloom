@@ -5,6 +5,7 @@ use crate::indexer::{
 };
 use crate::storage::symbols::Symbol;
 use rusqlite::Connection;
+use crate::{log_info, log_warn};
 
 #[derive(Debug, Default)]
 pub struct IndexResult {
@@ -80,7 +81,7 @@ fn _smart_index(
         for fp in &files {
             match index_one(conn, fp, repo_root, repo_name, branch) {
                 Ok(c) => result.symbols_new += c,
-                Err(e) => eprintln!("Warning: {}: {}", fp, e),
+                Err(e) => { log_warn!("indexer", "parse failed: {}: {}", fp, e); eprintln!("Warning: {}: {}", fp, e); }
             }
         }
         update_state(
@@ -104,7 +105,7 @@ fn _smart_index(
         for fp in &files {
             match index_one(conn, fp, repo_root, repo_name, branch) {
                 Ok(c) => result.symbols_new += c,
-                Err(e) => eprintln!("Warning: {}: {}", fp, e),
+                Err(e) => { log_warn!("indexer", "parse failed: {}: {}", fp, e); eprintln!("Warning: {}: {}", fp, e); }
             }
         }
         update_state(
@@ -144,7 +145,7 @@ fn full_scan(
         }
     }
     conn.execute(
-        "INSERT OR IGNORE INTO branches (symbol_id,repo,branch_name,override_def,override_hash) SELECT id,repo,?1,NULL,NULL FROM symbols WHERE repo=?2",
+        "INSERT OR IGNORE INTO branches (node_id,repo,branch_name,override_def,override_hash) SELECT id,repo,?1,NULL,NULL FROM symbols WHERE repo=?2",
         rusqlite::params![branch, repo_name],
     )?;
     Ok(())
@@ -190,7 +191,7 @@ fn index_one(
         let db_id = sym.insert(conn)?;
         id_map.push(db_id);
         conn.execute(
-            "INSERT OR IGNORE INTO branches (symbol_id,repo,branch_name,override_def,override_hash) VALUES (?1,?2,?3,NULL,NULL)",
+            "INSERT OR IGNORE INTO branches (node_id,repo,branch_name,override_def,override_hash) VALUES (?1,?2,?3,NULL,NULL)",
             rusqlite::params![db_id, repo_name, branch],
         )?;
     }

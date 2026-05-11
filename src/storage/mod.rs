@@ -1,5 +1,5 @@
 use rusqlite::Connection;
-pub mod dedup; pub mod files; pub mod fts; pub mod schema; pub mod symbols; pub mod vector;
+pub mod dedup; pub mod files; pub mod fts; pub mod nodes; pub mod schema; pub mod symbols; pub mod vector;
 
 pub fn open(path: &str) -> anyhow::Result<Connection> {
     let conn = Connection::open(path)?;

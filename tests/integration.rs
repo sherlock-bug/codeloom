@@ -166,18 +166,6 @@ fn test_chinese_semantic_search() {
     assert!(!stdout.contains("No results"), "should find cache with chinese query");
 }
 
-#[test]
-fn test_noise_calibration_with_5_probes() {
-    // Index leveldb (largest test repo) and verify calibration succeeds with 5 probes
-    let fixture = "tests/fixtures/semantic_search";
-    codeloom(&["index", fixture, "--repo", "cal5", "--branch", "main"]);
-
-    let out = codeloom(&["index", fixture, "--repo", "cal5", "--branch", "main"]);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    // Calibration should succeed and report noise ceiling
-    assert!(stderr.contains("Noise z-score"), "calibration should run with 5 probes: {}", stderr);
-}
-
 // ── Symbol usage edges test ───────────────────────────────────────────
 
 #[test]

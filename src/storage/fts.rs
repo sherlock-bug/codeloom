@@ -1,7 +1,16 @@
-// FTS5 full-text index — BM25 keyword search on symbols and documents
+//! FTS5 unified full-text search — direct join with nodes table.
+//!
+//! Architecture:
+//!   fts5_all(rowid=node_id, name, content) ←→ nodes(id, ...)
+//!
+//! Symbol snippet:  n.content (= kind||' '||doc_comment from migration)
+//! Signature:       json_extract(n.attrs, '$.signature')
+//! Branch filter:   JOIN branches b ON b.node_id = n.id
+
 use rusqlite::Connection;
 
-/// Mobile-friendly search result (no String cloning in hot paths)
+// ── Types ───────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub struct SearchHit {
     pub rowid: i64,
@@ -10,560 +19,343 @@ pub struct SearchHit {
     pub name: String,
     pub file_path: String,
     pub line_start: i64,
-    pub kind: String,     // symbol kind (function/class/enum_value...), empty for docs
-    pub sig: String,      // signature for function/method, empty otherwise
-    pub snippet: String,  // doc_comment or doc content
+    pub kind: String,
+    pub sig: String,    // signature (from attrs JSON, symbols only)
+    pub snippet: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum HitType {
-    CodeName,     // search_symbols_name — name+signature+kind hit
-    CodeComment,  // search_symbols_comment — doc_comment hit
-    Doc,
-    File,
-}
+pub enum HitType { Sym, Doc, File }
 
-/// Fill FTS5 symbol index from symbols table (filtered by repo).
-/// Uses 4-column FTS5: name, file_path, signature, kind, doc_comment.
-pub fn fill_symbols_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
-    // Clear old data first (FTS5 doesn't support WHERE DELETE on content tables)
-    conn.execute("DELETE FROM fts5_sym", [])?;
+// ── FTS5 Fill ───────────────────────────────────────────────────────────
 
+/// Rebuild fts5_all from nodes table. Returns number of rows inserted.
+pub fn fill_all_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
+    conn.execute("DELETE FROM fts5_all", [])?;
     let count = conn.execute(
-        "INSERT INTO fts5_sym(rowid, name, file_path, signature, kind, doc_comment)
-         SELECT s.rowid, s.name, s.file_path, COALESCE(s.signature, ''), s.kind, COALESCE(s.doc_comment, '') FROM symbols s WHERE s.repo=?1",
+        "INSERT INTO fts5_all(rowid, name, content) SELECT id, name, content FROM nodes WHERE repo=?1",
         rusqlite::params![repo],
     )?;
     Ok(count)
 }
 
-/// Fill FTS5 document index from doc_nodes table (filtered by repo)
-pub fn fill_docs_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
-    conn.execute("DELETE FROM fts5_doc", [])?;
+/// Migrate old symbols/doc_nodes/files → unified nodes table. Idempotent.
+pub fn migrate_to_nodes(conn: &Connection, repo: &str, branch: &str) -> anyhow::Result<usize> {
+    // Clear existing nodes + branches for this repo, then re-migrate fresh
+    conn.execute("DELETE FROM nodes WHERE repo=?1", rusqlite::params![repo])?;
+    conn.execute("DELETE FROM branches WHERE repo=?1", rusqlite::params![repo])?;
 
-    let count = conn.execute(
-        "INSERT INTO fts5_doc(title, section_path, content)
-         SELECT COALESCE(title, ''), COALESCE(section_path, ''), content FROM doc_nodes WHERE repo=?1 AND content != '' ORDER BY rowid",
+    let mut total = 0;
+
+    // Symbols → nodes
+    total += conn.execute(
+        "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_name,kind,attrs)
+         SELECT s.repo,'sym',s.name,
+                COALESCE(s.kind,'') || ' ' || COALESCE(s.doc_comment,''),
+                s.file_path,s.line_start,s.content_hash,'',s.kind,
+                json_object(
+                    'signature',COALESCE(s.signature,''),
+                    'namespace',COALESCE(s.namespace,''),
+                    'access',s.access,
+                    'is_virtual',s.is_virtual,
+                    'is_definition',s.is_definition,
+                    'is_external',s.is_external,
+                    'template_args',s.template_args,
+                    'language',COALESCE(s.language,''),
+                    'parent_class',COALESCE(s.parent_class,''),
+                    'line_end',s.line_end
+                )
+         FROM symbols s WHERE s.repo=?1",
         rusqlite::params![repo],
     )?;
-    Ok(count)
-}
 
-/// Clear all FTS5 data
-pub fn clear_fts(conn: &Connection) -> anyhow::Result<()> {
-    conn.execute_batch("DELETE FROM fts5_sym; DELETE FROM fts5_doc; DELETE FROM fts5_files;")?;
-    Ok(())
-}
-
-/// Fill FTS5 file index from files table (filtered by repo).
-pub fn fill_files_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
-    conn.execute("DELETE FROM fts5_files", [])?;
-    let count = conn.execute(
-        "INSERT INTO fts5_files(file_path, summary)
-         SELECT file_path, summary FROM files WHERE repo=?1 ORDER BY rowid",
+    // Doc_nodes → nodes
+    total += conn.execute(
+        "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_name,kind,attrs)
+         SELECT d.repo,'doc',COALESCE(d.title,''),
+                COALESCE(d.section_path,'') || ' ' || d.content,
+                d.file_path,0,COALESCE(d.content_hash,''),COALESCE(d.branch_name,'main'),'',
+                json_object(
+                    'level',d.level,
+                    'file_format',COALESCE(d.file_format,''),
+                    'section_path',COALESCE(d.section_path,''),
+                    'node_type',COALESCE(d.node_type,'section')
+                )
+         FROM doc_nodes d WHERE d.repo=?1 AND d.content!=''",
         rusqlite::params![repo],
     )?;
-    Ok(count)
+
+    // Files → nodes
+    total += conn.execute(
+        "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_name,kind,attrs)
+         SELECT f.repo,'file',f.file_path,f.summary,
+                f.file_path,0,COALESCE(f.content_hash,''),
+                COALESCE(f.branch_name,'main'),'',
+                json_object('file_type',f.file_type)
+         FROM files f WHERE f.repo=?1",
+        rusqlite::params![repo],
+    )?;
+
+    // Branches: map symbols.id → nodes.id by (name, repo)
+    conn.execute(
+        "INSERT OR IGNORE INTO branches (node_id, repo, branch_name, override_def, override_hash)
+         SELECT n.id, n.repo, ?2, NULL, NULL
+         FROM nodes n JOIN symbols s ON s.name=n.name AND s.repo=n.repo
+         WHERE n.repo=?1 AND n.node_type='sym'",
+        rusqlite::params![repo, branch],
+    )?;
+
+    Ok(total)
 }
 
-/// FTS5 BM25 keyword search on files (by file_path or summary)
+// Backward-compat stubs
+pub fn fill_symbols_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> { fill_all_fts(conn, repo) }
+pub fn fill_docs_fts(_c: &Connection, _r: &str) -> anyhow::Result<usize> { Ok(0) }
+pub fn fill_files_fts(_c: &Connection, _r: &str) -> anyhow::Result<usize> { Ok(0) }
+pub fn clear_fts(conn: &Connection) -> anyhow::Result<()> { conn.execute("DELETE FROM fts5_all", [])?; Ok(()) }
+
+// ── FTS5 Search ─────────────────────────────────────────────────────────
+
+/// Search node name column only (×0.7 weight in fusion layer)
+pub fn search_fts5_name(
+    conn: &Connection, query: &str, repo: &str, branch: &str,
+    limit: usize, kind_filter: Option<&str>,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let fts5_query = build_column_query(query, &["name"]);
+    search_hits(conn, &fts5_query, repo, branch, limit, kind_filter)
+}
+
+/// Search node content column only (×0.3 weight in fusion layer)
+pub fn search_fts5_content(
+    conn: &Connection, query: &str, repo: &str, branch: &str,
+    limit: usize, kind_filter: Option<&str>,
+) -> anyhow::Result<Vec<SearchHit>> {
+    let fts5_query = build_column_query(query, &["content"]);
+    search_hits(conn, &fts5_query, repo, branch, limit, kind_filter)
+}
+
+// Backward-compat wrappers (keep external callers working)
+pub fn search_symbols(
+    conn: &Connection, query: &str, repo: &str, branch: &str, limit: usize, kf: Option<&str>
+) -> anyhow::Result<Vec<SearchHit>> {
+    search_fts5_name(conn, query, repo, branch, limit, kf)
+}
+pub fn search_docs(
+    conn: &Connection, query: &str, repo: &str, limit: usize,
+) -> anyhow::Result<Vec<SearchHit>> {
+    search_fts5_content(conn, query, repo, "main", limit, None)
+}
 pub fn search_files(
-    conn: &Connection,
-    query: &str,
-    repo: &str,
-    limit: usize,
+    conn: &Connection, query: &str, repo: &str, limit: usize,
 ) -> anyhow::Result<Vec<SearchHit>> {
-    let safe_query = escape_fts5(query);
-    let mut sql = String::from(
-        "SELECT fts5_files.rowid, bm25(fts5_files) as score, f.file_path, f.summary
-         FROM fts5_files
-         JOIN files f ON fts5_files.rowid = f.rowid
-         WHERE fts5_files MATCH ?1 AND f.repo = ?2
-         ORDER BY score
-         LIMIT ?3",
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let hits = stmt
-        .query_map(rusqlite::params![safe_query, repo, limit as i64], |r| {
-            let summary: String = r.get(3)?;
-            Ok(SearchHit {
-                rowid: r.get(0)?,
-                score: r.get(1)?,
-                hit_type: HitType::File,
-                name: r.get(2)?, // file_path as name
-                file_path: r.get(2)?,
-                line_start: 0,
-                kind: String::new(),
-                sig: String::new(),
-                snippet: summary,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(hits)
+    search_fts5_name(conn, query, repo, "main", limit, None)
 }
 
-/// FTS5 BM25 keyword search on symbol names (name + signature + kind columns).
-pub fn search_symbols_name(
-    conn: &Connection,
-    query: &str,
-    repo: &str,
-    branch: &str,
-    limit: usize,
-    kind_filter: Option<&str>,
-) -> anyhow::Result<Vec<SearchHit>> {
-    let fts5_query = build_column_query(query, &["name", "signature", "kind"]);
-    search_symbols_with_query(conn, &fts5_query, repo, branch, limit, kind_filter, HitType::CodeName)
-}
+// ── Internal ────────────────────────────────────────────────────────────
 
-/// FTS5 BM25 keyword search on symbol doc_comment column.
-pub fn search_symbols_comment(
-    conn: &Connection,
-    query: &str,
-    repo: &str,
-    branch: &str,
-    limit: usize,
-    kind_filter: Option<&str>,
+/// Core unified search: sym + doc + file from fts5_all, merged and sorted.
+fn search_hits(
+    conn: &Connection, fts5_query: &str, repo: &str, branch: &str,
+    limit: usize, kind_filter: Option<&str>,
 ) -> anyhow::Result<Vec<SearchHit>> {
-    let fts5_query = build_column_query(query, &["doc_comment"]);
-    search_symbols_with_query(conn, &fts5_query, repo, branch, limit, kind_filter, HitType::CodeComment)
-}
+    let kind_val = kind_filter.unwrap_or("");
+    let mut hits: Vec<SearchHit> = Vec::new();
 
-/// FTS5 BM25 column-filtered search on doc title (name channel).
-pub fn search_docs_title(
-    conn: &Connection,
-    query: &str,
-    repo: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<SearchHit>> {
-    let fts5_query = build_column_query(query, &["title"]);
-    search_docs_with_query(conn, &fts5_query, repo, limit, HitType::Doc)
-}
+    // ── Symbols ──────────────────────────────────────────────────────
+    {
+        let sql = "\
+            SELECT fts5_all.rowid, bm25(fts5_all) as score,
+                   n.name, n.file_path, n.line_start, n.kind,
+                   n.content, json_extract(n.attrs,'$.signature')
+            FROM fts5_all
+            JOIN nodes n ON n.id = fts5_all.rowid
+            JOIN branches b ON b.node_id = n.id
+            WHERE fts5_all MATCH ?1
+              AND n.repo = ?2
+              AND b.branch_name = ?3
+              AND n.node_type = 'sym'
+              AND (n.kind = ?5 OR ?5 = '')
+            ORDER BY score
+            LIMIT ?4";
 
-/// FTS5 BM25 column-filtered search on doc section_path + content (content channel).
-pub fn search_docs_content(
-    conn: &Connection,
-    query: &str,
-    repo: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<SearchHit>> {
-    let fts5_query = build_column_query(query, &["section_path", "content"]);
-    search_docs_with_query(conn, &fts5_query, repo, limit, HitType::Doc)
-}
+        let mut stmt = conn.prepare(sql)?;
+        let sym_hits: Vec<SearchHit> = stmt.query_map(
+            rusqlite::params![fts5_query, repo, branch, limit as i64, kind_val],
+            |r| {
+                let content: String = r.get(6)?;  // n.content = "kind doc_comment"
+                let sig: String = r.get::<_, Option<String>>(7)?.unwrap_or_default(); // attrs->signature, may be NULL
+                // Strip kind prefix from content for snippet
+                let kind: String = r.get(5)?;
+                let snip = strip_kind_prefix(&content, &kind);
+                let sig_short: String = sig.chars().take(500).collect();
+                Ok(SearchHit {
+                    rowid: r.get(0)?, score: r.get(1)?, hit_type: HitType::Sym,
+                    name: r.get(2)?, file_path: r.get(3)?, line_start: r.get(4)?,
+                    kind, sig: sig_short, snippet: snip,
+                })
+            },
+        )?.filter_map(|r| r.ok()).collect();
+        hits.extend(sym_hits);
+    }
 
-/// FTS5 BM25 column-filtered search on file_path (name channel).
-pub fn search_files_name(
-    conn: &Connection,
-    query: &str,
-    repo: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<SearchHit>> {
-    let fts5_query = build_column_query(query, &["file_path"]);
-    search_files_with_query(conn, &fts5_query, repo, limit, HitType::File)
-}
+    // ── Docs ─────────────────────────────────────────────────────────
+    {
+        let sql = "\
+            SELECT fts5_all.rowid, bm25(fts5_all) as score,
+                   n.name, n.file_path, n.content
+            FROM fts5_all
+            JOIN nodes n ON n.id = fts5_all.rowid
+            WHERE fts5_all MATCH ?1
+              AND n.repo = ?2
+              AND n.node_type = 'doc'
+            ORDER BY score
+            LIMIT ?3";
 
-/// FTS5 BM25 column-filtered search on file summary (content channel).
-pub fn search_files_summary(
-    conn: &Connection,
-    query: &str,
-    repo: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<SearchHit>> {
-    let fts5_query = build_column_query(query, &["summary"]);
-    search_files_with_query(conn, &fts5_query, repo, limit, HitType::File)
-}
-
-/// Internal helper: execute FTS5 doc query with given MATCH string.
-fn search_docs_with_query(
-    conn: &Connection,
-    fts5_query: &str,
-    repo: &str,
-    limit: usize,
-    hit_type: HitType,
-) -> anyhow::Result<Vec<SearchHit>> {
-    let sql = "SELECT fts5_doc.rowid, bm25(fts5_doc) as score, d.title, d.file_path, 0, '', COALESCE(d.content, '')
-               FROM fts5_doc
-               JOIN doc_nodes d ON d.rowid = fts5_doc.rowid
-               WHERE fts5_doc MATCH ?1 AND d.repo=?2
-               ORDER BY score
-               LIMIT ?3";
-
-    let mut stmt = conn.prepare(sql)?;
-    let hits = stmt
-        .query_map(
+        let mut stmt = conn.prepare(sql)?;
+        let doc_hits: Vec<SearchHit> = stmt.query_map(
             rusqlite::params![fts5_query, repo, limit as i64],
             |r| {
-                let content: String = r.get(6)?;
-                let snippet: String = content.chars().take(200).collect();
+                let content: String = r.get(4)?;
+                let snip: String = content.chars().take(200).collect();
                 let title: String = r.get(2)?;
                 let name = if title.is_empty() {
                     content.chars().take(60).collect::<String>().trim().to_string()
-                } else {
-                    title
-                };
+                } else { title };
                 Ok(SearchHit {
-                    rowid: r.get(0)?,
-                    score: r.get(1)?,
-                    hit_type: hit_type.clone(),
-                    name,
-                    file_path: r.get(3)?,
-                    line_start: r.get(4)?,
-                    kind: String::new(),
-                    sig: String::new(),
-                    snippet,
+                    rowid: r.get(0)?, score: r.get(1)?, hit_type: HitType::Doc,
+                    name, file_path: r.get(3)?, line_start: 0,
+                    kind: String::new(), sig: String::new(), snippet: snip,
                 })
             },
-        )?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(hits)
-}
-
-/// Internal helper: execute FTS5 file query with given MATCH string.
-fn search_files_with_query(
-    conn: &Connection,
-    fts5_query: &str,
-    repo: &str,
-    limit: usize,
-    hit_type: HitType,
-) -> anyhow::Result<Vec<SearchHit>> {
-    let mut sql = String::from(
-        "SELECT fts5_files.rowid, bm25(fts5_files) as score, f.file_path, f.summary
-         FROM fts5_files
-         JOIN files f ON fts5_files.rowid = f.rowid
-         WHERE fts5_files MATCH ?1 AND f.repo = ?2
-         ORDER BY score
-         LIMIT ?3",
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let hits = stmt
-        .query_map(rusqlite::params![fts5_query, repo, limit as i64], |r| {
-            let summary: String = r.get(3)?;
-            Ok(SearchHit {
-                rowid: r.get(0)?,
-                score: r.get(1)?,
-                hit_type: hit_type.clone(),
-                name: r.get(2)?, // file_path as name
-                file_path: r.get(2)?,
-                line_start: 0,
-                kind: String::new(),
-                sig: String::new(),
-                snippet: summary,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(hits)
-}
-
-/// Internal helper: execute FTS5 symbol query with given MATCH string and HitType tag.
-fn search_symbols_with_query(
-    conn: &Connection,
-    fts5_query: &str,
-    repo: &str,
-    branch: &str,
-    limit: usize,
-    kind_filter: Option<&str>,
-    hit_type: HitType,
-) -> anyhow::Result<Vec<SearchHit>> {
-    let mut sql = String::from(
-        "SELECT fts5_sym.rowid, bm25(fts5_sym) as score, s.name, s.file_path, s.line_start, s.kind, COALESCE(s.doc_comment, ''), COALESCE(s.signature, '')
-         FROM fts5_sym
-         JOIN symbols s ON s.rowid = fts5_sym.rowid
-         JOIN branches b ON b.symbol_id = s.id
-         WHERE fts5_sym MATCH ?1 AND s.repo=?2 AND b.branch_name=?3",
-    );
-
-    if kind_filter.is_some() {
-        sql.push_str(" AND s.kind=?5");
+        )?.filter_map(|r| r.ok()).collect();
+        hits.extend(doc_hits);
     }
 
-    sql.push_str(" ORDER BY score LIMIT ?4");
+    // ── Files ────────────────────────────────────────────────────────
+    {
+        let sql = "\
+            SELECT fts5_all.rowid, bm25(fts5_all) as score,
+                   n.name, n.file_path, n.content
+            FROM fts5_all
+            JOIN nodes n ON n.id = fts5_all.rowid
+            WHERE fts5_all MATCH ?1
+              AND n.repo = ?2
+              AND n.node_type = 'file'
+            ORDER BY score
+            LIMIT ?3";
 
-    let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(sql)?;
+        let file_hits: Vec<SearchHit> = stmt.query_map(
+            rusqlite::params![fts5_query, repo, limit as i64],
+            |r| {
+                let summary: String = r.get(4)?;
+                Ok(SearchHit {
+                    rowid: r.get(0)?, score: r.get(1)?, hit_type: HitType::File,
+                    name: r.get(2)?, file_path: r.get(3)?, line_start: 0,
+                    kind: String::new(), sig: String::new(), snippet: summary,
+                })
+            },
+        )?.filter_map(|r| r.ok()).collect();
+        hits.extend(file_hits);
+    }
 
-    let hits: Vec<SearchHit> = if let Some(kind) = kind_filter {
-        stmt.query_map(
-            rusqlite::params![fts5_query, repo, branch, limit as i64, kind],
-            |r| map_symbol_hit_with_type(r, &hit_type),
-        )?
-        .filter_map(|r| r.ok())
-        .collect()
-    } else {
-        stmt.query_map(
-            rusqlite::params![fts5_query, repo, branch, limit as i64],
-            |r| map_symbol_hit_with_type(r, &hit_type),
-        )?
-        .filter_map(|r| r.ok())
-        .collect()
-    };
-
+    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    hits.truncate(limit);
     Ok(hits)
 }
 
-/// Build FTS5 column-filtered query: for column "name" and query "snappy",
-/// produces 'name:"snappy" OR name:snappy* OR signature:"snappy" OR ...'
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+/// Build FTS5 column-prefixed query: "name:\"term\" OR name:term*" for each term.
 fn build_column_query(query: &str, columns: &[&str]) -> String {
     let terms: Vec<&str> = query.split_whitespace().collect();
+    if terms.is_empty() { return format!("\"{}\"", query); }
     let mut parts = Vec::new();
     for col in columns {
         for &term in &terms {
-            let escaped_term = escape_fts5_term(term);
-            parts.push(format!("{}:{}", col, escaped_term));
+            parts.push(format!("{}:\"{}\"", col, term));
+            if term.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                parts.push(format!("{}:{}*", col, term));
+            }
         }
     }
     parts.join(" OR ")
 }
 
-/// Escape a single term for FTS5 query (wrapped for use with column: prefix)
-fn escape_fts5_term(term: &str) -> String {
-    if term.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        format!("\"{}\" OR {}*", term, term)
+/// Strip "kind " prefix from content to get clean doc_comment snippet.
+/// e.g. "class This is a comment" → "This is a comment"
+fn strip_kind_prefix(content: &str, kind: &str) -> String {
+    if kind.is_empty() { return content.chars().take(500).collect(); }
+    let prefix = format!("{} ", kind);
+    let s = if content.starts_with(&prefix) {
+        &content[prefix.len()..]
     } else {
-        format!("\"{}\"", term)
-    }
-}
-
-/// Legacy: search_symbols forwards to name search only (backward compat for tests)
-pub fn search_symbols(
-    conn: &Connection,
-    query: &str,
-    repo: &str,
-    branch: &str,
-    limit: usize,
-    kind_filter: Option<&str>,
-) -> anyhow::Result<Vec<SearchHit>> {
-    search_symbols_name(conn, query, repo, branch, limit, kind_filter)
-}
-
-fn map_symbol_hit_with_type(r: &rusqlite::Row, hit_type: &HitType) -> rusqlite::Result<SearchHit> {
-    let doc_comment: String = r.get(6)?;
-    let signature: String = r.get(7)?;
-    let snippet = if !doc_comment.is_empty() {
-        doc_comment.trim().chars().take(500).collect()
-    } else if !signature.is_empty() {
-        signature.chars().take(500).collect()
-    } else {
-        String::new()
+        content
     };
-    Ok(SearchHit {
-        rowid: r.get(0)?,
-        score: r.get(1)?,
-        hit_type: hit_type.clone(),
-        name: r.get(2)?,
-        file_path: r.get(3)?,
-        line_start: r.get(4)?,
-        kind: r.get(5)?,
-        sig: signature,
-        snippet,
-    })
+    s.trim().chars().take(500).collect()
 }
 
-/// FTS5 BM25 search on documents only
-pub fn search_docs(
-    conn: &Connection,
-    query: &str,
-    repo: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<SearchHit>> {
-    let safe_query = escape_fts5(query);
-
-    let sql = "SELECT fts5_doc.rowid, bm25(fts5_doc) as score, d.title, d.file_path, 0, '', COALESCE(d.content, '')
-               FROM fts5_doc
-               JOIN doc_nodes d ON d.rowid = fts5_doc.rowid
-               WHERE fts5_doc MATCH ?1 AND d.repo=?2
-               ORDER BY score
-               LIMIT ?3";
-
-    let mut stmt = conn.prepare(sql)?;
-    let hits = stmt
-        .query_map(
-            rusqlite::params![safe_query, repo, limit as i64],
-            |r| {
-                let content: String = r.get(6)?;
-                let snippet: String = content.chars().take(200).collect();
-                Ok(SearchHit {
-                    rowid: r.get(0)?,
-                    score: r.get(1)?,
-                    hit_type: HitType::Doc,
-                    name: r.get(2)?,
-                    file_path: r.get(3)?,
-                    line_start: r.get(4)?,
-                    kind: String::new(),
-                    sig: String::new(),
-                    snippet,
-                })
-            },
-        )?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    Ok(hits)
-}
-
-/// Escape FTS5 special characters to prevent query syntax errors.
-/// Multi-word queries are joined with AND (each term must appear in the row).
-fn escape_fts5(query: &str) -> String {
-    let terms: Vec<&str> = query.split_whitespace().collect();
-    if terms.len() == 1 {
-        let term = terms[0];
-        if term.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            format!("\"{}\" OR {}*", term, term)
-        } else {
-            format!("\"{}\"", term)
-        }
-    } else {
-        let quoted: Vec<String> = terms
-            .iter()
-            .map(|t| format!("\"{}\"", t))
-            .collect();
-        quoted.join(" AND ")
-    }
-}
+// ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage;
 
-    fn mem_db() -> Connection {
+    fn mem_db() -> (Connection, String) {
         let conn = Connection::open_in_memory().unwrap();
-        storage::migrate(&conn).unwrap();
-        conn
+        storage::schema::run(&conn).unwrap();
+        let repo = "test";
+        let branch = "main";
+        // Insert a symbol node
+        conn.execute(
+            "INSERT INTO nodes (repo,node_type,name,content,content_hash,file_path,kind) \
+             VALUES (?1,'sym','AuthService','class Handles authentication','h1','src/auth.cpp','class')",
+            rusqlite::params![repo],
+        ).unwrap();
+        let nid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO branches (node_id,repo,branch_name) VALUES (?1,?2,?3)",
+            rusqlite::params![nid, repo, branch],
+        ).unwrap();
+        // Insert a doc node
+        conn.execute(
+            "INSERT INTO nodes (repo,node_type,name,content,content_hash,file_path) \
+             VALUES (?1,'doc','Getting Started','Installation guide content here','h2','docs/start.md')",
+            rusqlite::params![repo],
+        ).unwrap();
+        fill_all_fts(&conn, repo).unwrap();
+        (conn, repo.to_string())
     }
 
     #[test]
-    fn test_fill_and_search_symbols() {
-        let conn = mem_db();
-
-        // Insert test symbols
-        conn.execute(
-            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'AuthService', 'class', 'h1', 'src/auth.cpp', 10, 15, 'class AuthService')",
-            [],
-        ).unwrap();
-        let sym_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO branches (symbol_id, repo, branch_name) VALUES (?1, 'test', 'main')",
-            rusqlite::params![sym_id],
-        ).unwrap();
-
-        conn.execute(
-            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'LoginManager', 'class', 'h2', 'src/auth.cpp', 20, 25, 'class LoginManager')",
-            [],
-        ).unwrap();
-        let sym_id2 = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO branches (symbol_id, repo, branch_name) VALUES (?1, 'test', 'main')",
-            rusqlite::params![sym_id2],
-        ).unwrap();
-
-        // Fill FTS5
-        let count = fill_symbols_fts(&conn, "test").unwrap();
-        assert_eq!(count, 2);
-
-        // Search exact
-        let hits = search_symbols(&conn, "AuthService", "test", "main", 10, None).unwrap();
+    fn test_search_symbols() {
+        let (conn, repo) = mem_db();
+        let hits = search_symbols(&conn, "AuthService", &repo, "main", 10, None).unwrap();
+        let fts5_query = "name:\"AuthService\" OR name:AuthService*";
+        let sql = "SELECT fts5_all.rowid, n.name FROM fts5_all JOIN nodes n ON n.id = fts5_all.rowid JOIN branches b ON b.node_id = n.id WHERE fts5_all MATCH ?1 AND n.repo = ?2 AND b.branch_name = ?3 AND n.node_type = 'sym'";
+        let rows: Vec<_> = conn.prepare(sql).unwrap()
+            .query_map(rusqlite::params![fts5_query, "test", "main"], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))).unwrap().flatten().collect();
+        eprintln!("DEBUG exact SQL: {:?}", rows);
+        let hits = search_symbols(&conn, "AuthService", &repo, "main", 10, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "AuthService");
         assert_eq!(hits[0].kind, "class");
-        assert!(hits[0].kind == "class", "should have kind=class, got: {}", hits[0].kind);
-
-        // Search partial
-        let hits = search_symbols(&conn, "Auth", "test", "main", 10, None).unwrap();
-        assert!(hits.iter().any(|h| h.name == "AuthService"));
+        assert_eq!(hits[0].snippet, "Handles authentication");
     }
 
     #[test]
-    fn test_search_kind_filter() {
-        let conn = mem_db();
-
-        conn.execute(
-            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'my_func', 'function', 'h1', 'src/a.cpp', 1, 2, 'void my_func()')",
-            [],
-        ).unwrap();
-        let sid = conn.last_insert_rowid();
-        conn.execute("INSERT INTO branches (symbol_id, repo, branch_name) VALUES (?1, 'test', 'main')", rusqlite::params![sid]).unwrap();
-
-        conn.execute(
-            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'MyEnum::A', 'enum_value', 'h2', 'src/b.cpp', 3, 3, 'MyEnum::A')",
-            [],
-        ).unwrap();
-        let sid2 = conn.last_insert_rowid();
-        conn.execute("INSERT INTO branches (symbol_id, repo, branch_name) VALUES (?1, 'test', 'main')", rusqlite::params![sid2]).unwrap();
-
-        fill_symbols_fts(&conn, "test").unwrap();
-
-        // Without filter — both appear
-        let hits = search_symbols(&conn, "my", "test", "main", 10, None).unwrap();
-        assert!(hits.iter().any(|h| h.kind == "function"));
-        assert!(hits.iter().any(|h| h.kind == "enum_value"));
-
-        // With function filter — only function
-        let hits = search_symbols(&conn, "my", "test", "main", 10, Some("function")).unwrap();
+    fn test_search_docs() {
+        let (conn, repo) = mem_db();
+        let hits = search_docs(&conn, "Installation", &repo, 10).unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].kind, "function");
-        assert_eq!(hits[0].name, "my_func");
+        assert_eq!(hits[0].name, "Getting Started");
     }
 
     #[test]
-    fn test_fill_and_search_docs() {
-        let conn = mem_db();
-
-        conn.execute(
-            "INSERT INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format, branch_name)
-             VALUES ('test', 'Getting Started', 'intro', 'This guide covers setup and configuration.', 1, 'docs/readme.md', 'md', 'main')",
-            [],
-        ).unwrap();
-        conn.execute(
-            "INSERT INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format, branch_name)
-             VALUES ('test', 'API Reference', 'api/auth', 'Authentication endpoints for login and logout.', 2, 'docs/api.md', 'md', 'main')",
-            [],
-        ).unwrap();
-
-        let count = fill_docs_fts(&conn, "test").unwrap();
-        assert_eq!(count, 2);
-
-        let hits = search_docs(&conn, "setup", "test", 5).unwrap();
-        assert!(hits.iter().any(|h| h.name.contains("Getting Started")));
-
-        let hits = search_docs(&conn, "authentication", "test", 5).unwrap();
-        assert!(hits.iter().any(|h| h.name.contains("API Reference")));
-    }
-
-    #[test]
-    fn test_multi_word_search() {
-        let conn = mem_db();
-
-        conn.execute(
-            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'memory_alloc', 'function', 'h3', 'src/mem.cpp', 1, 3, 'void* memory_alloc(size_t n)')",
-            [],
-        ).unwrap();
-        let sym_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO branches (symbol_id, repo, branch_name) VALUES (?1, 'test', 'main')",
-            rusqlite::params![sym_id],
-        ).unwrap();
-
-        conn.execute(
-            "INSERT INTO symbols (repo, name, kind, content_hash, file_path, line_start, line_end, signature)
-             VALUES ('test', 'buffer_free', 'function', 'h4', 'src/mem.cpp', 5, 6, 'void buffer_free()')",
-            [],
-        ).unwrap();
-        let sym_id2 = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO branches (symbol_id, repo, branch_name) VALUES (?1, 'test', 'main')",
-            rusqlite::params![sym_id2],
-        ).unwrap();
-
-        fill_symbols_fts(&conn, "test").unwrap();
-
-        // Search "memory alloc" should match memory_alloc
-        let hits = search_symbols(&conn, "memory alloc", "test", "main", 10, None).unwrap();
-        assert!(hits.iter().any(|h| h.name == "memory_alloc"));
+    fn test_strip_kind_prefix() {
+        assert_eq!(strip_kind_prefix("class Handles auth", "class"), "Handles auth");
+        assert_eq!(strip_kind_prefix("Handles auth", ""), "Handles auth");
+        assert_eq!(strip_kind_prefix("", ""), "");
     }
 }

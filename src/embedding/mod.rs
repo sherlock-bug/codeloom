@@ -26,12 +26,6 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     (dot / (na * nb)).max(0.0).min(1.0)
 }
 
-/// Quantize float32 embedding to int8: round(v * 127), clamp to [-128, 127].
-/// Embeddings are assumed to be normalized (roughly [-1, 1] range).
-pub fn quantize_f32_to_i8(vec: &[f32]) -> Vec<i8> {
-    vec.iter().map(|&v| (v * 127.0).round().clamp(-128.0, 127.0) as i8).collect()
-}
-
 pub struct ApiEmbedder {
     client: reqwest::blocking::Client,
     api_base: String,
@@ -74,6 +68,7 @@ impl ApiEmbedder {
         let mut last_err = None;
         for attempt in 0..max_retries {
             if attempt > 0 {
+                log_warn!("embedding", "API retry {}/{}, last error: {}", attempt + 1, max_retries, last_err.as_ref().map(|e: &anyhow::Error| e.to_string()).unwrap_or_else(|| "unknown".into()));
                 let delay = std::time::Duration::from_millis(500 * (1 << attempt));
                 std::thread::sleep(delay);
             }
@@ -83,11 +78,12 @@ impl ApiEmbedder {
             }
             let resp = match req.send() {
                 Ok(r) => r,
-                Err(e) => { last_err = Some(anyhow::anyhow!("HTTP send: {}", e)); continue; }
+                Err(e) => { last_err = Some(anyhow::anyhow!("HTTP send: {}", e)); log_error!("embedding", "HTTP send failed: {}", e); continue; }
             };
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().unwrap_or_default();
+                log_error!("embedding", "API error {}: {}", status, &text[..text.len().min(200)]);
                 last_err = Some(anyhow::anyhow!("Embedding API {}: {}", status, text));
                 continue;
             }
@@ -136,12 +132,13 @@ impl Embedder for ApiEmbedder {
 
 // ── Vector indexing ───────────────────────────────────────────────────
 
-/// Index symbol name vectors (INT8) for selected symbols.
+/// Index symbol name vectors (FLOAT32) for selected symbols.
 /// Only non-external, non-template_instance, non-namespace symbols get vectors.
 /// Comment and doc vectors are removed — FTS5 covers Chinese docs sufficiently.
 pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> anyhow::Result<(usize, usize)> {
-    if !crate::storage::vector::try_load(conn) { return Ok((0, 0)); }
-    crate::storage::vector::create_tables(conn, repo, embedder.dimension())?;
+    if !crate::storage::vector::try_load(conn) { log_warn!("embedding", "vec0 not loaded — skipping vector indexing"); return Ok((0, 0)); }
+    // Clear old vec tables before recreating (handles INT8→FLOAT32 migration)
+    crate::storage::vector::clear_vectors(conn, repo, embedder.dimension())?;
     let sym_name_table = format!("symbol_name_vec_{}", repo.replace('-', "_"));
 
     let existing_name_ids: HashSet<i64> = {
@@ -186,7 +183,7 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
                 // Flush name batch
                 if name_chars >= embedder.max_chars_per_batch() || name_text_batch.len() >= embedder.batch_size() {
                     flush_symbol_batch(&texts_of(&name_text_batch), embedder, &mut name_vec_batch, &name_text_batch);
-                    sym_count += insert_vec_batch_int8(conn, &sym_name_table, &mut name_vec_batch)?;
+                    sym_count += insert_vec_batch_f32(conn, &sym_name_table, &mut name_vec_batch)?;
                     name_text_batch.clear();
                     name_chars = 0;
                 }
@@ -198,7 +195,7 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
             // Final flush
             if !name_text_batch.is_empty() {
                 flush_symbol_batch(&texts_of(&name_text_batch), embedder, &mut name_vec_batch, &name_text_batch);
-                sym_count += insert_vec_batch_int8(conn, &sym_name_table, &mut name_vec_batch)?;
+                sym_count += insert_vec_batch_f32(conn, &sym_name_table, &mut name_vec_batch)?;
             }
             if sym_total > 0 { eprint!("\r  Vectors: {}/{} symbols done.\n", processed, sym_total); }
         }
@@ -208,6 +205,7 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
     let doc_count = 0; let doc_skipped = 0;
 
     if sym_total > 0 || doc_count > 0 {
+        log_info!("embedding", "vector indexing done: {} sym (+{} skipped), {} docs (+{} skipped)", sym_count, sym_skipped, doc_count, doc_skipped);
         eprintln!("  Vectors: {} symbols ({} skipped), {} docs ({} skipped)", sym_count, sym_skipped, doc_count, doc_skipped);
     }
     Ok((sym_count, doc_count))
@@ -236,26 +234,27 @@ fn flush_symbol_batch(
                 if !emb.is_empty() { vec_batch.push((*id, emb)); }
             }
         }
-        Err(e) => eprintln!("  ⚠ embed batch failed ({} texts, sample: {:?}): {}",
-            texts.len(),
-            texts.first().map(|s| &s[..s.len().min(100)]).unwrap_or(""),
-            e),
+        Err(e) => {
+            log_error!("embedding", "batch embed failed ({} texts): {}", texts.len(), e);
+            eprintln!("  ⚠ embed batch failed ({} texts, sample: {:?}): {}",
+                texts.len(),
+                texts.first().map(|s| &s[..s.len().min(100)]).unwrap_or(""),
+                e);
+        }
     }
 }
 
-/// Insert INT8 vector batch into vec0 table (for symbol_name_vec).
-fn insert_vec_batch_int8(
+/// Insert FLOAT32 vector batch into vec0 table.
+fn insert_vec_batch_f32(
     conn: &Connection,
     table: &str,
     vec_batch: &mut Vec<(i64, Vec<f32>)>,
 ) -> anyhow::Result<usize> {
     if vec_batch.is_empty() { return Ok(0); }
-    let int8_rows: Vec<(i64, Vec<i8>)> = vec_batch.drain(..)
-        .map(|(id, v)| (id, quantize_f32_to_i8(&v)))
-        .collect();
-    let count = crate::storage::vector::insert_vectors_int8(
+    let rows: Vec<(i64, Vec<f32>)> = vec_batch.drain(..).collect();
+    let count = crate::storage::vector::insert_vectors(
         conn, table,
-        &int8_rows.iter().map(|(i, v)| (*i, v.as_slice())).collect::<Vec<_>>(),
+        &rows.iter().map(|(i, v)| (*i, v.as_slice())).collect::<Vec<_>>(),
     )?;
     Ok(count)
 }
@@ -297,32 +296,30 @@ pub fn index_file_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder
                 text_batch.push((row.0, text));
                 if batch_chars >= embedder.max_chars_per_batch() || text_batch.len() >= embedder.batch_size() {
                     flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
-                    file_count += insert_vec_batch_int8_file(conn, &file_table, &mut vec_batch)?;
+                    file_count += insert_vec_batch_f32_file(conn, &file_table, &mut vec_batch)?;
                     text_batch.clear();
                     batch_chars = 0;
                 }
             }
             if !text_batch.is_empty() {
                 flush_symbol_batch(&texts_of(&text_batch), embedder, &mut vec_batch, &text_batch);
-                file_count += insert_vec_batch_int8_file(conn, &file_table, &mut vec_batch)?;
+                file_count += insert_vec_batch_f32_file(conn, &file_table, &mut vec_batch)?;
             }
         }
     }
     Ok(file_count)
 }
 
-fn insert_vec_batch_int8_file(
+fn insert_vec_batch_f32_file(
     conn: &Connection,
     table: &str,
     vec_batch: &mut Vec<(i64, Vec<f32>)>,
 ) -> anyhow::Result<usize> {
     if vec_batch.is_empty() { return Ok(0); }
-    let int8_rows: Vec<(i64, Vec<i8>)> = vec_batch.drain(..)
-        .map(|(id, v)| (id, quantize_f32_to_i8(&v)))
-        .collect();
-    let count = crate::storage::vector::insert_vectors_int8(
+    let rows: Vec<(i64, Vec<f32>)> = vec_batch.drain(..).collect();
+    let count = crate::storage::vector::insert_vectors(
         conn, table,
-        &int8_rows.iter().map(|(i, v)| (*i, v.as_slice())).collect::<Vec<_>>(),
+        &rows.iter().map(|(i, v)| (*i, v.as_slice())).collect::<Vec<_>>(),
     )?;
     Ok(count)
 }
@@ -330,6 +327,7 @@ fn insert_vec_batch_int8_file(
 // ── Factory ───────────────────────────────────────────────────────────
 
 use std::sync::OnceLock;
+use crate::{log_info, log_warn, log_error};
 
 /// Statically cached embedder — initialized on first call, reused globally.
 static EMBEDDER: OnceLock<Box<dyn Embedder + Send + Sync>> = OnceLock::new();
@@ -346,7 +344,7 @@ pub fn get_embedder() -> anyhow::Result<&'static (dyn Embedder + Send + Sync)> {
             EMBEDDER.set(Box::new(embedder)).map_err(|_| anyhow::anyhow!("Embedder already set"))?;
             Ok(EMBEDDER.get().unwrap().as_ref())
         }
-        None => anyhow::bail!("No embedding config."),
+        None => { log_warn!("embedding", "No embedding config — vector search disabled"); anyhow::bail!("No embedding config."); }
     }
 }
 

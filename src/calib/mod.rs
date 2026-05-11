@@ -1,15 +1,14 @@
-//! 噪声标定模块
+//! 向量搜索噪声标定模块
 //!
-//! 使用已索引仓库进行噪声标定，计算搜索噪声基线，
-//! 用于在搜索时自动过滤低置信度结果。
-//! BM25 和向量通道各自独立标定。
+//! BM25 使用硬阈值 0.5（分数有绝对语义），向量搜索需要标定（相似度分布取决于模型和索引内容）。
+//! 每次 index 后自动标定向量搜索的噪声基线，搜索时用 z-score 过滤低置信度结果。
 
 use anyhow::Context;
 use rusqlite::Connection;
 
 // ── 噪声探针 ──────────────────────────────────────────────
+// KNN 总能返回最近邻 → 这些探针在任意代码库都能命中结果
 
-/// 噪声探针：3 条中文 + 1 条英文 + 1 条随机字符串，保证与任何代码库无重叠
 const NOISE_PROBES: &[&str] = &[
     "morning coffee afternoon tea",
     "地铁换乘站周末出行",
@@ -22,15 +21,15 @@ const NOISE_PROBES: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct NoiseProfile {
-    pub channel: String,   // "bm25" | "vector" | "hybrid"(legacy)
-    pub top1_mean: f64,
-    pub top1_std: f64,
+    pub noise_mean: f64,
+    pub noise_std: f64,
+    pub noise_ceiling: f64,
     pub samples: usize,
     pub model: String,
     pub calibrated_at: String,
 }
 
-// ── config.db 全局配置 ────────────────────────────────────
+// ── config.db 持久化 ──────────────────────────────────────
 
 fn config_db_path() -> std::path::PathBuf {
     crate::config::Config::data_dir()
@@ -42,43 +41,29 @@ fn open_config_db() -> anyhow::Result<Connection> {
     let path = config_db_path();
     let conn = Connection::open(&path)
         .with_context(|| format!("无法打开 config.db: {}", path.display()))?;
-
-    // Create table with channel column
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS noise_profile (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel TEXT NOT NULL,
-            top1_mean REAL NOT NULL,
-            top1_std REAL NOT NULL,
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            noise_mean REAL NOT NULL,
+            noise_std REAL NOT NULL,
+            noise_ceiling REAL NOT NULL,
             samples INTEGER NOT NULL,
             model TEXT NOT NULL,
-            calibrated_at TEXT NOT NULL,
-            UNIQUE(channel)
+            calibrated_at TEXT NOT NULL
         );",
     )?;
-
-    // Migration: add channel column if missing (old schema)
-    let has_channel: bool = conn
-        .prepare("SELECT channel FROM noise_profile LIMIT 0")
-        .is_ok();
-    if !has_channel {
-        conn.execute_batch(
-            "ALTER TABLE noise_profile ADD COLUMN channel TEXT NOT NULL DEFAULT 'hybrid';",
-        )?;
-    }
-
     Ok(conn)
 }
 
 pub fn save_noise_profile(profile: &NoiseProfile) -> anyhow::Result<()> {
     let conn = open_config_db()?;
     conn.execute(
-        "INSERT OR REPLACE INTO noise_profile (channel, top1_mean, top1_std, samples, model, calibrated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR REPLACE INTO noise_profile (id, noise_mean, noise_std, noise_ceiling, samples, model, calibrated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
-            profile.channel,
-            profile.top1_mean,
-            profile.top1_std,
+            profile.noise_mean,
+            profile.noise_std,
+            profile.noise_ceiling,
             profile.samples as i64,
             profile.model,
             profile.calibrated_at,
@@ -87,17 +72,17 @@ pub fn save_noise_profile(profile: &NoiseProfile) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn load_noise_profile(channel: &str) -> Option<NoiseProfile> {
+pub fn load_noise_profile() -> Option<NoiseProfile> {
     let conn = open_config_db().ok()?;
     conn.query_row(
-        "SELECT channel, top1_mean, top1_std, samples, model, calibrated_at
-         FROM noise_profile WHERE channel = ?1",
-        rusqlite::params![channel],
+        "SELECT noise_mean, noise_std, noise_ceiling, samples, model, calibrated_at
+         FROM noise_profile WHERE id = 1",
+        [],
         |row| {
             Ok(NoiseProfile {
-                channel: row.get(0)?,
-                top1_mean: row.get(1)?,
-                top1_std: row.get(2)?,
+                noise_mean: row.get(0)?,
+                noise_std: row.get(1)?,
+                noise_ceiling: row.get(2)?,
                 samples: row.get::<_, i64>(3)? as usize,
                 model: row.get(4)?,
                 calibrated_at: row.get(5)?,
@@ -107,21 +92,31 @@ pub fn load_noise_profile(channel: &str) -> Option<NoiseProfile> {
     .ok()
 }
 
-/// 按通道获取噪音基线（用于搜索过滤）
-pub fn noise_profile(channel: &str) -> Option<NoiseProfile> {
-    load_noise_profile(channel)
-}
+// ── 标定入口 ──────────────────────────────────────────────
 
-// ── 内部辅助 ──────────────────────────────────────────────
+/// 执行向量搜索噪声标定。
+///
+/// 找符号数最多的仓库，对 5 条探针各跑 KNN Top 5，用 similarity 分布计算基线。
+/// 标定前先删旧基线（避免旧数据干扰）。
+pub fn calibrate() -> anyhow::Result<NoiseProfile> {
+    // 先清旧基线
+    let _ = std::fs::remove_file(config_db_path());
 
-/// 找符号数最多的仓库（标定公用）
-fn find_largest_repo() -> anyhow::Result<(String, String, String)> {
+    let embedder = crate::embedding::get_embedder()
+        .context("embedder not initialized")?;
+
+    // Embed all probes at once
+    let probe_embs = embedder.embed_batch(NOISE_PROBES)
+        .context("failed to embed noise probes")?;
+
     let repos = crate::query::repo::list_repos();
     if repos.is_empty() {
         return Err(anyhow::anyhow!("没有已索引仓库，无法标定"));
     }
 
     let data_dir = crate::config::Config::data_dir()?;
+
+    // 找符号数最多的仓库
     let mut best_repo = String::new();
     let mut best_branch = String::new();
     let mut max_syms: i64 = 0;
@@ -157,18 +152,46 @@ fn find_largest_repo() -> anyhow::Result<(String, String, String)> {
     }
 
     let db_path = data_dir.join(format!("{}.rag.db", best_repo));
-    Ok((best_repo, best_branch, db_path.to_string_lossy().to_string()))
-}
+    let conn = crate::storage::open(&db_path.to_string_lossy())?;
 
-fn compute_noise_profile(scores: &[f64], channel: &str) -> anyhow::Result<NoiseProfile> {
-    if scores.is_empty() {
-        return Err(anyhow::anyhow!("噪声探针未返回任何结果"));
+    // 确保 vec0 扩展已加载
+    if !crate::storage::vector::try_load(&conn) {
+        return Err(anyhow::anyhow!("vec0 extension not loaded"));
     }
 
-    let n = scores.len() as f64;
-    let mean: f64 = scores.iter().sum::<f64>() / n;
-    let variance = scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
+    let sym_table = format!("symbol_name_vec_{}", best_repo.replace('-', "_"));
+    let mut all_sims: Vec<f64> = Vec::new();
+    let mut knn_errors: Vec<String> = Vec::new();
+
+    for (i, emb) in probe_embs.iter().enumerate() {
+        match crate::storage::vector::knn_search(&conn, &sym_table, emb, 5) {
+            Ok(rows) => {
+                for (_, dist) in rows {
+                    let sim = 1.0 / (1.0 + dist as f64);
+                    all_sims.push(sim);
+                }
+            }
+            Err(e) => {
+                knn_errors.push(format!("probe[{}] '{}': {}", i, NOISE_PROBES[i], e));
+            }
+        }
+    }
+    drop(conn);
+
+    if all_sims.is_empty() {
+        let detail = if knn_errors.is_empty() {
+            "所有探针返回 0 行".to_string()
+        } else {
+            format!("{} 个 KNN 错误: {}", knn_errors.len(), knn_errors.join("; "))
+        };
+        return Err(anyhow::anyhow!("向量探针未返回任何结果: {}", detail));
+    }
+
+    let n = all_sims.len() as f64;
+    let mean: f64 = all_sims.iter().sum::<f64>() / n;
+    let variance = all_sims.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
     let std = variance.sqrt();
+    let ceiling = mean + 2.0 * std;
 
     let model = crate::config::Config::load()
         .ok()
@@ -179,85 +202,11 @@ fn compute_noise_profile(scores: &[f64], channel: &str) -> anyhow::Result<NoiseP
     let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
 
     Ok(NoiseProfile {
-        channel: channel.to_string(),
-        top1_mean: mean,
-        top1_std: std,
-        samples: scores.len(),
+        noise_mean: mean,
+        noise_std: std,
+        noise_ceiling: ceiling,
+        samples: all_sims.len(),
         model,
         calibrated_at: now,
     })
-}
-
-// ── 标定入口 ──────────────────────────────────────────────
-
-/// 执行 BM25 通道噪音标定（5 条探针 × bm25_precise_search）
-pub fn calibrate_bm25() -> anyhow::Result<NoiseProfile> {
-    let (repo, branch, db_path) = find_largest_repo()?;
-    let conn = crate::storage::open(&db_path)?;
-
-    let mut top1_scores: Vec<f64> = Vec::new();
-    for &probe in NOISE_PROBES {
-        if let Ok(results) =
-            crate::query::search::bm25_precise_search(&conn, probe, &repo, &branch, 5, None, true)
-        {
-            if let Some(top) = results.first() {
-                top1_scores.push(top.score);
-            }
-        }
-    }
-    drop(conn);
-
-    compute_noise_profile(&top1_scores, "bm25")
-}
-
-/// 执行向量通道噪音标定（5 条探针 × vector_semantic_search）
-pub fn calibrate_vector() -> anyhow::Result<NoiseProfile> {
-    let (repo, branch, db_path) = find_largest_repo()?;
-    let conn = crate::storage::open(&db_path)?;
-
-    let embedder = crate::embedding::get_embedder()
-        .map_err(|e| anyhow::anyhow!("嵌入模型不可用: {}", e))?;
-
-    let mut top1_scores: Vec<f64> = Vec::new();
-    for &probe in NOISE_PROBES {
-        if let Ok(emb) = embedder.embed(probe) {
-            if let Ok(results) =
-                crate::query::search::vector_semantic_search(&conn, &emb, &repo, &branch, 5, true)
-            {
-                if let Some(top) = results.first() {
-                    top1_scores.push(top.score);
-                }
-            }
-        }
-    }
-    drop(conn);
-
-    compute_noise_profile(&top1_scores, "vector")
-}
-
-/// 全量标定：依次执行 BM25 和向量通道标定
-pub fn calibrate() -> anyhow::Result<Vec<NoiseProfile>> {
-    let mut profiles = Vec::new();
-
-    match calibrate_bm25() {
-        Ok(p) => {
-            save_noise_profile(&p)?;
-            profiles.push(p);
-        }
-        Err(e) => eprintln!("  [SKIP] BM25 标定失败: {}", e),
-    }
-
-    match calibrate_vector() {
-        Ok(p) => {
-            save_noise_profile(&p)?;
-            profiles.push(p);
-        }
-        Err(e) => eprintln!("  [SKIP] 向量标定失败: {}", e),
-    }
-
-    if profiles.is_empty() {
-        return Err(anyhow::anyhow!("所有通道标定均失败"));
-    }
-
-    Ok(profiles)
 }

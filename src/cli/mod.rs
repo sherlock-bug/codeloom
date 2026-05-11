@@ -1,4 +1,5 @@
 use clap::Subcommand;
+use crate::{log_info, log_error, log_warn};
 
 /// 团队代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 #[derive(Subcommand)]
@@ -85,7 +86,7 @@ pub enum Command {
         repo: Option<String>,
     },
 
-    /// 精确 BM25 关键词搜索（符号名/注释/文档/文件），不涉及向量语义。语义搜索用 codeloom_semantic_search MCP 工具
+    /// 精确 BM25 关键词搜索（符号名/注释/文档/文件），不涉及向量语义。语义搜索用 `codeloom semantic` 命令
     Search {
         /// 搜索关键词或功能描述
         query: String,
@@ -101,6 +102,21 @@ pub enum Command {
         /// 按符号类型过滤 (function, method, class, struct, enum, etc.)
         #[arg(long)]
         kind: Option<String>,
+    },
+
+    /// 向量语义搜索 — 用自然语言描述功能查找相关符号。不依赖关键词匹配，理解语义
+    Semantic {
+        /// 语义搜索描述（自然语言）
+        query: String,
+        /// 仓库标识名（默认自动检测）
+        #[arg(long)]
+        repo: Option<String>,
+        /// Git 分支名（默认自动检测）
+        #[arg(long)]
+        branch: Option<String>,
+        /// 返回结果数
+        #[arg(long, default_value = "10")]
+        limit: usize,
     },
 
     /// 查看仓库架构全貌（符号按类型分布）
@@ -230,6 +246,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                     .unwrap_or_else(|| "default".into())
             });
             let t0 = std::time::Instant::now();
+            log_info!("index", "开始索引 {} @ {}:{}", path, repo, branch);
             println!("Indexing {} (branch={}, repo={})...", path, branch, repo);
             let data_dir = crate::config::Config::data_dir()?;
             let db_path = data_dir.join(format!("{}.rag.db", repo));
@@ -248,18 +265,14 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             index_docs(&conn, &path, &repo);
             let t2 = t0.elapsed();
             index_includes(&conn, &path, &repo);
-            // FTS5 full-text index for BM25 keyword search
-            match crate::storage::fts::fill_symbols_fts(&conn, &repo) {
-                Ok(n) => if n > 0 { eprintln!("  FTS5: {} symbols indexed", n); },
-                Err(e) => eprintln!("  FTS5 symbol warning: {}", e),
+            // Migrate old tables → unified nodes, then fill FTS5
+            match crate::storage::fts::migrate_to_nodes(&conn, &repo, &branch) {
+                Ok(n) => eprintln!("  Nodes: {} migrated to unified table", n),
+                Err(e) => eprintln!("  Node migration warning: {}", e),
             }
-            match crate::storage::fts::fill_docs_fts(&conn, &repo) {
-                Ok(n) => if n > 0 { eprintln!("  FTS5: {} docs indexed", n); },
-                Err(e) => eprintln!("  FTS5 doc warning: {}", e),
-            }
-            match crate::storage::fts::fill_files_fts(&conn, &repo) {
-                Ok(n) => if n > 0 { eprintln!("  FTS5: {} files indexed", n); },
-                Err(e) => eprintln!("  FTS5 file warning: {}", e),
+            match crate::storage::fts::fill_all_fts(&conn, &repo) {
+                Ok(n) => { eprintln!("  FTS5: {} entries indexed", n); log_info!("index", "FTS5 完成: {} entries", n); }
+                Err(e) => { eprintln!("  FTS5 warning: {}", e); log_error!("index", "FTS5 失败: {}", e); }
             }
             let t3 = t0.elapsed();
             // Symbol + Doc + File vectors — run in spawn_blocking to avoid reqwest::blocking tokio conflict
@@ -276,17 +289,22 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             eprintln!("  ⏱  parse+db: {:.1}s | docs+fts: {:.1}s | vectors: {:.1}s | total: {:.1}s",
                 t1.as_secs_f64(), (t3-t2).as_secs_f64(), (t4-t3).as_secs_f64(), t4.as_secs_f64());
 
-            // 噪声标定（同样在 spawn_blocking 中执行，避免 reqwest::blocking 与 tokio 冲突）
-            let calib_result = tokio::task::spawn_blocking(|| crate::calib::calibrate()).await?;
-            match calib_result {
-                Ok(profiles) => {
-                    for p in &profiles {
-                        eprintln!("  [OK]  {} noise z-score: top1_mean={:.3}, σ={:.3}",
-                            p.channel, p.top1_mean, p.top1_std);
+            // 向量搜索噪声标定（spawn_blocking 避免 reqwest::blocking 与 tokio 冲突）
+            match tokio::task::spawn_blocking(crate::calib::calibrate).await {
+                Ok(Ok(p)) => {
+                    eprintln!("  Noise calib: μ={:.4} σ={:.4} z=2.0 → ceiling={:.4} ({} samples, model={})",
+                        p.noise_mean, p.noise_std, p.noise_ceiling, p.samples, p.model);
+                    if let Err(e) = crate::calib::save_noise_profile(&p) {
+                        log_error!("index", "标定保存失败: {}", e);
                     }
                 }
-                Err(e) => {
-                    eprintln!("  [WARN] Noise calibration failed: {}", e);
+                Ok(Err(e)) => {
+                    log_error!("index", "向量噪声标定失败: {}", e);
+                    eprintln!("  Noise calibration skipped: {}", e);
+                }
+                Err(join_err) => {
+                    log_error!("index", "标定线程 panic: {}", join_err);
+                    eprintln!("  Noise calibration skipped: thread panicked");
                 }
             }
         }
@@ -516,6 +534,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 if results.is_empty() {
                     println!("(no results)");
                 } else {
+                    log_info!("search", "搜索 \"{}\" → {} results", q, results.len());
                     println!("搜索 \"{}\") ({}条):", q, results.len());
                     for r in &results {
                         let typ = if r.hit_type == "code" && !r.kind.is_empty() {
@@ -530,6 +549,37 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Semantic { query, repo, branch, limit } => {
+            let repo = repo.unwrap_or_else(autodetect_repo);
+            let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
+            if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
+            let dd = crate::config::Config::data_dir()?;
+            let dbp = dd.join(format!("{}.rag.db", repo));
+            if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
+            let conn = crate::storage::open(&dbp.to_string_lossy())?;
+            let q = query.clone();
+            let results = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                let embedder = crate::embedding::get_embedder()?;
+                let emb = embedder.embed(&query)?;
+                crate::query::search::vector_semantic_search(&conn, &emb, &repo, &branch, limit, false)
+            }).await??;
+            if results.is_empty() {
+                println!("(no results)");
+            } else {
+                log_info!("semantic", "语义搜索 \"{}\" → {} results", q, results.len());
+                println!("语义搜索 \"{}\" ({}条):", q, results.len());
+                for r in &results {
+                    let typ = if r.hit_type == "code" && !r.kind.is_empty() {
+                        r.kind.clone()
+                    } else {
+                        r.hit_type.clone()
+                    };
+                    let comment: String = r.snippet.chars().take(120).collect();
+                    println!("  [{:16}] {:40}  @ {:.4} {}",
+                        typ, r.name, r.score, comment);
+                }
+            }
+        }
         Command::Overview { repo, branch } => {
             let repo = repo.unwrap_or_else(autodetect_repo);
             let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
@@ -539,7 +589,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
             let syms: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE b.repo=?1 AND (b.branch_name=?2 OR b.branch_name IS NULL)",
+                "SELECT COUNT(*) FROM nodes n JOIN branches b ON b.node_id=n.id WHERE b.repo=?1 AND b.branch_name=?2 AND n.node_type='sym'",
                 rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
             let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
             let docs: i64 = conn.query_row("SELECT COUNT(*) FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name=?2)",
@@ -548,7 +598,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             println!("Symbols: {}  |  Edges: {}  |  Docs: {}\n", syms, edges, docs);
             println!("Symbols by kind:");
             let mut stmt = conn.prepare(
-                "SELECT kind, COUNT(*) FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE b.repo=?1 AND (b.branch_name=?2 OR b.branch_name IS NULL) GROUP BY kind ORDER BY COUNT(*) DESC"
+                "SELECT kind, COUNT(*) FROM nodes n JOIN branches b ON b.node_id=n.id WHERE b.repo=?1 AND b.branch_name=?2 AND n.node_type='sym' GROUP BY kind ORDER BY COUNT(*) DESC"
             )?;
             let kinds: Vec<(String, i64)> = stmt.query_map(rusqlite::params![repo, branch], |r| Ok((r.get::<_,String>(0)?, r.get::<_,i64>(1)?)))?.flatten().collect();
             for (kind, count) in &kinds {
@@ -565,7 +615,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
             let like = format!("%{}%", pattern);
-            let sql = "SELECT name, kind, file_path, line_start FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name LIKE ?2 AND (b.branch_name=?3 OR b.branch_name IS NULL) ORDER BY name LIMIT ?4";
+            let sql = "SELECT name, kind, file_path, line_start FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name LIKE ?2 AND n.node_type='sym' AND b.branch_name=?3 ORDER BY name LIMIT ?4";
             let mut stmt = conn.prepare(sql)?;
             let rows = stmt.query_map(rusqlite::params![repo, like, branch, limit as i64], |r| {
                 Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,i64>(3)?))
@@ -587,7 +637,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
             // Fetch symbol with all fields
-            let sql = "SELECT s.id, s.name, s.kind, s.file_path, s.line_start, s.line_end, s.signature, s.parent_class, s.namespace, s.language, s.doc_comment FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 AND (b.branch_name=?3 OR b.branch_name IS NULL) LIMIT 5";
+            let sql = "SELECT n.id, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name=?2 AND n.node_type='sym' AND b.branch_name=?3 LIMIT 5";
             let mut stmt = conn.prepare(sql)?;
             let rows = stmt.query_map(rusqlite::params![repo, name, branch], |r| {
                 Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
@@ -620,9 +670,9 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 let mut edge_count = 0usize;
                 if let Ok(mut e_stmt) = conn.prepare(
                     "SELECT e.edge_type, s.name, s.kind, s.file_path, s.line_start
-                     FROM edges e LEFT JOIN symbols s ON (
-                        (e.source_id=?1 AND s.id=e.target_id) OR (e.target_id=?1 AND s.id=e.source_id)
-                     ) WHERE (e.source_id=?1 OR e.target_id=?1) AND s.id IS NOT NULL
+                     FROM edges e LEFT JOIN nodes n ON (
+                        (e.source_id=?1 AND n.id=e.target_id) OR (e.target_id=?1 AND n.id=e.source_id)
+                     ) WHERE (e.source_id=?1 OR e.target_id=?1) AND n.id IS NOT NULL AND n.node_type='sym'
                      ORDER BY e.edge_type LIMIT 200") {
                     if let Ok(e_rows) = e_stmt.query_map(rusqlite::params![sid], |r| {
                         Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
@@ -662,7 +712,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
             let ids: Vec<i64> = conn.prepare(
-                "SELECT s.id FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 AND (b.branch_name=?3 OR b.branch_name IS NULL)"
+                "SELECT n.id FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name=?2 AND n.node_type='sym' AND b.branch_name=?3"
             )?.query_map(rusqlite::params![repo, name, branch], |r| r.get(0))?.flatten().collect();
             if ids.is_empty() {
                 println!("Symbol '{}' not found in {} (branch={}).", name, repo, branch);
@@ -695,13 +745,13 @@ fn traverse_calls_cli(conn: &rusqlite::Connection, sym_id: i64, direction: &str,
             for row in rows.flatten() {
                 let (other_id, edge_type) = row;
                 if visited.contains(&other_id) {
-                    let repeated = conn.query_row("SELECT name FROM symbols WHERE id=?1", rusqlite::params![other_id], |r| r.get::<_,String>(0)).unwrap_or_default();
+                    let repeated = conn.query_row("SELECT name FROM nodes WHERE id=?1 AND node_type='sym'", rusqlite::params![other_id], |r| r.get::<_,String>(0)).unwrap_or_default();
                     println!("{}{} {} (already shown)", prefix, '→', repeated);
                     continue;
                 }
                 visited.insert(other_id);
                 let other_name = conn.query_row(
-                    "SELECT s.name FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.id=?1 AND (b.branch_name=?2 OR b.branch_name IS NULL)",
+                    "SELECT n.name FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.id=?1 AND n.node_type='sym' AND b.branch_name=?2",
                     rusqlite::params![other_id, branch], |r| r.get::<_,String>(0)
                 ).unwrap_or_default();
                 let called = edge_type.strip_prefix("calls:").unwrap_or(&edge_type);
@@ -940,6 +990,7 @@ fn do_clean(all: bool, repo: Option<String>, branch: Option<String>) {
                 }
             }
         }
+        log_info!("clean", "清理全部: {} file(s)", count);
         println!("Cleaned all data: {} file(s) removed from {}", count, dd.display());
         return;
     }
