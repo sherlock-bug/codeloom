@@ -145,3 +145,13 @@ Indexer（Clang/tree-sitter/doc/files）SHALL 写入 nodes 表作为主存储。
 - WHEN 写入数据库
 - THEN INSERT SHALL 直接进入 nodes 表，node_type='sym'
 - AND 同步插入 branches 表（node_id = 刚插入的 nodes.id）
+
+### Requirement: 索引输出过于啰嗦
+`codeloom index` SHALL 提供简洁的进度输出，而非逐个文件打印明细信息。
+当前偏差：Clang 解析器每处理一个 C++ 文件就输出一行 `Clang: N symbols, M edges`，大量文件时终端被刷屏。smart.rs 已经有每 20 文件一次的汇总进度，Clang 层的逐文件输出属于多余。
+
+#### Scenario: 百文件索引
+- GIVEN 项目包含 100+ C++ 文件
+- WHEN 执行 `codeloom index`
+- THEN 终端输出 SHALL 仅显示定期进度汇总（如每 20 文件）而非每个文件一行
+- AND 错误信息仍需逐文件打印以便排查
