@@ -21,11 +21,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools
 
-      - name: Verify sqlite-vec files exist
+      - name: Generate sqlite-vec header
         run: |
-          ls -la vendor/sqlite-vec/sqlite-vec.h vendor/sqlite-vec/sqlite-vec.c
-          echo "sqlite-vec.h: $(head -3 vendor/sqlite-vec/sqlite-vec.h)"
-          echo "sqlite-vec.c: $(wc -l < vendor/sqlite-vec/sqlite-vec.c) lines"
+          cd vendor/sqlite-vec
+          sed -e 's/\${VERSION}/0.1.0/g' \
+              -e 's/\${DATE}/2024-01-01/g' \
+              -e 's/\${SOURCE}/generated/g' \
+              -e 's/\${VERSION_MAJOR}/0/g' \
+              -e 's/\${VERSION_MINOR}/1/g' \
+              -e 's/\${VERSION_PATCH}/0/g' \
+              sqlite-vec.h.tmpl > sqlite-vec.h
+          echo "sqlite-vec.h generated: $(head -5 sqlite-vec.h | grep -c VERSION) version macros"
+          echo "sqlite-vec.c: $(wc -l < sqlite-vec.c) lines (from repo)"
 
       - name: Install Rust musl target
         run: rustup target add x86_64-unknown-linux-musl
