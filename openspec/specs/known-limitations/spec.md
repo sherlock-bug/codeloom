@@ -146,6 +146,14 @@ Indexer（Clang/tree-sitter/doc/files）SHALL 写入 nodes 表作为主存储。
 - THEN INSERT SHALL 直接进入 nodes 表，node_type='sym'
 - AND 同步插入 branches 表（node_id = 刚插入的 nodes.id）
 
+### Requirement: doc 节点的 UNIQUE 约束与设计
+索引器 SHALL 保证 nodes 表的 UNIQUE 约束正确覆盖所有节点类型，且 doc 节点的数据模型设计完备。
+当前疑点：nodes 表的 UNIQUE 约束可能存在覆盖不全的问题（如 doc 节点与 code/sym 节点的 key 构成不一致），doc 节点的字段设计不够周全，可能存在插入冲突或数据丢失的 bug。待详细排查确认。
+#### Scenario: 重复索引不丢数据
+- GIVEN 同一份代码库被多次索引
+- WHEN UNIQUE 约束生效时
+- THEN 不应因约束偏差丢失或覆盖 doc/sym 节点的关键数据
+
 ### Requirement: 索引输出过于啰嗦
 `codeloom index` SHALL 提供简洁的进度输出，而非逐个文件打印明细信息。
 当前偏差：Clang 解析器每处理一个 C++ 文件就输出一行 `Clang: N symbols, M edges`，大量文件时终端被刷屏。smart.rs 已经有每 20 文件一次的汇总进度，Clang 层的逐文件输出属于多余。
