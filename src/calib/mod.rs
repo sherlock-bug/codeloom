@@ -129,7 +129,7 @@ pub fn calibrate() -> anyhow::Result<NoiseProfile> {
             Err(_) => continue,
         };
         let syms: i64 = conn
-            .query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM nodes WHERE node_type='sym'", [], |r| r.get(0))
             .unwrap_or(0);
         if syms <= max_syms { continue; }
 

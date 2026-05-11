@@ -1,4 +1,4 @@
-.PHONY: build release test lint clean install
+.PHONY: build release test test-full lint clean fmt install release-zip
 
 # 默认目标
 build:
@@ -8,8 +8,13 @@ build:
 release:
 	cargo build --release
 
-# 运行测试
+# 快速门禁（单元测试 + 快速集成测试，#[ignore] 不跑）
 test:
+	cargo build && cargo test
+
+# 完整回归（编译 release + 跑全部测试，含 #[ignore]）
+test-full: release
+	cargo test -- --ignored
 	cargo test
 
 # 代码检查
@@ -35,14 +40,12 @@ release-zip: release
 	ZIP_NAME="codeloom-v$${VERSION}-linux-x86_64.zip"; \
 	TMPDIR=$$(mktemp -d); \
 	echo "Packaging $$ZIP_NAME ..."; \
-	test -f target/release/codeloom || { echo "ERROR: binary not found"; exit 1; };
-	for f in models/bge-small-zh/pytorch_model.bin models/bge-small-zh/config.json models/bge-small-zh/tokenizer.json models/sqlite-vec/vec0.so; do \
-		test -f $$f || { echo "ERROR: model file missing: $$f"; exit 1; }; \
-	done; \
-	cp target/release/codeloom $$TMPDIR/;
-	cp -r models/ $$TMPDIR/;
-	cp scripts/install.sh $$TMPDIR/;
-	cd $$TMPDIR && zip -r $$ZIP_NAME codeloom models/ install.sh;
+	test -f target/release/codeloom || { echo "ERROR: binary not found"; exit 1; }; \
+	test -f scripts/clang_filter.py || { echo "ERROR: clang_filter.py missing in scripts/"; exit 1; }; \
+	cp target/release/codeloom $$TMPDIR/; \
+	cp scripts/install.sh $$TMPDIR/; \
+	cp scripts/clang_filter.py $$TMPDIR/; \
+	cd $$TMPDIR && zip -r $$ZIP_NAME codeloom install.sh clang_filter.py; \
 	mv $$TMPDIR/$$ZIP_NAME .; \
 	rm -rf $$TMPDIR; \
 	ls -lh $$ZIP_NAME; \

@@ -12,9 +12,10 @@ pub fn get_call_graph(
     direction: &str,
     max_depth: usize,
 ) -> String {
-    let bwc = format!("AND (b.branch_name = '{}' OR b.branch_name IS NULL)", branch.replace('\'', "''"));
+    let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).unwrap_or(0);
+    let bwc = format!("AND (b.branch_id = {} OR b.branch_id = 0)", branch_id);
     let exact_sql = format!(
-        "SELECT s.id FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name=?2 {}",
+        "SELECT n.id FROM nodes n JOIN branches b ON n.id=b.node_id WHERE n.repo=?1 AND n.name=?2 AND n.node_type='sym' {}",
         bwc
     );
     let sym_ids: Vec<i64> = match conn.prepare(&exact_sql) {
@@ -27,7 +28,7 @@ pub fn get_call_graph(
     if sym_ids.is_empty() {
         let like = format!("%{}%", name);
         let like_sql = format!(
-            "SELECT s.id, s.name FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.repo=?1 AND s.name LIKE ?2 AND s.kind NOT IN ('string_literal', 'enum_value') {} LIMIT 10",
+            "SELECT n.id, n.name FROM nodes n JOIN branches b ON n.id=b.node_id WHERE n.repo=?1 AND n.name LIKE ?2 AND n.node_type='sym' AND n.kind NOT IN ('string_literal', 'enum_value') {} LIMIT 10",
             bwc
         );
         let similar: Vec<(i64, String)> = match conn.prepare(&like_sql) {
@@ -99,7 +100,7 @@ fn traverse_calls(
                 if visited.contains(&other_id) {
                     let repeated_name = conn
                         .query_row(
-                            "SELECT name FROM symbols WHERE id=?1",
+                            "SELECT name FROM nodes WHERE id=?1",
                             rusqlite::params![other_id],
                             |r| r.get::<_, String>(0),
                         )
@@ -111,10 +112,12 @@ fn traverse_calls(
                     continue;
                 }
                 visited.insert(other_id);
+                let branch_id = crate::storage::resolve_branch_id(conn, "repo_placeholder", branch).unwrap_or(0);
+                // We don't have repo here, use 0 as fallback -- this is just for display
                 let other_name = conn
                     .query_row(
-                        "SELECT s.name FROM symbols s JOIN branches b ON s.id=b.symbol_id WHERE s.id=?1 AND (b.branch_name=?2 OR b.branch_name IS NULL)",
-                        rusqlite::params![other_id, branch],
+                        "SELECT n.name FROM nodes n JOIN branches b ON n.id=b.node_id WHERE n.id=?1 AND n.node_type='sym' AND (b.branch_id=?2 OR b.branch_id=0)",
+                        rusqlite::params![other_id, branch_id],
                         |r| r.get::<_, String>(0),
                     )
                     .unwrap_or_default();

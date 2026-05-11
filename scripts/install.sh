@@ -1,8 +1,14 @@
 #!/bin/bash
 # CodeLoom 一键安装脚本 (Linux/macOS)
-# 用法:
+#
+# 离线安装:
+#   解压 codeloom-vX.Y.Z-linux-x86_64.zip → ./install.sh
+#
+# 在线安装:
 #   curl -sSL https://gitee.com/greengreensea/codeloom/raw/master/scripts/install.sh | bash
-#   curl -sSL ... | bash -s -- --from-source   # 从源码编译安装
+#
+# 从源码安装:
+#   curl -sSL ... | bash -s -- --from-source
 
 set -e
 
@@ -10,30 +16,84 @@ FROM_SOURCE=false
 for arg in "$@"; do
     case "$arg" in
         --from-source) FROM_SOURCE=true ;;
-        --help) echo "Usage: curl ... | bash [-s -- --from-source]"; exit 0 ;;
+        --help) echo "Usage: ./install.sh [--from-source]"; exit 0 ;;
     esac
 done
 
 INSTALL_DIR="${HOME}/.codeloom/bin"
+SCRIPTS_DIR="${HOME}/.codeloom/scripts"
 CONFIG_DIR="${HOME}/.codeloom"
 
 # ── 离线模式检测 ──────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "$SCRIPT_DIR/codeloom" ] && ! $FROM_SOURCE; then
+HAS_LOCAL_BIN=false
+HAS_FILTER=false
+[ -f "$SCRIPT_DIR/codeloom" ] && HAS_LOCAL_BIN=true
+[ -f "$SCRIPT_DIR/clang_filter.py" ] && HAS_FILTER=true
+
+if $HAS_LOCAL_BIN && ! $FROM_SOURCE; then
     echo "=== 离线安装模式 ==="
-    mkdir -p "$INSTALL_DIR" "$CONFIG_DIR"
 
-    # 清除旧版本（所有已知路径）
-    for old in "$INSTALL_DIR/codeloom" "$HOME/.local/bin/codeloom" /usr/local/bin/codeloom; do
-        [ -f "$old" ] && rm -f "$old" && echo "  清理旧版: $old"
-    done
+    # ── 依赖检测（不阻塞） ──────────────────────────────────
+    if command -v clang &>/dev/null; then
+        echo "  clang: OK ($(clang --version 2>/dev/null | head -1))"
+    else
+        echo "  clang: 未安装。C/C++ 索引需要 clang++。"
+        echo "         安装: sudo apt install clang  (Ubuntu/Debian)"
+        echo "               sudo dnf install clang  (Fedora)"
+        echo "               sudo pacman -S clang    (Arch)"
+    fi
 
+    if command -v python3 &>/dev/null; then
+        echo "  python3: OK ($(python3 --version 2>/dev/null))"
+    else
+        echo "  python3: 未安装。C/C++ 索引需要 python3。"
+        echo "           安装: sudo apt install python3  (Ubuntu/Debian)"
+        echo "                 sudo dnf install python3  (Fedora)"
+    fi
+
+    # ── 清理旧文件 ──────────────────────────────────────────
+    echo "  清理旧文件..."
+    rm -rf "$INSTALL_DIR" && mkdir -p "$INSTALL_DIR"
+    rm -rf "$SCRIPTS_DIR" && mkdir -p "$SCRIPTS_DIR"
+
+    # ── 部署新文件 ──────────────────────────────────────────
     cp "$SCRIPT_DIR/codeloom" "$INSTALL_DIR/codeloom"
     chmod +x "$INSTALL_DIR/codeloom"
     echo "  Binary → $INSTALL_DIR/codeloom"
+
+    if $HAS_FILTER; then
+        cp "$SCRIPT_DIR/clang_filter.py" "$SCRIPTS_DIR/clang_filter.py"
+        chmod +x "$SCRIPTS_DIR/clang_filter.py"
+        echo "  Filter → $SCRIPTS_DIR/clang_filter.py"
+    else
+        echo "  [WARN] clang_filter.py 缺失——C++ 索引将无法工作"
+    fi
+
+    # ── 配置文件保护 ────────────────────────────────────────
+    if [ -f "${CONFIG_DIR}/config.yaml" ]; then
+        echo "  Config: 保留已有配置 → ${CONFIG_DIR}/config.yaml"
+    else
+        mkdir -p "$CONFIG_DIR"
+        cat > "${CONFIG_DIR}/config.yaml" << 'YAML'
+# CodeLoom 配置
+# embedding 用于语义搜索，需配置 OpenAI 兼容 API
+# embedding:
+#   api_base: "http://your-api:port/v1"
+#   model: "bge-m3"
+#   api_key: "not-needed"
+YAML
+        echo "  Config: 已创建默认配置 → ${CONFIG_DIR}/config.yaml"
+    fi
+
+    # ── 安装后清理 ──────────────────────────────────────────
+    echo "  清理临时文件..."
+    rm -f "$SCRIPT_DIR/codeloom"
+    $HAS_FILTER && rm -f "$SCRIPT_DIR/clang_filter.py"
+
     # 跳转到 PATH 配置
 else
-    mkdir -p "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR" "$SCRIPTS_DIR"
 
 if $FROM_SOURCE; then
     # ── 从源码编译安装 ──────────────────────────────────────
@@ -50,6 +110,12 @@ if $FROM_SOURCE; then
     cp target/release/codeloom "$INSTALL_DIR/codeloom"
     chmod +x "$INSTALL_DIR/codeloom"
 
+    # 源码模式也部署 filter script（来自仓库）
+    if [ -f "scripts/clang_filter.py" ]; then
+        cp scripts/clang_filter.py "$SCRIPTS_DIR/clang_filter.py"
+        chmod +x "$SCRIPTS_DIR/clang_filter.py"
+    fi
+
 else
     # ── 下载预编译二进制 ────────────────────────────────────
     VERSION="v0.6.1"
@@ -61,7 +127,7 @@ else
         linux)
             case "$ARCH" in
                 x86_64)  BINARY="codeloom" ;;
-                aarch64) BINARY="codeloom" ;;   # 暂只有 x86_64 静态链接
+                aarch64) BINARY="codeloom" ;;
                 *)       echo "Unsupported arch: $ARCH. Try: curl ... | bash -s -- --from-source"; exit 1 ;;
             esac
             ;;
@@ -77,20 +143,7 @@ else
 fi
 fi
 
-# ── 默认配置（不存在时创建）──────────────────────────────
-if [ ! -f "${CONFIG_DIR}/config.yaml" ]; then
-    cat > "${CONFIG_DIR}/config.yaml" << 'YAML'
-# CodeLoom 配置
-# embedding 用于语义搜索，需配置 OpenAI 兼容 API
-# embedding:
-#   api_base: "http://your-api:port/v1"
-#   model: "bge-m3"
-#   api_key: "not-needed"
-YAML
-    echo "默认配置已创建: ${CONFIG_DIR}/config.yaml"
-fi
-
-# ── 添加到 PATH ──────────────────────────────────────────
+# ── PATH 配置 ──────────────────────────────────────────────
 SHELL_CONFIG=""
 case "$(basename "$SHELL")" in
     zsh)  SHELL_CONFIG="$HOME/.zshrc" ;;

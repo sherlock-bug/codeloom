@@ -154,7 +154,7 @@ pub fn index_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder) -> 
     // Symbol name vectors — only for qualified symbols (exclude external, template_instance, namespace)
     let mut sym_count = 0; let mut sym_skipped = 0; let mut sym_total = 0;
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT id, name, kind, COALESCE(signature,'') FROM symbols          WHERE repo=?1 AND is_external=0 AND kind NOT IN ('template_instance','namespace')"
+        "SELECT id, name, kind, COALESCE(json_extract(attrs, '$.signature'),'') FROM nodes WHERE repo=?1 AND node_type='sym' AND json_extract(attrs, '$.is_external')=0 AND kind NOT IN ('template_instance','namespace')"
     ) {
         if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
@@ -276,7 +276,7 @@ pub fn index_file_vectors(conn: &Connection, repo: &str, embedder: &dyn Embedder
     };
 
     let mut file_count = 0;
-    if let Ok(mut stmt) = conn.prepare("SELECT id, file_path, summary FROM files WHERE repo=?1") {
+    if let Ok(mut stmt) = conn.prepare("SELECT id, file_path, COALESCE(content,'') FROM nodes WHERE repo=?1 AND node_type='file'") {
         if let Ok(rows) = stmt.query_map(rusqlite::params![repo], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
         }) {

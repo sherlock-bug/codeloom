@@ -13,7 +13,7 @@ pub struct Node {
     pub file_path: String,
     pub line_start: i64,
     pub content_hash: String,
-    pub branch_name: String,
+    pub branch_id: i64,
     pub kind: String,            // sym only: function/class/...
     pub attrs: serde_json::Value, // JSON: {signature, namespace, access, level, ...}
 }
@@ -29,7 +29,7 @@ impl Node {
             file_path: String::new(),
             line_start: 0,
             content_hash: String::new(),
-            branch_name: "main".to_string(),
+            branch_id: 0,
             kind: String::new(),
             attrs: serde_json::Value::Object(serde_json::Map::new()),
         }
@@ -52,12 +52,12 @@ impl Node {
 pub fn insert_node(conn: &Connection, node: &Node) -> anyhow::Result<i64> {
     let attrs_str = serde_json::to_string(&node.attrs)?;
     conn.execute(
-        "INSERT INTO nodes (repo, node_type, name, content, file_path, line_start, content_hash, branch_name, kind, attrs)
+        "INSERT INTO nodes (repo, node_type, name, content, file_path, line_start, content_hash, branch_id, kind, attrs)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             node.repo, node.node_type, node.name, node.content,
             node.file_path, node.line_start, node.content_hash,
-            node.branch_name, node.kind, attrs_str
+            node.branch_id, node.kind, attrs_str
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -66,7 +66,7 @@ pub fn insert_node(conn: &Connection, node: &Node) -> anyhow::Result<i64> {
 /// Get a single node by ID.
 pub fn get_node(conn: &Connection, id: i64) -> anyhow::Result<Option<Node>> {
     let mut stmt = conn.prepare(
-        "SELECT id, repo, node_type, name, content, file_path, line_start, content_hash, branch_name, kind, attrs
+        "SELECT id, repo, node_type, name, content, file_path, line_start, content_hash, branch_id, kind, attrs
          FROM nodes WHERE id=?1"
     )?;
     let mut rows = stmt.query_map(rusqlite::params![id], |r| {
@@ -74,7 +74,7 @@ pub fn get_node(conn: &Connection, id: i64) -> anyhow::Result<Option<Node>> {
         Ok(Node {
             id: r.get(0)?, repo: r.get(1)?, node_type: r.get(2)?,
             name: r.get(3)?, content: r.get(4)?, file_path: r.get(5)?,
-            line_start: r.get(6)?, content_hash: r.get(7)?, branch_name: r.get(8)?,
+            line_start: r.get(6)?, content_hash: r.get(7)?, branch_id: r.get(8)?,
             kind: r.get(9)?,
             attrs: serde_json::from_str(&attrs_str).unwrap_or_default(),
         })

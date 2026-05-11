@@ -8,6 +8,38 @@ CodeLoom 把零散的代码、文档、业务知识编织成一张可查询的�
 
 纯本地运行（索引 + 关键词搜索），语义搜索需配置 OpenAI 兼容 Embedding API，代码不出内网。
 
+## 安装
+
+### 离线安装（推荐）
+
+从 GitHub Releases 下载 `codeloom-vX.Y.Z-linux-x86_64.zip`，解压后运行：
+
+```bash
+unzip codeloom-v*-linux-x86_64.zip
+./install.sh
+codeloom check          # 验证环境
+```
+
+离线 zip 包含：`codeloom` 二进制 + `clang_filter.py`（Clang AST 过滤）+ `install.sh`，不包含模型文件（使用 API 向量化）。
+
+**依赖**（仅 C/C++ 索引需要）：
+- `clang` — C/C++ AST 解析，Ubuntu: `sudo apt install clang`
+- `python3` — Clang AST 过滤管道，Ubuntu: `sudo apt install python3`
+
+### 在线安装
+
+```bash
+curl -sSL https://gitee.com/greengreensea/codeloom/raw/master/scripts/install.sh | bash
+```
+
+### 从源码编译
+
+```bash
+curl -sSL ... | bash -s -- --from-source
+```
+
+**注意**：install.sh 会保护 `~/.codeloom/config.yaml` 不被覆盖。如需重置配置，手动删除后重跑安装。
+
 ## 能力
 
 | 能力 | 说明 |

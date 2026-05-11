@@ -265,11 +265,6 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             index_docs(&conn, &path, &repo);
             let t2 = t0.elapsed();
             index_includes(&conn, &path, &repo);
-            // Migrate old tables → unified nodes, then fill FTS5
-            match crate::storage::fts::migrate_to_nodes(&conn, &repo, &branch) {
-                Ok(n) => eprintln!("  Nodes: {} migrated to unified table", n),
-                Err(e) => eprintln!("  Node migration warning: {}", e),
-            }
             match crate::storage::fts::fill_all_fts(&conn, &repo) {
                 Ok(n) => { eprintln!("  FTS5: {} entries indexed", n); log_info!("index", "FTS5 完成: {} entries", n); }
                 Err(e) => { eprintln!("  FTS5 warning: {}", e); log_error!("index", "FTS5 失败: {}", e); }
@@ -347,9 +342,9 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 return Ok(());
             }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
-            let syms: i64 = conn.query_row("SELECT COUNT(*) FROM symbols WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
+            let syms: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo=?1 AND node_type='sym'", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
             let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
-            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM doc_nodes WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
+            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo=?1 AND node_type='doc'", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
             let resolved: i64 = conn.query_row("SELECT COUNT(*) FROM edges WHERE target_id!=0", [], |r| r.get(0)).unwrap_or(0);
             let sym_name_table = format!("symbol_name_vec_{}", repo.replace('-', "_"));
             let sym_comment_table = format!("symbol_comment_vec_{}", repo.replace('-', "_"));
@@ -357,13 +352,12 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let vec_syms_name: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {sym_name_table}"), [], |r| r.get(0)).unwrap_or(0);
             let vec_syms_comment: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {sym_comment_table}"), [], |r| r.get(0)).unwrap_or(0);
             let vec_docs: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {doc_table}"), [], |r| r.get(0)).unwrap_or(0);
-            let fts5_syms: i64 = conn.query_row("SELECT COUNT(*) FROM fts5_sym", [], |r| r.get(0)).unwrap_or(0);
-            let fts5_docs: i64 = conn.query_row("SELECT COUNT(*) FROM fts5_doc", [], |r| r.get(0)).unwrap_or(0);
+            let fts5_all: i64 = conn.query_row("SELECT COUNT(*) FROM fts5_all", [], |r| r.get(0)).unwrap_or(0);
             let meta = std::fs::metadata(&dbp).ok();
             println!("Repo: {}", repo);
             println!("  Symbols: {}  |  Edges: {} (resolved: {} / {:.0}%)  |  Docs: {}", syms, edges, resolved, if edges>0 {resolved as f64/edges as f64*100.0}else{0.0}, docs);
             println!("  Vectors: {} name + {} comment + {} docs indexed", vec_syms_name, vec_syms_comment, vec_docs);
-            println!("  FTS5: {} symbols + {} docs indexed", fts5_syms, fts5_docs);
+            println!("  FTS5: {} entries indexed (unified)", fts5_all);
             if let Some(m) = meta { println!("  DB size: {:.1} MB", m.len() as f64 / 1_048_576.0); }
         }
         Command::Mcp { http } => {
@@ -425,7 +419,54 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 let _ = std::fs::remove_file(test_db);
             }
 
-            // 4. Embedding (API-based)
+            // 4. clang (for C/C++ AST parsing)
+            {
+                let has_clang = std::process::Command::new("which")
+                    .arg("clang")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if has_clang {
+                    println!("[OK]  clang: found on PATH");
+                } else {
+                    println!("[MISS] clang: not found. C/C++ indexing needs clang++.");
+                    println!("       Install: sudo apt install clang  (Ubuntu/Debian)");
+                    println!("       Or: sudo dnf install clang    (Fedora)");
+                }
+            }
+
+            // 5. python3 (for Clang AST filter pipeline)
+            {
+                let has_python3 = std::process::Command::new("which")
+                    .arg("python3")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if has_python3 {
+                    println!("[OK]  python3: found on PATH");
+                } else {
+                    println!("[MISS] python3: not found. C/C++ indexing needs python3.");
+                    println!("       Install: sudo apt install python3  (Ubuntu/Debian)");
+                }
+            }
+
+            // 6. clang_filter.py (for Clang AST pipeline)
+            {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                let filter_path = std::path::Path::new(&home).join(".codeloom/scripts/clang_filter.py");
+                if filter_path.exists() {
+                    println!("[OK]  clang_filter.py: {}", filter_path.display());
+                } else {
+                    println!("[MISS] clang_filter.py: not found at {}", filter_path.display());
+                    println!("       Reinstall with: curl -sSL <url> | bash");
+                }
+            }
+
+            // 7. Embedding (API-based)
             let config = crate::config::Config::load().unwrap_or_default();
             match &config.embedding {
                 Some(cfg) => {
@@ -459,7 +500,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                     let db_path = data_dir.join(format!("{}.rag.db", repo));
                     let size = std::fs::metadata(&db_path).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
                     let syms: i64 = if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-                        conn.query_row("SELECT COUNT(*) FROM symbols WHERE repo=?1", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0)
+                        conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo=?1 AND node_type='sym'", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0)
                     } else { 0 };
                     let display = if repo.is_empty() { "(global)" } else { &repo };
                     println!("  {:20}  {:>6} symbols  {:>5.1} MB", display, syms, size);
@@ -508,7 +549,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 println!("Repo '{}' branches:", repo);
                 for b in &branches {
                     let sym_count: i64 = conn.query_row(
-                        "SELECT COUNT(*) FROM symbols s JOIN branches b2 ON s.id=b2.symbol_id WHERE b2.branch_name=?1",
+                        "SELECT COUNT(*) FROM nodes n JOIN branches b2 ON b2.node_id=n.id WHERE n.node_type='sym' AND b2.branch_name=?1",
                         rusqlite::params![b],
                         |r| r.get(0),
                     ).unwrap_or(0);
@@ -592,7 +633,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 "SELECT COUNT(*) FROM nodes n JOIN branches b ON b.node_id=n.id WHERE b.repo=?1 AND b.branch_name=?2 AND n.node_type='sym'",
                 rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
             let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
-            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM doc_nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name=?2)",
+            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name=?2) AND node_type='doc'",
                 rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
             println!("=== {} (branch={}) ===", repo, branch);
             println!("Symbols: {}  |  Edges: {}  |  Docs: {}\n", syms, edges, docs);
@@ -1021,7 +1062,7 @@ fn do_clean(all: bool, repo: Option<String>, branch: Option<String>) {
             ("branches", "branch_name"),
             ("git_index_state", "branch_name"),
             ("branch_glossary", "branch_name"),
-            ("doc_nodes", "branch_name"),
+            ("nodes", "branch_name"),
         ] {
             let sql = format!("DELETE FROM {} WHERE {} = ?1 AND (repo = ?2 OR repo IS NULL OR repo = '')", table, col);
             if let Ok(n) = conn.execute(&sql, rusqlite::params![branch, repo]) {

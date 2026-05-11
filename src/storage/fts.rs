@@ -3,7 +3,7 @@
 //! Architecture:
 //!   fts5_all(rowid=node_id, name, content) ←→ nodes(id, ...)
 //!
-//! Symbol snippet:  n.content (= kind||' '||doc_comment from migration)
+//! Symbol snippet:  n.content (= kind||' '||doc_comment from storage)
 //! Signature:       json_extract(n.attrs, '$.signature')
 //! Branch filter:   JOIN branches b ON b.node_id = n.id
 
@@ -31,7 +31,7 @@ pub enum HitType { Sym, Doc, File }
 
 /// Rebuild fts5_all from nodes table. Returns number of rows inserted.
 pub fn fill_all_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
-    conn.execute("DELETE FROM fts5_all", [])?;
+    conn.execute("DELETE FROM fts5_all WHERE rowid IN (SELECT id FROM nodes WHERE repo=?1)", rusqlite::params![repo])?;
     let count = conn.execute(
         "INSERT INTO fts5_all(rowid, name, content) SELECT id, name, content FROM nodes WHERE repo=?1",
         rusqlite::params![repo],
@@ -39,80 +39,10 @@ pub fn fill_all_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
     Ok(count)
 }
 
-/// Migrate old symbols/doc_nodes/files → unified nodes table. Idempotent.
-pub fn migrate_to_nodes(conn: &Connection, repo: &str, branch: &str) -> anyhow::Result<usize> {
-    // Clear existing nodes + branches for this repo, then re-migrate fresh
-    conn.execute("DELETE FROM nodes WHERE repo=?1", rusqlite::params![repo])?;
-    conn.execute("DELETE FROM branches WHERE repo=?1", rusqlite::params![repo])?;
-
-    let mut total = 0;
-
-    // Symbols → nodes
-    total += conn.execute(
-        "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_name,kind,attrs)
-         SELECT s.repo,'sym',s.name,
-                COALESCE(s.kind,'') || ' ' || COALESCE(s.doc_comment,''),
-                s.file_path,s.line_start,s.content_hash,'',s.kind,
-                json_object(
-                    'signature',COALESCE(s.signature,''),
-                    'namespace',COALESCE(s.namespace,''),
-                    'access',s.access,
-                    'is_virtual',s.is_virtual,
-                    'is_definition',s.is_definition,
-                    'is_external',s.is_external,
-                    'template_args',s.template_args,
-                    'language',COALESCE(s.language,''),
-                    'parent_class',COALESCE(s.parent_class,''),
-                    'line_end',s.line_end
-                )
-         FROM symbols s WHERE s.repo=?1",
-        rusqlite::params![repo],
-    )?;
-
-    // Doc_nodes → nodes
-    total += conn.execute(
-        "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_name,kind,attrs)
-         SELECT d.repo,'doc',COALESCE(d.title,''),
-                COALESCE(d.section_path,'') || ' ' || d.content,
-                d.file_path,0,COALESCE(d.content_hash,''),COALESCE(d.branch_name,'main'),'',
-                json_object(
-                    'level',d.level,
-                    'file_format',COALESCE(d.file_format,''),
-                    'section_path',COALESCE(d.section_path,''),
-                    'node_type',COALESCE(d.node_type,'section')
-                )
-         FROM doc_nodes d WHERE d.repo=?1 AND d.content!=''",
-        rusqlite::params![repo],
-    )?;
-
-    // Files → nodes
-    total += conn.execute(
-        "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_name,kind,attrs)
-         SELECT f.repo,'file',f.file_path,f.summary,
-                f.file_path,0,COALESCE(f.content_hash,''),
-                COALESCE(f.branch_name,'main'),'',
-                json_object('file_type',f.file_type)
-         FROM files f WHERE f.repo=?1",
-        rusqlite::params![repo],
-    )?;
-
-    // Branches: map symbols.id → nodes.id by (name, repo)
-    conn.execute(
-        "INSERT OR IGNORE INTO branches (node_id, repo, branch_name, override_def, override_hash)
-         SELECT n.id, n.repo, ?2, NULL, NULL
-         FROM nodes n JOIN symbols s ON s.name=n.name AND s.repo=n.repo
-         WHERE n.repo=?1 AND n.node_type='sym'",
-        rusqlite::params![repo, branch],
-    )?;
-
-    Ok(total)
+pub fn clear_fts(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute("DELETE FROM fts5_all", [])?;
+    Ok(())
 }
-
-// Backward-compat stubs
-pub fn fill_symbols_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> { fill_all_fts(conn, repo) }
-pub fn fill_docs_fts(_c: &Connection, _r: &str) -> anyhow::Result<usize> { Ok(0) }
-pub fn fill_files_fts(_c: &Connection, _r: &str) -> anyhow::Result<usize> { Ok(0) }
-pub fn clear_fts(conn: &Connection) -> anyhow::Result<()> { conn.execute("DELETE FROM fts5_all", [])?; Ok(()) }
 
 // ── FTS5 Search ─────────────────────────────────────────────────────────
 
@@ -159,6 +89,7 @@ fn search_hits(
     limit: usize, kind_filter: Option<&str>,
 ) -> anyhow::Result<Vec<SearchHit>> {
     let kind_val = kind_filter.unwrap_or("");
+    let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).unwrap_or(0);
     let mut hits: Vec<SearchHit> = Vec::new();
 
     // ── Symbols ──────────────────────────────────────────────────────
@@ -172,7 +103,7 @@ fn search_hits(
             JOIN branches b ON b.node_id = n.id
             WHERE fts5_all MATCH ?1
               AND n.repo = ?2
-              AND b.branch_name = ?3
+              AND b.branch_id = ?3
               AND n.node_type = 'sym'
               AND (n.kind = ?5 OR ?5 = '')
             ORDER BY score
@@ -180,11 +111,10 @@ fn search_hits(
 
         let mut stmt = conn.prepare(sql)?;
         let sym_hits: Vec<SearchHit> = stmt.query_map(
-            rusqlite::params![fts5_query, repo, branch, limit as i64, kind_val],
+            rusqlite::params![fts5_query, repo, branch_id, limit as i64, kind_val],
             |r| {
-                let content: String = r.get(6)?;  // n.content = "kind doc_comment"
-                let sig: String = r.get::<_, Option<String>>(7)?.unwrap_or_default(); // attrs->signature, may be NULL
-                // Strip kind prefix from content for snippet
+                let content: String = r.get(6)?;
+                let sig: String = r.get::<_, Option<String>>(7)?.unwrap_or_default();
                 let kind: String = r.get(5)?;
                 let snip = strip_kind_prefix(&content, &kind);
                 let sig_short: String = sig.chars().take(500).collect();
@@ -283,7 +213,6 @@ fn build_column_query(query: &str, columns: &[&str]) -> String {
 }
 
 /// Strip "kind " prefix from content to get clean doc_comment snippet.
-/// e.g. "class This is a comment" → "This is a comment"
 fn strip_kind_prefix(content: &str, kind: &str) -> String {
     if kind.is_empty() { return content.chars().take(500).collect(); }
     let prefix = format!("{} ", kind);
@@ -314,9 +243,10 @@ mod tests {
             rusqlite::params![repo],
         ).unwrap();
         let nid = conn.last_insert_rowid();
+        let bid = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap();
         conn.execute(
-            "INSERT INTO branches (node_id,repo,branch_name) VALUES (?1,?2,?3)",
-            rusqlite::params![nid, repo, branch],
+            "INSERT INTO branches (node_id,repo,branch_id) VALUES (?1,?2,?3)",
+            rusqlite::params![nid, repo, bid],
         ).unwrap();
         // Insert a doc node
         conn.execute(
@@ -331,12 +261,6 @@ mod tests {
     #[test]
     fn test_search_symbols() {
         let (conn, repo) = mem_db();
-        let hits = search_symbols(&conn, "AuthService", &repo, "main", 10, None).unwrap();
-        let fts5_query = "name:\"AuthService\" OR name:AuthService*";
-        let sql = "SELECT fts5_all.rowid, n.name FROM fts5_all JOIN nodes n ON n.id = fts5_all.rowid JOIN branches b ON b.node_id = n.id WHERE fts5_all MATCH ?1 AND n.repo = ?2 AND b.branch_name = ?3 AND n.node_type = 'sym'";
-        let rows: Vec<_> = conn.prepare(sql).unwrap()
-            .query_map(rusqlite::params![fts5_query, "test", "main"], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))).unwrap().flatten().collect();
-        eprintln!("DEBUG exact SQL: {:?}", rows);
         let hits = search_symbols(&conn, "AuthService", &repo, "main", 10, None).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "AuthService");

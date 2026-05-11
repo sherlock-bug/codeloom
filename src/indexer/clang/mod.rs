@@ -19,6 +19,7 @@ pub fn index_clang(
     files: &[FileInfo],
     repo_name: &str,
     compile_commands_path: Option<&str>,
+    branch_name: &str,
 ) -> anyhow::Result<usize> {
     // Determine project root from first file (always absolute)
     let repo_root = files.first()
@@ -84,7 +85,7 @@ pub fn index_clang(
                 let mut name_to_id: HashMap<String, i64> = HashMap::new();
 
                 for sym in &extracted.symbols {
-                    let id = upsert_symbol(conn, sym, repo_name)?;
+                    let id = upsert_symbol(conn, sym, repo_name, branch_name)?;
                     let key = format!("{}::{}", sym.namespace.as_deref().unwrap_or(""), sym.name);
                     name_to_id.insert(key, id);
                     name_to_id.insert(sym.name.clone(), id);
@@ -146,26 +147,40 @@ fn infer_stub_kind(edge_type: &str) -> &str {
 ///   Signature is NOT in the key — template instance names already embed type params
 ///   (e.g. `data<int>` vs `data<float>`). File_path="" for template instances ensures
 ///   convergence across TUs; non-template symbols keep their real file_path.
-fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str) -> anyhow::Result<i64> {
+fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str, branch_name: &str) -> anyhow::Result<i64> {
     let ns = sym.namespace.as_deref().unwrap_or("");
 
     // Full-key exact match on (name, namespace, kind, signature, file_path, repo)
     // parent_class is NOT in the key — names are already qualified (e.g. Class::method).
     // Signature distinguishes function overloads and different template instantiations.
     let existing: Option<(i64, bool, bool)> = conn.query_row(
-        "SELECT id, is_external, is_definition FROM symbols          WHERE name=?1 AND namespace=?2 AND kind=?3            AND COALESCE(signature,'')=COALESCE(?4,'')            AND file_path=?5 AND repo=?6 LIMIT 1",
+        "SELECT id, \
+                COALESCE(json_extract(attrs, '$.is_external'), 0) AS is_external, \
+                COALESCE(json_extract(attrs, '$.is_definition'), 0) AS is_definition \
+         FROM nodes \
+         WHERE name=?1 \
+           AND COALESCE(json_extract(attrs, '$.namespace'),'')=?2 \
+           AND kind=?3 \
+           AND COALESCE(json_extract(attrs, '$.signature'),'')=COALESCE(?4,'') \
+           AND file_path=?5 \
+           AND repo=?6 \
+           AND node_type='sym' \
+         LIMIT 1",
         rusqlite::params![sym.name, ns, sym.kind, sym.signature, sym.file_path, repo],
         |row| Ok((row.get(0)?, row.get::<_, i32>(1)? != 0, row.get::<_, i32>(2)? != 0)),
     ).ok();
 
     match existing {
         None => {
-            sym.insert(conn)
+            sym.insert(conn, branch_name)
         }
         Some((id, true, _)) if !sym.is_external => {
             // External stub upgraded by real project implementation
             conn.execute(
-                "UPDATE symbols SET is_external=0, is_definition=?1, line_start=?2, line_end=?3,                  signature=?4, sid=?5, doc_comment=?6 WHERE id=?7",
+                "UPDATE nodes SET line_start=?2, \
+                 attrs = json_set(attrs, '$.is_external', 0, '$.is_definition', ?1, \
+                   '$.line_end', ?3, '$.signature', ?4, '$.sid', ?5, '$.doc_comment', ?6) \
+                 WHERE id=?7 AND node_type='sym'",
                 rusqlite::params![sym.is_definition as i32, sym.line_start, sym.line_end,
                     sym.signature, sym.sid, sym.doc_comment, id],
             )?;
@@ -174,7 +189,11 @@ fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str) -> anyhow::Result<
         Some((id, false, false)) if sym.is_definition => {
             // Declaration → definition merge
             conn.execute(
-                "UPDATE symbols SET is_definition=1, line_start=?1, line_end=?2,                  doc_comment=CASE WHEN ?3!='' THEN doc_comment||CHAR(10)||?3 ELSE doc_comment END                  WHERE id=?4",
+                "UPDATE nodes SET line_start=?1, \
+                 content = CASE WHEN ?3 != '' AND content NOT LIKE '%' || ?3 || '%' \
+                   THEN content || CHAR(10) || ?3 ELSE content END, \
+                 attrs = json_set(attrs, '$.is_definition', 1, '$.line_end', ?2) \
+                 WHERE id=?4 AND node_type='sym'",
                 rusqlite::params![sym.line_start, sym.line_end, sym.doc_comment, id],
             )?;
             Ok(id)
@@ -187,27 +206,51 @@ fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str) -> anyhow::Result<
 }
 
 /// Create an external symbol stub for an edge target not yet in the DB.
-fn create_external_stub(conn: &Connection, name: &str, kind: &str, ns: &str, repo: &str) -> anyhow::Result<i64> {
+fn create_external_stub(
+    conn: &Connection,
+    name: &str,
+    kind: &str,
+    ns: &str,
+    repo: &str,
+) -> anyhow::Result<i64> {
     let hash = format!("ext:{:x}", Sha256::digest(name.as_bytes()))
-        .chars().take(16).collect::<String>();
+        .chars()
+        .take(16)
+        .collect::<String>();
     let sid = make_sid(repo, name, "", ns, kind, "");
 
-    match conn.query_row(
-        "INSERT INTO symbols (repo,name,kind,content_hash,file_path,line_start,line_end,language,sid,namespace,is_external,is_definition) \
-         VALUES (?1,?2,?3,?4,'',0,0,'cpp',?5,?6,1,1) \
-         ON CONFLICT(content_hash,file_path,name,repo) DO UPDATE SET is_external=1 \
-         RETURNING id",
-        rusqlite::params![repo, name, kind, hash, sid, ns],
+    let content = kind.to_string();
+    let attrs = serde_json::json!({
+        "is_external": true,
+        "is_definition": true,
+        "language": "cpp",
+        "sid": sid,
+        "namespace": ns,
+        "line_end": 0,
+    });
+
+    // Check if node already exists
+    if let Ok(id) = conn.query_row(
+        "SELECT id FROM nodes WHERE content_hash=?1 AND file_path=?2 AND name=?3 AND repo=?4 AND node_type='sym' LIMIT 1",
+        rusqlite::params![hash, "", name, repo],
         |row| row.get(0),
     ) {
-        Ok(id) => Ok(id),
-        Err(_) => {
-            conn.query_row(
-                "SELECT id FROM symbols WHERE name=?1 AND repo=?2 LIMIT 1",
-                rusqlite::params![name, repo],
-                |row| row.get(0),
-            ).or(Ok(0))
-        }
+        // Mark as external
+        conn.execute(
+            "UPDATE nodes SET attrs = json_set(attrs, '$.is_external', 1) WHERE id=?1",
+            rusqlite::params![id],
+        )?;
+        Ok(id)
+    } else {
+        // Insert new stub
+        // Resolve branch ID (external stubs are branch-independent → use "main")
+        let bid = crate::storage::resolve_branch_id(conn, repo, "main")?;
+        Ok(conn.query_row(
+            "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_id,kind,attrs) \
+             VALUES (?1,'sym',?2,?3,'',0,?4,?5,?6,?7) RETURNING id",
+            rusqlite::params![repo, name, content, hash, bid, kind, attrs.to_string()],
+            |row| row.get(0),
+        )?)
     }
 }
 
@@ -215,7 +258,7 @@ fn create_external_stub(conn: &Connection, name: &str, kind: &str, ns: &str, rep
 fn parse_file(file: &str, extra_args: &[String], project_root: &str) -> anyhow::Result<serde_json::Value> {
     // Locate the filter script
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let filter_script = std::path::Path::new(&home).join(".hermes/scripts/clang_filter.py");
+    let filter_script = std::path::Path::new(&home).join(".codeloom/scripts/clang_filter.py");
     
     // Build pipeline: clang ... | python3 filter.py <project_root>
     // Compiler flags (-I/-D/-std= etc) go BEFORE --, only the source file after
@@ -271,20 +314,7 @@ mod tests {
 
     fn test_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS symbols (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                repo TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
-                content_hash TEXT NOT NULL, file_path TEXT NOT NULL,
-                line_start INTEGER DEFAULT 0, line_end INTEGER DEFAULT 0,
-                language TEXT, signature TEXT, parent_class TEXT,
-                namespace TEXT, doc_comment TEXT DEFAULT '',
-                sid TEXT, access TEXT DEFAULT '', is_virtual INTEGER DEFAULT 0,
-                is_definition INTEGER DEFAULT 1, is_external INTEGER DEFAULT 0,
-                template_args TEXT,
-                UNIQUE(content_hash, file_path, name, repo)
-            )"
-        ).unwrap();
+        crate::storage::schema::run(&conn).unwrap();
         conn
     }
 
@@ -310,10 +340,10 @@ mod tests {
         let conn = test_db();
         let s1 = make_sym("data", "ns", "function", "int*()", "a.cpp", false);
         let s2 = make_sym("data", "ns", "function", "int*()", "a.cpp", false);
-        let id1 = upsert_symbol(&conn, &s1, "test").unwrap();
-        let id2 = upsert_symbol(&conn, &s2, "test").unwrap();
+        let id1 = upsert_symbol(&conn, &s1, "test", "main").unwrap();
+        let id2 = upsert_symbol(&conn, &s2, "test", "main").unwrap();
         assert_eq!(id1, id2);
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_type='sym'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     }
 
     #[test]
@@ -322,10 +352,10 @@ mod tests {
         let conn = test_db();
         let s1 = make_sym("init", "ns", "function", "void()", "a.cpp", false);
         let s2 = make_sym("init", "ns", "function", "void()", "b.cpp", false);
-        let id1 = upsert_symbol(&conn, &s1, "test").unwrap();
-        let id2 = upsert_symbol(&conn, &s2, "test").unwrap();
+        let id1 = upsert_symbol(&conn, &s1, "test", "main").unwrap();
+        let id2 = upsert_symbol(&conn, &s2, "test", "main").unwrap();
         assert_ne!(id1, id2);
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_type='sym'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
     }
 
     #[test]
@@ -334,10 +364,10 @@ mod tests {
         let conn = test_db();
         let s1 = make_sym("data", "flatbuffers", "function", "const T *", "", false);
         let s2 = make_sym("data", "flatbuffers", "function", "const T *", "", false);
-        let id1 = upsert_symbol(&conn, &s1, "test").unwrap();
-        let id2 = upsert_symbol(&conn, &s2, "test").unwrap();
+        let id1 = upsert_symbol(&conn, &s1, "test", "main").unwrap();
+        let id2 = upsert_symbol(&conn, &s2, "test", "main").unwrap();
         assert_eq!(id1, id2);
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_type='sym'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     }
 
     #[test]
@@ -351,10 +381,10 @@ mod tests {
             content_hash: hash.to_string(),
             ..Default::default()
         };
-        let id1 = upsert_symbol(&conn, &mk("h1"), "test").unwrap();
-        let id2 = upsert_symbol(&conn, &mk("h2"), "test").unwrap();
+        let id1 = upsert_symbol(&conn, &mk("h1"), "test", "main").unwrap();
+        let id2 = upsert_symbol(&conn, &mk("h2"), "test", "main").unwrap();
         assert_eq!(id1, id2);
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_type='sym'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     }
 
     #[test]
@@ -368,10 +398,10 @@ mod tests {
             content_hash: hash.to_string(),
             ..Default::default()
         };
-        let id1 = upsert_symbol(&conn, &mk("h1"), "test").unwrap();
-        let id2 = upsert_symbol(&conn, &mk("h2"), "test").unwrap();
+        let id1 = upsert_symbol(&conn, &mk("h1"), "test", "main").unwrap();
+        let id2 = upsert_symbol(&conn, &mk("h2"), "test", "main").unwrap();
         assert_eq!(id1, id2);
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_type='sym'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     }
 
     #[test]
@@ -385,10 +415,10 @@ mod tests {
             content_hash: hash.to_string(),
             ..Default::default()
         };
-        let id1 = upsert_symbol(&conn, &mk("Builder::size_", "h1"), "test").unwrap();
-        let id2 = upsert_symbol(&conn, &mk("Verifier::size_", "h2"), "test").unwrap();
+        let id1 = upsert_symbol(&conn, &mk("Builder::size_", "h1"), "test", "main").unwrap();
+        let id2 = upsert_symbol(&conn, &mk("Verifier::size_", "h2"), "test", "main").unwrap();
         assert_ne!(id1, id2, "different qualified names should get different ids");
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_type='sym'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
     }
 
     #[test]
@@ -401,7 +431,7 @@ mod tests {
             repo: "test".to_string(), content_hash: "stub_hash".to_string(),
             ..Default::default()
         };
-        let stub_id = stub.insert(&conn).unwrap();
+        let stub_id = stub.insert(&conn, "main").unwrap();
 
         let real = Symbol {
             name: "external_func".to_string(), namespace: None, kind: "function".to_string(),
@@ -412,7 +442,7 @@ mod tests {
         };
         // real symbol has different file_path → won't match stub by full key
         // This test verifies the existing behavior (no change needed here)
-        let real_id = upsert_symbol(&conn, &real, "test").unwrap();
+        let real_id = upsert_symbol(&conn, &real, "test", "main").unwrap();
         // Real symbol gets different id because file_path doesn't match
         assert_ne!(stub_id, real_id);
     }

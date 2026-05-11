@@ -230,6 +230,7 @@ fn run_vector_search(
     if !crate::storage::vector::try_load(conn) {
         return Vec::new();
     }
+    let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).unwrap_or(0);
 
     let mut results = Vec::new();
 
@@ -242,18 +243,17 @@ fn run_vector_search(
                 let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
                 let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
-                    "SELECT s.rowid, n.name, n.kind, n.file_path, n.line_start, \
-                     COALESCE(json_extract(n.attrs,'$.doc_comment'),''), COALESCE(json_extract(n.attrs,'$.signature'),'') \
-                     FROM symbols s \
-                     JOIN nodes n ON n.name=s.name AND n.file_path=s.file_path AND n.line_start=s.line_start \
+                    "SELECT n.id, n.name, n.kind, n.file_path, n.line_start, \
+                     COALESCE(n.content,''), COALESCE(json_extract(n.attrs,'$.signature'),'') \
+                     FROM nodes n \
                      JOIN branches b ON b.node_id = n.id \
-                     WHERE s.rowid IN ({}) AND b.branch_name=?",
+                     WHERE n.id IN ({}) AND n.node_type='sym' AND b.branch_id=?",
                     placeholders
                 );
                 let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = rowids.iter()
                     .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
                     .collect();
-                params.push(Box::new(branch.to_string()));
+                params.push(Box::new(branch_id));
                 if let Ok(mut stmt) = conn.prepare(&sql) {
                     let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
                     let mut detail_map: HashMap<i64, (String, String, String, i64, String, String)> = HashMap::new();
@@ -302,7 +302,7 @@ fn run_vector_search(
                 let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
                 let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
-                    "SELECT rowid, file_path, COALESCE(summary,'') FROM files WHERE rowid IN ({})",
+                    "SELECT id, file_path, COALESCE(content,'') FROM nodes WHERE node_type='file' AND id IN ({})",
                     placeholders
                 );
                 let params: Vec<Box<dyn rusqlite::types::ToSql>> = rowids.iter()
@@ -432,12 +432,11 @@ pub fn vector_semantic_search(
     let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
     let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
-        "SELECT s.rowid, n.name, n.kind, n.file_path, n.line_start, \
-         COALESCE(json_extract(n.attrs,'$.doc_comment'),''), COALESCE(json_extract(n.attrs,'$.signature'),'') \
-         FROM symbols s \
-         JOIN nodes n ON n.name=s.name AND n.file_path=s.file_path AND n.line_start=s.line_start \
+        "SELECT n.id, n.name, n.kind, n.file_path, n.line_start, \
+         COALESCE(n.content,''), COALESCE(json_extract(n.attrs,'$.signature'),'') \
+         FROM nodes n \
          JOIN branches b ON b.node_id = n.id \
-         WHERE s.rowid IN ({}) AND b.branch_name=?",
+         WHERE n.id IN ({}) AND n.node_type='sym' AND b.branch_id=?",
         placeholders
     );
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = rowids.iter()

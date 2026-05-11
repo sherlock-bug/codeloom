@@ -38,8 +38,8 @@ pub fn get_edges(
         let sql = format!(
             "SELECT e.source_id, e.target_id, e.edge_type, s1.name, s2.name \
              FROM edges e \
-             JOIN symbols s1 ON e.source_id = s1.id \
-             LEFT JOIN symbols s2 ON e.target_id = s2.id \
+             JOIN nodes s1 ON e.source_id = s1.id \
+             LEFT JOIN nodes s2 ON e.target_id = s2.id \
              WHERE e.source_id = ?1 AND e.target_id != 0 {}",
             filter_clause
         );
@@ -63,8 +63,8 @@ pub fn get_edges(
         let sql = format!(
             "SELECT e.source_id, e.target_id, e.edge_type, s1.name, s2.name \
              FROM edges e \
-             JOIN symbols s2 ON e.source_id = s2.id \
-             LEFT JOIN symbols s1 ON e.target_id = s1.id \
+             JOIN nodes s2 ON e.source_id = s2.id \
+             LEFT JOIN nodes s1 ON e.target_id = s1.id \
              WHERE e.target_id = ?1 AND e.source_id != 0 {}",
             filter_clause
         );
@@ -89,17 +89,18 @@ pub fn get_edges(
 
 /// Resolve a symbol name to its internal ID.
 pub fn resolve_symbol_id(conn: &Connection, name: &str, repo: &str, branch: &str) -> Option<i64> {
+    let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).ok()?;
     conn.query_row(
-        "SELECT s.id FROM symbols s JOIN branches b ON s.id = b.symbol_id \
-         WHERE s.name = ?1 AND b.repo = ?2 AND (b.branch_name = ?3 OR b.branch_name IS NULL)",
-        rusqlite::params![name, repo, branch],
+        "SELECT n.id FROM nodes n JOIN branches b ON n.id = b.node_id \
+         WHERE n.name = ?1 AND n.node_type='sym' AND b.repo = ?2 AND (b.branch_id = ?3 OR b.branch_id = 0)",
+        rusqlite::params![name, repo, branch_id],
         |row| row.get(0),
     ).ok()
 }
 
 /// Get symbol name by id.
 pub fn symbol_name_by_id(conn: &Connection, id: i64) -> Option<String> {
-    conn.query_row("SELECT name FROM symbols WHERE id = ?1", rusqlite::params![id], |r| r.get(0)).ok()
+    conn.query_row("SELECT name FROM nodes WHERE id = ?1", rusqlite::params![id], |r| r.get(0)).ok()
 }
 
 /// Build forward adjacency map: source_id → [(target_id, edge_type)]
@@ -377,21 +378,21 @@ pub fn edge_prefix(edge_type: &str) -> &str {
 /// Get terminal symbol dependencies: uses, references, string literals
 pub fn get_terminal_deps(conn: &Connection, symbol_id: i64) -> (Vec<String>, Vec<String>, Vec<String>) {
     let uses: Vec<String> = conn.prepare(
-        "SELECT s.name FROM edges e JOIN symbols s ON e.target_id = s.id WHERE e.source_id = ?1 AND e.edge_type LIKE 'uses:%'"
+        "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id WHERE e.source_id = ?1 AND e.edge_type LIKE 'uses:%'"
     ).and_then(|mut s| {
         s.query_map(rusqlite::params![symbol_id], |r| r.get::<_, String>(0))
             .map(|rows| rows.flatten().collect())
     }).unwrap_or_default();
 
     let refs: Vec<String> = conn.prepare(
-        "SELECT s.name FROM edges e JOIN symbols s ON e.target_id = s.id WHERE e.source_id = ?1 AND e.edge_type LIKE 'references:%'"
+        "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id WHERE e.source_id = ?1 AND e.edge_type LIKE 'references:%'"
     ).and_then(|mut s| {
         s.query_map(rusqlite::params![symbol_id], |r| r.get::<_, String>(0))
             .map(|rows| rows.flatten().collect())
     }).unwrap_or_default();
 
     let literals: Vec<String> = conn.prepare(
-        "SELECT s.name FROM edges e JOIN symbols s ON e.target_id = s.id WHERE e.source_id = ?1 AND s.kind = 'string_literal'"
+        "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id WHERE e.source_id = ?1 AND n.kind = 'string_literal'"
     ).and_then(|mut s| {
         s.query_map(rusqlite::params![symbol_id], |r| r.get::<_, String>(0))
             .map(|rows| rows.flatten().collect())

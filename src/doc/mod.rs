@@ -158,7 +158,7 @@ pub fn write_doc_sections(
             let parent_id = write_one_parent(conn, repo, path, file_format, sec)?;
             // Delete old chunks
             conn.execute(
-                "DELETE FROM doc_nodes WHERE parent_id=?1 AND node_type='chunk'",
+                "DELETE FROM nodes WHERE json_extract(attrs, '$.parent_id')=?1 AND node_type='chunk'",
                 rusqlite::params![parent_id],
             )?;
             // Split and write chunks
@@ -197,14 +197,21 @@ fn write_one_section(
     let sp = if sec.section_path.is_empty() { String::new() } else { sec.section_path.clone() };
     let pid: Option<i64> = parent_id.or(sec.parent_id);
 
+    // Build attrs JSON with doc-specific fields
+    let attrs = serde_json::json!({
+        "section_path": sp,
+        "level": sec.level,
+        "file_format": file_format,
+        "parent_id": pid,
+    });
+
     conn.execute(
-        "INSERT INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format, content_hash, node_type, parent_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-         ON CONFLICT(repo, file_path, section_path) DO UPDATE SET
-         title=excluded.title, content=excluded.content, level=excluded.level,
-         file_format=excluded.file_format, content_hash=excluded.content_hash, node_type=excluded.node_type,
-         parent_id=COALESCE(excluded.parent_id, parent_id)",
-        rusqlite::params![repo, sec.title, sp, sec.content, sec.level, path, file_format, hash, sec.node_type, pid],
+        "INSERT INTO nodes (repo, node_type, name, content, file_path, content_hash, kind, attrs) \
+         VALUES (?1, ?8, ?2, ?3, ?4, ?5, ?6, ?7) \
+         ON CONFLICT(content_hash, file_path, name, branch_id, repo) DO UPDATE SET \
+         content=excluded.content, kind=excluded.kind, \
+         attrs=excluded.attrs",
+        rusqlite::params![repo, sec.title, sec.content, path, hash, sec.node_type, attrs.to_string(), sec.node_type],
     )?;
     let last_node_id = conn.last_insert_rowid();
 
@@ -226,12 +233,20 @@ fn write_one_parent(
     );
     let sp = if sec.section_path.is_empty() { String::new() } else { sec.section_path.clone() };
 
+    // Build attrs JSON with doc-specific fields (no parent_id for parent node)
+    let attrs = serde_json::json!({
+        "section_path": sp,
+        "level": sec.level,
+        "file_format": file_format,
+        "parent_id": serde_json::Value::Null,
+    });
+
     conn.execute(
-        "INSERT INTO doc_nodes (repo, title, section_path, content, level, file_path, file_format, content_hash, node_type, parent_id)
-         VALUES (?1, ?2, ?3, '', ?4, ?5, ?6, ?7, ?8, NULL)
-         ON CONFLICT(repo, file_path, section_path) DO UPDATE SET
-         level=excluded.level, file_format=excluded.file_format, content_hash=excluded.content_hash, node_type=excluded.node_type",
-        rusqlite::params![repo, sec.title, sp, sec.level, path, file_format, hash, sec.node_type],
+        "INSERT INTO nodes (repo, node_type, name, content, file_path, content_hash, kind, attrs) \
+         VALUES (?1, 'doc', ?2, '', ?3, ?4, ?5, ?6) \
+         ON CONFLICT(content_hash, file_path, name, branch_id, repo) DO UPDATE SET \
+         kind=excluded.kind, attrs=excluded.attrs",
+        rusqlite::params![repo, sec.title, path, hash, sec.node_type, attrs.to_string()],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -404,11 +419,28 @@ mod tests {
         crate::storage::migrate(&conn).unwrap();
 
         let count = write_doc_sections(&conn, "test", "test.md", "md", &[parent]).unwrap();
+        eprintln!("write_doc_sections returned: {}", count);
         assert!(count >= 2, "长内容应拆分出多个节点, got {}", count);
 
+        // Check that the parent was written
+        let parent_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE repo='test' AND node_type='section'",
+            [], |r| r.get(0),
+        ).unwrap_or(0);
+        eprintln!("parent nodes: {}", parent_count);
+
         // Check chunks inherit parent fields
-        let mut stmt = conn.prepare("SELECT title, section_path, level, node_type, parent_id FROM doc_nodes WHERE node_type='chunk' ORDER BY section_path").unwrap();
-        let chunks: Vec<_> = stmt.query_map([], |r| Ok((
+        let mut stmt = conn.prepare("SELECT name, node_type FROM nodes WHERE repo='test' AND node_type='chunk'").unwrap();
+        let all_chunks: Vec<_> = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?))).unwrap().flatten().collect();
+        eprintln!("chunks found: {:?}", all_chunks);
+        
+        // Also count total nodes
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo='test'", [], |r| r.get(0)).unwrap_or(0);
+        eprintln!("total nodes in test: {}", total);
+        
+        // Re-query chunks
+        let mut stmt2 = conn.prepare("SELECT name, json_extract(attrs, '$.section_path'), json_extract(attrs, '$.level'), node_type, json_extract(attrs, '$.parent_id') FROM nodes WHERE node_type='chunk' ORDER BY json_extract(attrs, '$.section_path')").unwrap();
+        let chunks: Vec<_> = stmt2.query_map([], |r| Ok((
             r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,i32>(2)?,
             r.get::<_,String>(3)?, r.get::<_,Option<i64>>(4)?
         ))).unwrap().flatten().collect();

@@ -144,9 +144,10 @@ fn full_scan(
             Err(e) => eprintln!("Warning: {}: {}", fp, e),
         }
     }
+    let branch_id = crate::storage::resolve_branch_id(conn, repo_name, branch)?;
     conn.execute(
-        "INSERT OR IGNORE INTO branches (node_id,repo,branch_name,override_def,override_hash) SELECT id,repo,?1,NULL,NULL FROM symbols WHERE repo=?2",
-        rusqlite::params![branch, repo_name],
+        "INSERT OR IGNORE INTO branches (node_id,repo,branch_id,override_def,override_hash) SELECT id,repo,?1,NULL,NULL FROM nodes WHERE repo=?2 AND node_type='sym'",
+        rusqlite::params![branch_id, repo_name],
     )?;
     Ok(())
 }
@@ -171,7 +172,7 @@ fn index_one(
             modified: std::time::SystemTime::now(),
         };
         let cc = std::env::var("CODELOOM_COMPILE_COMMANDS").ok();
-        return clang::index_clang(conn, &[fi], repo_name, cc.as_deref());
+        return clang::index_clang(conn, &[fi], repo_name, cc.as_deref(), branch);
     }
 
     let mut parser = match tree_sitter::create_parser(lang) {
@@ -188,11 +189,12 @@ fn index_one(
     let mut id_map = Vec::new();
 
     for sym in &symbols {
-        let db_id = sym.insert(conn)?;
+        let db_id = sym.insert(conn, branch)?;
         id_map.push(db_id);
+        let branch_id = crate::storage::resolve_branch_id(conn, repo_name, branch)?;
         conn.execute(
-            "INSERT OR IGNORE INTO branches (node_id,repo,branch_name,override_def,override_hash) VALUES (?1,?2,?3,NULL,NULL)",
-            rusqlite::params![db_id, repo_name, branch],
+            "INSERT OR IGNORE INTO branches (node_id,repo,branch_id,override_def,override_hash) VALUES (?1,?2,?3,NULL,NULL)",
+            rusqlite::params![db_id, repo_name, branch_id],
         )?;
     }
     // Resolve target IDs: respect extractor's usize::MAX as unresolved,
@@ -216,6 +218,7 @@ fn index_one(
     let source = crate::util::read_file_smart(file_path)?;
     let summary = extract_leading_comment(&source);
     let fn_hash = crate::storage::dedup::hash_content(file_path);
+    let branch_id = crate::storage::resolve_branch_id(conn, repo_name, branch)?;
     crate::storage::files::FileNode {
         id: None,
         repo: repo_name.to_string(),
@@ -223,9 +226,9 @@ fn index_one(
         file_type: "code".to_string(),
         summary,
         content_hash: fn_hash,
-        branch_name: branch.to_string(),
+        branch_id,
     }
-    .insert(conn)?;
+    .insert(conn, branch)?;
 
     Ok(count)
 }
@@ -264,7 +267,7 @@ fn resolve_target(
     // 2. DB lookup by exact name+repo — try both target_name and base_name
     let query_name = if base_name != target_name { base_name } else { target_name };
     if let Ok(id) = conn.query_row(
-        "SELECT id FROM symbols WHERE name=?1 AND repo=?2 LIMIT 1",
+        "SELECT id FROM nodes WHERE name=?1 AND repo=?2 AND node_type='sym' LIMIT 1",
         rusqlite::params![target_name, repo],
         |row| row.get(0),
     ) {
@@ -274,7 +277,7 @@ fn resolve_target(
     // Use '%::X' not '%X%' to avoid single-char type names matching everything
     let like_pat = format!("%::{}", target_name);
     if let Ok(id) = conn.query_row(
-        "SELECT id FROM symbols WHERE name LIKE ?1 AND repo=?2 LIMIT 1",
+        "SELECT id FROM nodes WHERE name LIKE ?1 AND repo=?2 AND node_type='sym' LIMIT 1",
         rusqlite::params![like_pat, repo],
         |row| row.get(0),
     ) {
@@ -282,7 +285,7 @@ fn resolve_target(
     }
     // 4. Check builtin symbols (__builtin__ repo) for fully-qualified names
     if let Ok(id) = conn.query_row(
-        "SELECT id FROM symbols WHERE name=?1 AND repo='__builtin__' LIMIT 1",
+        "SELECT id FROM nodes WHERE name=?1 AND repo='__builtin__' AND node_type='sym' LIMIT 1",
         rusqlite::params![target_name],
         |row| row.get(0),
     ) {
@@ -290,7 +293,7 @@ fn resolve_target(
     }
     // 5. LIKE fallback on builtin too
     if let Ok(id) = conn.query_row(
-        "SELECT id FROM symbols WHERE name LIKE ?1 AND repo='__builtin__' LIMIT 1",
+        "SELECT id FROM nodes WHERE name LIKE ?1 AND repo='__builtin__' AND node_type='sym' LIMIT 1",
         rusqlite::params![like_pat, repo],
         |row| row.get(0),
     ) {
