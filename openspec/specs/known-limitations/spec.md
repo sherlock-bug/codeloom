@@ -15,9 +15,10 @@ Clang 索引器 SHALL 基于六元组 (name, ns, kind, signature, file_path, rep
 - WHEN 执行全量索引
 - THEN 项目符号数 SHALL 在 3000-5000 范围而非当前 70750
 
-### Requirement: 头文件声明的文件路径
+### Requirement: 头文件声明的文件路径 ✅ 已修复 (2026-05-22)
 Clang 解析器 SHALL 为正确定位头文件中的符号定义提供准确的文件路径。
-当前偏差：Clang AST dump 的 json 输出对头文件声明只给出 loc.line 和 includedFrom 不给出 loc.file，导致符号 file_path 回退到翻译单元文件路径搜索结果跳转不准确。
+当前偏差：~~Clang AST dump 的 json 输出对头文件声明只给出 loc.line 和 includedFrom 不给出 loc.file，导致符号 file_path 回退到翻译单元文件路径搜索结果跳转不准确。~~
+修复后：AST 遍历时追踪 `cur_file` 上下文，头文件符号正确指向 `.h` 文件而非 `.cpp` 文件。实测 sample.hpp 中 21 个符号全部指向正确路径。
 
 #### Scenario: 头文件符号搜索
 - GIVEN 头文件 config.h 中的类 Config 符号

@@ -39,6 +39,7 @@ pub fn extract_symbols_and_edges(
         ignore_patterns: ignore_patterns.to_vec(),
         current_class: String::new(),
         current_access: String::new(),
+        cur_file: file_path.to_string(),
         seen_strings: HashMap::new(),
         seen_symbols: Vec::new(),
     };
@@ -63,6 +64,8 @@ struct ExtractCtx {
     ignore_patterns: Vec<String>,
     current_class: String,
     current_access: String,
+    /// Current file context — tracks Clang's loc.file changes across includes
+    cur_file: String,
     seen_strings: HashMap<String, bool>,
     seen_symbols: Vec<(String, String, String)>, // (name, ns, kind) for dedup
 }
@@ -75,12 +78,17 @@ impl ExtractCtx {
         let (ls, le) = get_range(node);
 
         // Get Clang's actual file path for this declaration
+        // Clang only emits loc.file when the file context changes (e.g., after #include).
+        // For nodes in the same file, loc.file is absent — we track cur_file to handle this.
         let loc_obj = node.get("loc");
         let decl_file = loc_obj
             .and_then(|v| v.get("file"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let has_loc = loc_obj.map_or(false, |v| !v.as_object().map_or(true, |o| o.is_empty()));
+        if !decl_file.is_empty() {
+            self.cur_file = decl_file.to_string();
+        }
         // Compute namespace
         let ns = match kind {
             "NamespaceDecl" => {
@@ -99,7 +107,7 @@ impl ExtractCtx {
         let is_external = if decl_file.is_empty() && !has_loc {
             true // compiler builtin with no source location
         } else if decl_file.is_empty() {
-            !self.is_project_file(&self.file) // header decl, use TU file
+            !self.is_project_file(&self.cur_file) // header decl, use current file context
         } else {
             !self.is_project_file(decl_file)
         };
@@ -135,7 +143,7 @@ impl ExtractCtx {
                     sym.name = qname.clone();
                     sym.kind = k.to_string();
                     sym.content_hash = hash;
-                    sym.file_path = if decl_file.is_empty() { self.file.clone() } else { decl_file.to_string() };
+                    sym.file_path = if decl_file.is_empty() { self.cur_file.clone() } else { decl_file.to_string() };
                     sym.line_start = ls;
                     sym.line_end = le;
                     sym.language = Some("cpp".to_string());
@@ -186,7 +194,7 @@ impl ExtractCtx {
                     sym.name = n.to_string();
                     sym.kind = k.to_string();
                     sym.content_hash = hash;
-                    sym.file_path = if decl_file.is_empty() { self.file.clone() } else { decl_file.to_string() };
+                    sym.file_path = if decl_file.is_empty() { self.cur_file.clone() } else { decl_file.to_string() };
                     sym.line_start = ls;
                     sym.line_end = le;
                     sym.language = Some("cpp".to_string());
@@ -263,7 +271,7 @@ impl ExtractCtx {
                     
                     let sym = Symbol {
                         id: None, repo: self.repo.clone(), name: qname.clone(), kind: "field".to_string(),
-                        content_hash: hash, file_path: if decl_file.is_empty() { self.file.clone() } else { decl_file.to_string() },
+                        content_hash: hash, file_path: if decl_file.is_empty() { self.cur_file.clone() } else { decl_file.to_string() },
                         line_start: ls, line_end: le, language: Some("cpp".to_string()),
                         signature: None, parent_class: parent_class.map(|s| s.to_string()),
                         namespace: if ns.is_empty() { None } else { Some(ns.clone()) },
@@ -300,7 +308,7 @@ impl ExtractCtx {
 
                     let sym = Symbol {
                         id: None, repo: self.repo.clone(), name: n.to_string(), kind: k.to_string(),
-                        content_hash: hash, file_path: if decl_file.is_empty() { self.file.clone() } else { decl_file.to_string() },
+                        content_hash: hash, file_path: if decl_file.is_empty() { self.cur_file.clone() } else { decl_file.to_string() },
                         line_start: ls, line_end: le, language: Some("cpp".to_string()),
                         signature: None, parent_class: None,
                         namespace: if ns.is_empty() { None } else { Some(ns.clone()) },
@@ -327,7 +335,7 @@ impl ExtractCtx {
                     let hash = hash_content(n, "enum", &self.file, ls);
                     let sym = Symbol {
                         id: None, repo: self.repo.clone(), name: n.to_string(), kind: "enum".to_string(),
-                        content_hash: hash, file_path: if decl_file.is_empty() { self.file.clone() } else { decl_file.to_string() },
+                        content_hash: hash, file_path: if decl_file.is_empty() { self.cur_file.clone() } else { decl_file.to_string() },
                         line_start: ls, line_end: le, language: Some("cpp".to_string()),
                         signature: None, parent_class: None,
                         namespace: if ns.is_empty() { None } else { Some(ns.clone()) },
@@ -350,7 +358,7 @@ impl ExtractCtx {
                     let hash = hash_content(&qname, "enum_value", &self.file, ls);
                     let sym = Symbol {
                         id: None, repo: self.repo.clone(), name: qname.clone(), kind: "enum_value".to_string(),
-                        content_hash: hash, file_path: if decl_file.is_empty() { self.file.clone() } else { decl_file.to_string() },
+                        content_hash: hash, file_path: if decl_file.is_empty() { self.cur_file.clone() } else { decl_file.to_string() },
                         line_start: ls, line_end: le, language: Some("cpp".to_string()),
                         signature: None, parent_class: parent_class.map(|s| s.to_string()),
                         namespace: if ns.is_empty() { None } else { Some(ns.clone()) },
@@ -368,7 +376,7 @@ impl ExtractCtx {
                         let hash = format!("ns:{}", n);
                         let sym = Symbol {
                             id: None, repo: self.repo.clone(), name: n.to_string(), kind: "namespace".to_string(),
-                            content_hash: hash, file_path: if decl_file.is_empty() { self.file.clone() } else { decl_file.to_string() },
+                            content_hash: hash, file_path: if decl_file.is_empty() { self.cur_file.clone() } else { decl_file.to_string() },
                             line_start: ls, line_end: le, language: Some("cpp".to_string()),
                             signature: None, parent_class: None,
                             namespace: None, doc_comment: String::new(),
@@ -470,7 +478,7 @@ impl ExtractCtx {
                     let hash = hash_content(n, "typedef", &self.file, ls);
                     let sym = Symbol {
                         id: None, repo: self.repo.clone(), name: n.to_string(), kind: "typedef".to_string(),
-                        content_hash: hash, file_path: if decl_file.is_empty() { self.file.clone() } else { decl_file.to_string() },
+                        content_hash: hash, file_path: if decl_file.is_empty() { self.cur_file.clone() } else { decl_file.to_string() },
                         line_start: ls, line_end: le, language: Some("cpp".to_string()),
                         signature: None, parent_class: None,
                         namespace: if ns.is_empty() { None } else { Some(ns.clone()) },
