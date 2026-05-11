@@ -163,3 +163,13 @@ Indexer（Clang/tree-sitter/doc/files）SHALL 写入 nodes 表作为主存储。
 - WHEN 执行 `codeloom index`
 - THEN 终端输出 SHALL 仅显示定期进度汇总（如每 20 文件）而非每个文件一行
 - AND 错误信息仍需逐文件打印以便排查
+
+### Requirement: 不支持的编程语言被无效索引
+索引器 SHALL 仅索引当前支持的编程语言，不识别和不支持的语言文件直接跳过，不给它们创建 file node。
+当前偏差：`detect_language()` 返回 `Some("python")`/`Some("java")`/`Some("typescript")`/`Some("go")`，这些文件被收录进 `collect_files()` 列表并进入 `index_one()` 处理流程。然而 `create_parser()` 虽然创建了对应语言的 tree-sitter parser，`parse_file()` 对非 C++ 语言的 match 分支是空（`_ => {}`），不产出任何符号。这些文件仍然创建了空的 file node，浪费了解析时间和存储空间。
+
+#### Scenario: Python 项目索引
+- GIVEN 项目仅包含 Python 文件
+- WHEN 执行 `codeloom index`
+- THEN 索引器 SHALL 跳过所有 Python 文件（`collect_files()` 不收录，或 `index_one()` 直接 `return Ok(0)`）
+- AND 不创建 file node
