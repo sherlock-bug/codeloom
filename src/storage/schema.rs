@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use crate::log_info;
 
 /// Initialize DB schema for clean-slate indexing (v0.9+).
 /// No legacy tables — only nodes/edges/branches/fts5_all/branch_meta.
@@ -47,6 +48,7 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
             node_id INTEGER NOT NULL,
             repo TEXT NOT NULL DEFAULT 'default',
             branch_id INTEGER NOT NULL,
+            branch_name TEXT NOT NULL DEFAULT '',
             override_def TEXT, override_hash TEXT,
             PRIMARY KEY (node_id, repo, branch_id)
         );
@@ -88,5 +90,6 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
 
         CREATE VIRTUAL TABLE IF NOT EXISTS fts5_all USING fts5(name, content);
     ")?;
+    log_info!("storage::schema", "schema run: all tables created/verified");
     Ok(())
 }

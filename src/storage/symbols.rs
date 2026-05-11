@@ -1,5 +1,6 @@
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
+use crate::log_debug;
 
 #[derive(Debug, Clone)]
 pub struct Symbol {
@@ -108,9 +109,10 @@ impl Symbol {
                 "UPDATE nodes SET attrs = json_set(attrs, '$.is_definition', ?1, '$.is_external', ?2) WHERE id=?3",
                 rusqlite::params![self.is_definition as i32, self.is_external as i32, nid],
             )?;
+            log_debug!("symbols::insert", "upsert: name={} kind={} action=update", self.name, self.kind);
             Ok(nid)
         } else {
-            Ok(conn.query_row(
+            let nid = conn.query_row(
                 "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_id,kind,attrs) \
                  VALUES (?1,'sym',?2,?3,?4,?5,?6,?7,?8,?9) RETURNING id",
                 rusqlite::params![
@@ -118,7 +120,9 @@ impl Symbol {
                     self.content_hash, branch_id, self.kind, attrs.to_string(),
                 ],
                 |row| row.get(0),
-            )?)
+            )?;
+            log_debug!("symbols::insert", "upsert: name={} kind={} action=insert", self.name, self.kind);
+            Ok(nid)
         }
     }
 }
@@ -240,8 +244,8 @@ pub fn insert_builtin_symbols(conn: &Connection) -> anyhow::Result<usize> {
 
     // Populate branches from nodes table
     conn.execute(
-        "INSERT OR IGNORE INTO branches (node_id,repo,branch_id) \
-         SELECT id,repo,0 FROM nodes WHERE repo=?1 AND node_type='sym'",
+        "INSERT OR IGNORE INTO branches (node_id,repo,branch_id,branch_name) \
+         SELECT id,repo,0,'__builtin__' FROM nodes WHERE repo=?1 AND node_type='sym'",
         rusqlite::params![repo],
     )?;
 

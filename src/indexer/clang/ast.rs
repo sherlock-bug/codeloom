@@ -4,7 +4,34 @@
 
 use sha2::{Sha256, Digest};
 use crate::storage::symbols::{Symbol, make_sid};
+use crate::{log_debug};
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+// ─── Line number cache (offset→line conversion) ─────────────────────
+
+static LINE_CACHE: OnceLock<Mutex<HashMap<String, Vec<u32>>>> = OnceLock::new();
+
+fn offset_to_line(file_path: &str, offset: u32) -> u32 {
+    let cache = LINE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+    let offsets = guard.entry(file_path.to_string()).or_insert_with(|| {
+        let content = std::fs::read_to_string(file_path).unwrap_or_default();
+        let mut off = Vec::with_capacity(content.len() / 40 + 1);
+        off.push(0);
+        for (i, b) in content.bytes().enumerate() {
+            if b == b'\n' {
+                off.push(i as u32 + 1);
+            }
+        }
+        off
+    });
+    match offsets.binary_search(&offset) {
+        Ok(line) => line as u32 + 1,
+        Err(line) => line as u32,
+    }
+}
 
 // ─── Extraction result ───────────────────────────────────────────────
 
@@ -44,6 +71,9 @@ pub fn extract_symbols_and_edges(
         seen_symbols: Vec::new(),
     };
 
+    let start = Instant::now();
+    log_debug!("indexer::clang::ast", "extracting from {} (repo={})", file_path, repo_name);
+
     if let Some(inner) = ast.get("inner").and_then(|v| v.as_array()) {
         for (i, node) in inner.iter().enumerate() {
             let k = node.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -53,6 +83,9 @@ pub fn extract_symbols_and_edges(
     } else {
     }
 
+    let elapsed = start.elapsed();
+    log_debug!("indexer::clang::ast", "extraction done: {} symbols, {} edges in {}ms",
+        ctx.result.symbols.len(), ctx.result.edges.len(), elapsed.as_millis());
     ctx.result
 }
 
@@ -75,7 +108,7 @@ impl ExtractCtx {
         let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         let name = node.get("name").and_then(|v| v.as_str());
         let loc = get_loc(node);
-        let (ls, le) = get_range(node);
+        let (ls, le) = get_range(node, &self.cur_file);
 
         // Get Clang's actual file path for this declaration
         // Clang only emits loc.file when the file context changes (e.g., after #include).
@@ -111,6 +144,10 @@ impl ExtractCtx {
         } else {
             !self.is_project_file(decl_file)
         };
+        if name.is_some() {
+            log_debug!("indexer::clang::ast", "is_external={} name={:?} kind={} decl_file=\"{}\" cur_file=\"{}\" root=\"{}\"",
+                is_external, name, kind, decl_file, self.cur_file, self.project_root);
+        }
 
         if name.map_or(false, |n| n == "MyStruct" || n == "implicit_public" || n == "x") {
         }
@@ -408,7 +445,7 @@ impl ExtractCtx {
                                     id: None, repo: self.repo.clone(), name: cn.to_string(),
                                     kind: tkind.to_string(), content_hash: hash,
                                     file_path: String::new(),  // template: no single definition file
-                                    line_start: get_range(child).0, line_end: get_range(child).1,
+                                    line_start: get_range(child, &self.cur_file).0, line_end: get_range(child, &self.cur_file).1,
                                     language: Some("cpp".to_string()),
                                     signature: Some(sig.clone()),
                                     namespace: if ns.is_empty() { None } else { Some(ns.clone()) },
@@ -569,9 +606,18 @@ impl ExtractCtx {
     }
 
     fn is_project_file(&self, file: &str) -> bool {
-        if file.is_empty() { return false; }
-        file.starts_with(&self.project_root)
-            && !crate::ignore::is_ignored(file, &self.ignore_patterns)
+        if file.is_empty() {
+            return false;
+        }
+        // Resolve relative paths before matching: Clang emits file paths
+        // relative to the TU (e.g. "db/version_set.h") which won't start_with.
+        let abs_file = if std::path::Path::new(file).is_relative() {
+            std::path::Path::new(&self.project_root).join(file).to_string_lossy().to_string()
+        } else {
+            file.to_string()
+        };
+        abs_file.starts_with(&self.project_root)
+            && !crate::ignore::is_ignored(&abs_file, &self.ignore_patterns)
     }
 
     // ─── Edge extraction helpers ───────────────────────────────────
@@ -654,12 +700,31 @@ fn get_loc(node: &serde_json::Value) -> (u32, u32) {
     (line, col)
 }
 
-fn get_range(node: &serde_json::Value) -> (u32, u32) {
+fn get_range(node: &serde_json::Value, file_path: &str) -> (u32, u32) {
     let range = node.get("range");
     let begin = range.and_then(|v| v.get("begin"));
     let end = range.and_then(|v| v.get("end"));
+
+    // Try range.begin.line first (rarely present in Clang 18), fallback to offset→line
     let ls = begin.and_then(|v| v.get("line")).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    let le = end.and_then(|v| v.get("line")).and_then(|v| v.as_u64()).unwrap_or(ls as u64) as u32;
+    let ls = if ls > 0 {
+        ls
+    } else if let Some(off) = begin.and_then(|v| v.get("offset")).and_then(|v| v.as_u64()) {
+        offset_to_line(file_path, off as u32)
+    } else {
+        0
+    };
+
+    // line_end: try range.end.line, then offset→line, then fallback to ls
+    let le = end.and_then(|v| v.get("line")).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let le = if le > 0 {
+        le
+    } else if let Some(off) = end.and_then(|v| v.get("offset")).and_then(|v| v.as_u64()) {
+        offset_to_line(file_path, off as u32)
+    } else {
+        ls
+    };
+
     (ls, le)
 }
 

@@ -172,4 +172,68 @@ Indexer（Clang/tree-sitter/doc/files）SHALL 写入 nodes 表作为主存储。
 - GIVEN 项目仅包含 Python 文件
 - WHEN 执行 `codeloom index`
 - THEN 索引器 SHALL 跳过所有 Python 文件（`collect_files()` 不收录，或 `index_one()` 直接 `return Ok(0)`）
-- AND 不创建 file node
+| - AND 不创建 file node
+
+### Requirement: MCP 工具（除搜索外）需全面审视
+除 `codeloom_search` / `codeloom_semantic_search` 外的所有 MCP 工具 SHALL 经过功能审查和正确性验证，确保在 v0.9 unified-node-table 重构后行为一致。
+当前偏差：search/calibrate 之外的工具（如 analyze、query_graph 等）在 v0.9 nodes 表重构后未经过系统性回归测试，可能存在 SQL 查询引用旧表、字段名不匹配、返回格式错误等 bug。同时部分工具的功能边界和 description 可能不再准确，需要更新。
+
+#### Scenario: 调用图工具回归
+- GIVEN 项目已完成 v0.9 重构
+- WHEN 调用 codeloom_get_call_graph
+- THEN 结果 SHALL 正确反映 nodes 表中的调用关系
+- AND 不引用已删除的 symbols 表
+
+### Requirement: 日志系统完善
+CodeLoom SHALL 在关键执行节点（索引/搜索/校准的入口、退出、异常分支、耗时操作）输出带级别的结构化日志，便于诊断和性能分析。
+当前偏差：现有日志散落在各个模块，缺乏统一规范。部分模块用 `log_info!`/`log_warn!`，部分直接 `println!`。关键异常路径无日志输出，导致问题排查困难。耗时操作（如语义索引、全库校准）没有耗时标记。
+
+#### Scenario: 校准失败诊断
+- GIVEN 用户执行 `codeloom calibrate`
+- WHEN 校准过程中某个分支的 SQL 查询失败
+- THEN 日志 SHALL 输出错误位置、失败 SQL、受影响的分支名
+- AND 不因单分支失败而吞掉整个校准过程
+
+### Requirement: 使用 libclang 替代 clang -ast-dump
+C++ 解析器 SHALL 通过 libclang C API（`libclang.so` / `clang-c/Index.h`）直接解析翻译单元，消除子进程开销。
+当前偏差：当前实现通过 `clang -ast-dump=json` 子进程调用 Clang 可执行文件。这种方式每次解析启动一个完整 Clang 进程（包括加载编译器自身和目标 triplet 头文件等），CPU 开销大、共享库无法复用。libclang 方式可以将 Clang 作为库链接或动态加载，在解析多个翻译单元时复用 PCH/preamble，大幅降低索引耗时。
+
+#### Scenario: 多翻译单元索引加速
+- GIVEN 项目包含 37 个 C++ 翻译单元（如 flatbuffers）
+- WHEN 执行全量索引
+- THEN 使用 libclang 的索引时间 SHALL 显著低于 `clang -ast-dump` 子进程方案
+- AND 所有解析结果的字段准确度不降级
+
+### Requirement: 分支别名管理功能可移除
+分支别名管理（`codeloom branch set-alias` / `branch list-alias` 等）SHALL 被移除，改由大模型自行管理分支切换。
+当前偏差：分支别名功能的设计初衷是为了让 MCP 工具和 LLM 能通过别名引用分支。实际上大模型完全可以通过 `git branch --show-current` 或 `git rev-parse --abbrev-ref HEAD` 获取当前分支名，直接传给 codeloom 的 `--branch` 参数。别名层增加了维护成本和配置复杂度，没有实际价值。
+
+#### Scenario: 分支切换
+- GIVEN LLM 需要切换索引的分支
+- WHEN LLM 知道当前分支名（通过 git 命令获取）
+- THEN LLM SHALL 直接将分支名作为参数传入，无需经过别名映射
+- AND 别名相关的代码和命令 SHALL 可以被安全删除
+
+### Requirement: Clang 索引器头文件符号缺失 ✅ 已修复 (2026-05-22)
+Clang 索引器 SHALL 正确提取 `#include` 的头文件中定义的符号（如类 Compaction、Version、Status 等），确保它们入库且行号正确。
+当前偏差：实际生产索引中发现两个问题：
+1. **路径不规范化导致头文件被标记为 external** — `find_git_root()` 从包含 `././` 的 TU 路径返回 `/mnt/d/code/leveldb/./.` 作为 project_root，而 Clang AST 中头文件路径是干净的 `/mnt/d/code/leveldb/include/leveldb/status.h`。`is_project_file()` 的 `starts_with` 匹配不上，所有头文件符号被错误标记为 `is_external=true`。
+2. **行号全部为 0** — Clang AST dump 中 `range.begin.line` 大部分为 null，导致所有符号 `line_start=0`（1929/1935 个符号行号全零）。
+待确认的问题：头文件符号即使被标记为 external 也应入库，但 leveldb 索引中找不到 Compaction/Version 等核心类。怀疑可能还有更深层原因（如 clang 编译失败导致无 AST 输出）。
+
+#### Scenario: 搜索类名
+- GIVEN 已索引 leveldb 仓库
+- WHEN 搜索类名 "Compaction" 或 "Status"
+- THEN 结果 SHALL 返回类本身的符号节点且排名第一
+- AND `file_path` SHALL 指向正确的头文件而非引用它的 .cc 文件
+- AND `line_start` SHALL 不为 0
+
+### Requirement: INT8 向量量化
+在保证搜索质量不降级的前提下，向量嵌入 SHALL 从 FLOAT32 量化到 INT8，减少存储体积和查询延迟。
+当前偏差：当前向量存储使用 FLOAT32（384 维 × 4 字节 = 1,536 字节/向量）。INT8 可压缩到 384 字节/向量（4 倍压缩），同时利用 SIMD 整型指令加速距离计算。需评估量化对 top-k 检索准确率的影响，确认 μ/σ 退化在可接受范围内（如余弦相似度下降 < 3%）。
+
+#### Scenario: 向量存储压缩
+- GIVEN 某项目索引产生 100,000 个嵌入向量
+- WHEN 切换到 INT8 量化
+- THEN 向量存储空间 SHALL 从 ~153MB 降至 ~38MB
+- AND 语义搜索 top-10 准确率下降不超过 3%

@@ -8,6 +8,9 @@
 //! Branch filter:   JOIN branches b ON b.node_id = n.id
 
 use rusqlite::Connection;
+use std::time::Instant;
+use crate::log_info;
+use crate::log_debug;
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -27,15 +30,17 @@ pub struct SearchHit {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HitType { Sym, Doc, File }
 
-// ── FTS5 Fill ───────────────────────────────────────────────────────────
-
-/// Rebuild fts5_all from nodes table. Returns number of rows inserted.
 pub fn fill_all_fts(conn: &Connection, repo: &str) -> anyhow::Result<usize> {
-    conn.execute("DELETE FROM fts5_all WHERE rowid IN (SELECT id FROM nodes WHERE repo=?1)", rusqlite::params![repo])?;
+    let _start = Instant::now();
+    conn.execute(
+        "DELETE FROM fts5_all WHERE rowid IN (SELECT id FROM nodes WHERE repo=?1)",
+        rusqlite::params![repo],
+    )?;
     let count = conn.execute(
         "INSERT INTO fts5_all(rowid, name, content) SELECT id, name, content FROM nodes WHERE repo=?1",
         rusqlite::params![repo],
     )?;
+    log_info!("storage::fts", "fill_all_fts: repo={}, {} rows, elapsed={:?}", repo, count, _start.elapsed());
     Ok(count)
 }
 
@@ -191,6 +196,7 @@ fn search_hits(
 
     hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     hits.truncate(limit);
+    log_debug!("storage::fts", "search_hits: query={} repo={} branch={} limit={} kind={:?} hits={}", fts5_query, repo, branch, limit, kind_filter, hits.len());
     Ok(hits)
 }
 
@@ -245,8 +251,8 @@ mod tests {
         let nid = conn.last_insert_rowid();
         let bid = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap();
         conn.execute(
-            "INSERT INTO branches (node_id,repo,branch_id) VALUES (?1,?2,?3)",
-            rusqlite::params![nid, repo, bid],
+            "INSERT INTO branches (node_id,repo,branch_id,branch_name) VALUES (?1,?2,?3,?4)",
+            rusqlite::params![nid, repo, bid, branch],
         ).unwrap();
         // Insert a doc node
         conn.execute(

@@ -39,6 +39,11 @@ pub fn index_clang(
             }
         })
         .unwrap_or_default();
+
+    // Normalize project root — remove ././ artifacts that break file path matching
+    let repo_root = std::fs::canonicalize(&repo_root)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or(repo_root);
     
     // Load ignore patterns (third-party libs should be treated as external)
     let cmds = compile_cmds::discover(compile_commands_path, &repo_root)?;
@@ -118,12 +123,12 @@ pub fn index_clang(
                 }
             }
             Err(e) => {
-                eprintln!("  clang failed for {}: {}", file.path, e);
+                log_error!("indexer::clang", "parse failed: {}: {}", file.path, e);
             }
         }
     }
 
-    println!("  Clang: {} symbols, {} edges", symbols_count, edges_count);
+    log_info!("indexer::clang", "done: {} symbols, {} edges", symbols_count, edges_count);
     Ok(symbols_count)
 }
 
@@ -262,7 +267,11 @@ fn parse_file(file: &str, extra_args: &[String], project_root: &str) -> anyhow::
     
     // Build pipeline: clang ... | python3 filter.py <project_root>
     // Compiler flags (-I/-D/-std= etc) go BEFORE --, only the source file after
-    let mut clang_args = String::from("-fsyntax-only -Xclang -ast-dump=json");
+    let mut clang_args = String::from("-fsyntax-only -Xclang -ast-dump=json -I'");
+    clang_args.push_str(project_root);
+    clang_args.push_str("' -I'");
+    clang_args.push_str(project_root);
+    clang_args.push_str("/include'");
     for arg in extra_args {
         clang_args.push_str(" '");
         clang_args.push_str(arg);

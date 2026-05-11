@@ -1,13 +1,18 @@
 // sqlite-vec vector storage — statically compiled, no .so needed
 use rusqlite::Connection;
+use crate::log_warn;
 
 /// Verify vec0 is available (statically compiled in).
 pub fn try_load(conn: &Connection) -> bool {
-    conn.execute_batch(
+    let ok = conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS _vec0_test_ USING vec0(embedding FLOAT[1]);
          DROP TABLE IF EXISTS _vec0_test_;",
     )
-    .is_ok()
+    .is_ok();
+    if !ok {
+        log_warn!("vector", "vec0 not loaded: sqlite-vec extension unavailable");
+    }
+    ok
 }
 
 /// Create vec0 virtual tables (FLOAT32) for this repo.

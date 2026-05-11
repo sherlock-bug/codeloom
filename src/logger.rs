@@ -17,7 +17,7 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            level: LevelFilter::Info,
+            level: LevelFilter::Debug,
             max_file_size_mb: 50,
             max_files: 10,
         }

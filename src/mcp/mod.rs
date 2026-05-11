@@ -240,7 +240,11 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
         _ => format!("Unknown tool: {}", name),
     };
     let result_len = result.len();
-    log_info!("mcp", "tool done: name={}, result_len={}, is_err={}", name, result_len, result.starts_with("Error"));
+    let is_err = result.starts_with("Error");
+    if is_err {
+        log_error!("mcp", "tool call error: name={} result_len={}", name, result_len);
+    }
+    log_info!("mcp", "tool done: name={}, result_len={}, is_err={}", name, result_len, is_err);
     serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":result}]}})
 }
 

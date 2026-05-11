@@ -5,6 +5,9 @@
 
 use anyhow::Context;
 use rusqlite::Connection;
+use std::time::Instant;
+use crate::log_debug;
+use crate::log_error;
 
 // ── 噪声探针 ──────────────────────────────────────────────
 // KNN 总能返回最近邻 → 这些探针在任意代码库都能命中结果
@@ -101,6 +104,8 @@ pub fn load_noise_profile() -> Option<NoiseProfile> {
 pub fn calibrate() -> anyhow::Result<NoiseProfile> {
     // 先清旧基线
     let _ = std::fs::remove_file(config_db_path());
+    let _start = Instant::now();
+    log_debug!("calib", "calibrate start");
 
     let embedder = crate::embedding::get_embedder()
         .context("embedder not initialized")?;
@@ -148,6 +153,7 @@ pub fn calibrate() -> anyhow::Result<NoiseProfile> {
     }
 
     if best_repo.is_empty() {
+        log_error!("calib", "no repos with symbols found");
         return Err(anyhow::anyhow!("所有仓库均无符号，无法标定"));
     }
 
@@ -190,8 +196,10 @@ pub fn calibrate() -> anyhow::Result<NoiseProfile> {
     let n = all_sims.len() as f64;
     let mean: f64 = all_sims.iter().sum::<f64>() / n;
     let variance = all_sims.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
-    let std = variance.sqrt();
-    let ceiling = mean + 2.0 * std;
+    let std_dev = variance.sqrt();
+    let ceiling = mean + 2.0 * std_dev;
+
+    log_debug!("calib", "calibrate done: {} samples, mean={:.4}, std={:.4}, elapsed={:?}", all_sims.len(), mean, std_dev, _start.elapsed());
 
     let model = crate::config::Config::load()
         .ok()
@@ -203,7 +211,7 @@ pub fn calibrate() -> anyhow::Result<NoiseProfile> {
 
     Ok(NoiseProfile {
         noise_mean: mean,
-        noise_std: std,
+        noise_std: std_dev,
         noise_ceiling: ceiling,
         samples: all_sims.len(),
         model,

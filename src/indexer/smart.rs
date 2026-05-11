@@ -5,7 +5,8 @@ use crate::indexer::{
 };
 use crate::storage::symbols::Symbol;
 use rusqlite::Connection;
-use crate::{log_info, log_warn};
+use std::time::Instant;
+use crate::{log_info, log_warn, log_error, log_debug};
 
 #[derive(Debug, Default)]
 pub struct IndexResult {
@@ -45,6 +46,8 @@ fn _smart_index(
     force_parent: Option<&str>,
 ) -> anyhow::Result<IndexResult> {
     let mut result = IndexResult::default();
+    let _start = Instant::now();
+    log_debug!("indexer", "smart_index start: repo={} branch={}", repo_name, branch);
     let head = git::head_commit(repo_root);
     result.head_commit = head.clone();
 
@@ -81,7 +84,7 @@ fn _smart_index(
         for fp in &files {
             match index_one(conn, fp, repo_root, repo_name, branch) {
                 Ok(c) => result.symbols_new += c,
-                Err(e) => { log_warn!("indexer", "parse failed: {}: {}", fp, e); eprintln!("Warning: {}: {}", fp, e); }
+                Err(e) => { log_error!("indexer", "parse failed: {}: {}", fp, e); }
             }
         }
         update_state(
@@ -105,7 +108,7 @@ fn _smart_index(
         for fp in &files {
             match index_one(conn, fp, repo_root, repo_name, branch) {
                 Ok(c) => result.symbols_new += c,
-                Err(e) => { log_warn!("indexer", "parse failed: {}: {}", fp, e); eprintln!("Warning: {}: {}", fp, e); }
+                Err(e) => { log_error!("indexer", "parse failed: {}: {}", fp, e); }
             }
         }
         update_state(
@@ -118,6 +121,8 @@ fn _smart_index(
     update_state(
         conn, repo_name, branch, head_commit, None, result.files_changed,
     )?;
+    let elapsed = _start.elapsed();
+    log_debug!("indexer", "smart_index done: repo={} branch={} new_syms={} files={} elapsed={:?}", repo_name, branch, result.symbols_new, result.files_changed, elapsed);
     Ok(result)
 }
 
@@ -146,8 +151,8 @@ fn full_scan(
     }
     let branch_id = crate::storage::resolve_branch_id(conn, repo_name, branch)?;
     conn.execute(
-        "INSERT OR IGNORE INTO branches (node_id,repo,branch_id,override_def,override_hash) SELECT id,repo,?1,NULL,NULL FROM nodes WHERE repo=?2 AND node_type='sym'",
-        rusqlite::params![branch_id, repo_name],
+        "INSERT OR IGNORE INTO branches (node_id,repo,branch_id,branch_name,override_def,override_hash) SELECT id,repo,?1,?2,NULL,NULL FROM nodes WHERE repo=?3 AND node_type='sym'",
+        rusqlite::params![branch_id, branch, repo_name],
     )?;
     Ok(())
 }
@@ -193,8 +198,8 @@ fn index_one(
         id_map.push(db_id);
         let branch_id = crate::storage::resolve_branch_id(conn, repo_name, branch)?;
         conn.execute(
-            "INSERT OR IGNORE INTO branches (node_id,repo,branch_id,override_def,override_hash) VALUES (?1,?2,?3,NULL,NULL)",
-            rusqlite::params![db_id, repo_name, branch_id],
+            "INSERT OR IGNORE INTO branches (node_id,repo,branch_id,branch_name,override_def,override_hash) VALUES (?1,?2,?3,?4,NULL,NULL)",
+            rusqlite::params![db_id, repo_name, branch_id, branch],
         )?;
     }
     // Resolve target IDs: respect extractor's usize::MAX as unresolved,

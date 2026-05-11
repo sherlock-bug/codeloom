@@ -1,7 +1,9 @@
 // Hybrid search — weighted fusion of FTS5 BM25 + vec0 vector ANN
+use crate::log_debug;
 use crate::storage;
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// A fused search result from hybrid (BM25 + vector) search
 #[derive(Debug, Clone)]
@@ -163,6 +165,8 @@ pub fn hybrid_search(
     kind_filter: Option<&str>,
 ) -> anyhow::Result<Vec<FusedResult>> {
     let fetch_limit = (limit * 2).max(10);
+    let _start = Instant::now();
+    log_debug!("search", "hybrid_search: query={} repo={} branch={} limit={} kind={:?}", query, repo, branch, limit, kind_filter);
 
     // FTS5: split name / comment / doc / file
     let bm25_name = storage::fts::search_fts5_name(conn, query, repo, branch, fetch_limit, kind_filter)?;
@@ -203,11 +207,17 @@ pub fn hybrid_search(
 
     // Sort and filter noise
     let mut fused: Vec<FusedResult> = entries.into_values().collect();
-    fused.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    fused.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Hard threshold: drop results with normalized score < 0.5 (noise floor)
 
     fused.truncate(limit);
+    let elapsed = _start.elapsed();
+    log_debug!("search", "hybrid_search done: {} results in {:?}", fused.len(), elapsed);
     Ok(fused)
 }
 
@@ -363,7 +373,7 @@ pub fn bm25_precise_search(
                            default_hit_type: &str| {
         for hit in hits {
             let key = (hit.name.clone(), hit.file_path.clone());
-            let norm_bm25 = 2.0 / (1.0 + hit.score.abs() / 8.0);
+            let norm_bm25 = (-hit.score / 12.0).min(1.0).max(0.0);
             let score = weight * norm_bm25;
             let is_doc = matches!(hit.hit_type, storage::fts::HitType::Doc);
             let is_file = matches!(hit.hit_type, storage::fts::HitType::File);
@@ -428,6 +438,9 @@ pub fn vector_semantic_search(
         return Ok(Vec::new());
     }
 
+    // Resolve branch name to integer branch_id (same as run_vector_search)
+    let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).unwrap_or(0);
+
     // Batch fetch details
     let rowids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
     let placeholders: String = rowids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -442,7 +455,7 @@ pub fn vector_semantic_search(
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = rowids.iter()
         .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
         .collect();
-    params.push(Box::new(branch.to_string()));
+    params.push(Box::new(branch_id));
 
     let mut detail_map: HashMap<i64, (String, String, String, i64, String, String)> = HashMap::new();
     if let Ok(mut stmt) = conn.prepare(&sql) {

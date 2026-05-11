@@ -315,3 +315,80 @@ fn test_clang_parser() {
     );
 }
 
+#[test]
+#[ignore]
+fn test_clang_line_and_path() {
+    let fixture = "tests/fixtures/line_and_path";
+    let repo = "line_path_test";
+
+    // Clean any previous test DB
+    let db_path = std::env::var("HOME")
+        .map(|h| format!("{}/.codeloom/{}.rag.db", h, repo))
+        .unwrap_or_default();
+    let _ = std::fs::remove_file(&db_path);
+
+    // Index the fixture
+    let output = Command::new("target/debug/codeloom")
+        .args(["index", fixture, "--repo", repo, "--branch", "main"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "index failed: {} {}", stdout, stderr);
+    assert!(stdout.contains("symbols"), "should have symbols: {}", stdout);
+
+    // Open the DB directly
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+
+    // 1. Verify MyClass header symbol: line_start != 0
+    let (ls, le): (i64, i64) = conn.query_row(
+        "SELECT line_start, json_extract(attrs, '$.line_end') FROM nodes \
+         WHERE name='MyClass' AND kind='class' AND repo=?1 AND node_type='sym'",
+        [repo], |r| Ok((r.get(0)?, r.get(1)?))
+    ).unwrap();
+    assert!(ls > 0, "MyClass line_start should be > 0, got {}", ls);
+    assert!(le >= ls, "MyClass line_end ({}) >= line_start ({})", le, ls);
+
+    // 2. Verify MyClass is not external
+    let is_ext: bool = conn.query_row(
+        "SELECT json_extract(attrs, '$.is_external') FROM nodes \
+         WHERE name='MyClass' AND kind='class' AND repo=?1 AND node_type='sym'",
+        [repo], |r| r.get(0)
+    ).unwrap();
+    assert!(!is_ext, "MyClass should NOT be external (is_external=true)");
+
+    // 3. Verify MyClass file_path points to the header
+    let file_path: String = conn.query_row(
+        "SELECT file_path FROM nodes \
+         WHERE name='MyClass' AND kind='class' AND repo=?1 AND node_type='sym'",
+        [repo], |r| r.get(0)
+    ).unwrap();
+    assert!(file_path.contains("my_class.h"), "MyClass file_path should contain 'my_class.h', got: {}", file_path);
+
+    // 4. Verify helper function (defined in main.cpp) has line_start > 0
+    let ls_helper: i64 = conn.query_row(
+        "SELECT line_start FROM nodes \
+         WHERE name='helper' AND kind='function' AND repo=?1 AND node_type='sym'",
+        [repo], |r| r.get(0)
+    ).unwrap();
+    assert!(ls_helper > 0, "helper() line_start should be > 0, got {}", ls_helper);
+
+    // 5. Verify field 'value' has line_start > 0
+    let ls_field: i64 = conn.query_row(
+        "SELECT line_start FROM nodes \
+         WHERE name='MyClass::value' AND kind='field' AND repo=?1 AND node_type='sym'",
+        [repo], |r| r.get(0)
+    ).unwrap();
+    assert!(ls_field > 0, "MyClass::value line_start should be > 0, got {}", ls_field);
+
+    // 6. Verify edges exist (param_type or calls)
+    let edge_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM edges WHERE source_repo=?1",
+        [repo], |r| r.get(0)
+    ).unwrap();
+    assert!(edge_count > 0, "should have edges, got {}", edge_count);
+
+    // Cleanup
+    let _ = std::fs::remove_file(&db_path);
+}
+

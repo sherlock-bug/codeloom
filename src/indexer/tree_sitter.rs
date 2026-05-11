@@ -1,6 +1,8 @@
 use crate::storage::symbols::Symbol;
+use crate::log_debug;
 use tree_sitter::Parser;
 use walkdir::WalkDir;
+use std::time::Instant;
 
 pub struct FileInfo { pub path: String, pub language: &'static str, pub modified: std::time::SystemTime }
 
@@ -24,6 +26,8 @@ pub fn detect_language(fp: &str) -> Option<&'static str> {
 }
 
 pub fn collect_files(root: &str) -> Vec<FileInfo> {
+    let start = Instant::now();
+    log_debug!("indexer::tree_sitter", "collect_files scanning {}", root);
     let git_files = get_git(root);
     let ignore_patterns = crate::ignore::load_patterns(root);
     let mut files = Vec::new(); let mut skipped = 0usize; let mut loom_skipped = 0usize;
@@ -38,8 +42,11 @@ pub fn collect_files(root: &str) -> Vec<FileInfo> {
             }}
         }
     }
-    if loom_skipped>0 { println!("  Skipped {} files (matched .codeloomignore)", loom_skipped); }
-    if skipped>0 { println!("  Skipped {} gitignored files", skipped); }
+    if loom_skipped>0 { log_debug!("indexer::tree_sitter", "loom_skipped {} files", loom_skipped); }
+    if skipped>0 { log_debug!("indexer::tree_sitter", "skipped {} gitignored files", skipped); }
+    let elapsed = start.elapsed();
+    log_debug!("indexer::tree_sitter", "collect_files done: {} files, {} skipped, {} loom_skipped in {}ms",
+        files.len(), skipped, loom_skipped, elapsed.as_millis());
     files
 }
 
