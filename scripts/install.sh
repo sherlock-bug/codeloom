@@ -138,7 +138,20 @@ else
     esac
 
     echo "Downloading codeloom for $OS/$ARCH from Gitee..."
-    curl -sSL --connect-timeout 10 --max-time 120 "$BASE_URL/$BINARY" -o "$INSTALL_DIR/codeloom"
+    ARCHIVE="codeloom-${VERSION}-linux-x86_64.tar.gz"
+    curl -sSL --connect-timeout 10 --max-time 120 "${BASE_URL}/${ARCHIVE}" -o "/tmp/${ARCHIVE}"
+    if [ $? -ne 0 ] || [ ! -s "/tmp/${ARCHIVE}" ]; then
+        echo "Gitee download failed, trying GitHub..."
+        curl -sSL --connect-timeout 10 --max-time 120 \
+          "https://github.com/sherlock-bug/codeloom/releases/download/${VERSION}/${ARCHIVE}" \
+          -o "/tmp/${ARCHIVE}"
+    fi
+    if [ $? -ne 0 ] || [ ! -s "/tmp/${ARCHIVE}" ]; then
+        echo "Download failed. Try: install from source"
+        exit 1
+    fi
+    tar xzf "/tmp/${ARCHIVE}" -C "$INSTALL_DIR"
+    rm -f "/tmp/${ARCHIVE}"
     chmod +x "$INSTALL_DIR/codeloom"
 fi
 fi
