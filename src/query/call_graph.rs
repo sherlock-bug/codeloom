@@ -11,19 +11,24 @@ pub fn get_call_graph(
     branch: &str,
     direction: &str,
     max_depth: usize,
+    sym_id: Option<i64>,
 ) -> String {
     let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).unwrap_or(0);
     let bwc = format!("AND (b.branch_id = {} OR b.branch_id = 0)", branch_id);
-    let exact_sql = format!(
-        "SELECT n.id FROM nodes n JOIN branches b ON n.id=b.node_id WHERE n.repo=?1 AND n.name=?2 AND n.node_type='sym' {}",
-        bwc
-    );
-    let sym_ids: Vec<i64> = match conn.prepare(&exact_sql) {
-        Ok(mut stmt) => stmt
-            .query_map(rusqlite::params![repo, name], |r| r.get(0))
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default(),
-        Err(_) => return format!("Error querying symbol '{}'", name),
+    let sym_ids: Vec<i64> = if let Some(sid) = sym_id {
+        vec![sid]
+    } else {
+        let exact_sql = format!(
+            "SELECT n.id FROM nodes n JOIN branches b ON n.id=b.node_id WHERE n.repo=?1 AND n.name=?2 AND n.node_type='sym' {}",
+            bwc
+        );
+        match conn.prepare(&exact_sql) {
+            Ok(mut stmt) => stmt
+                .query_map(rusqlite::params![repo, name], |r| r.get(0))
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default(),
+            Err(_) => return format!("Error querying symbol '{}'", name),
+        }
     };
     if sym_ids.is_empty() {
         let like = format!("%{}%", name);

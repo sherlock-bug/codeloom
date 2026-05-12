@@ -8,6 +8,7 @@ use std::time::Instant;
 /// A fused search result from hybrid (BM25 + vector) search
 #[derive(Debug, Clone)]
 pub struct FusedResult {
+    pub id: i64,         // node rowid, 0 for fused/aggregated results
     pub score: f64, // weighted fusion score
     pub name: String,
     pub hit_type: String, // "code" or "doc"
@@ -44,6 +45,7 @@ pub fn weighted_fuse(
         let is_file = matches!(hit.hit_type, storage::fts::HitType::File);
         let ht = if is_doc { "doc" } else if is_file { "file" } else { "code" };
         let entry = entries.entry(key.clone()).or_insert(FusedResult {
+            id: hit.rowid,
             score: 0.0,
             name: hit.name.clone(),
             hit_type: ht.into(),
@@ -73,6 +75,7 @@ pub fn weighted_fuse(
             }
         } else {
             entries.insert(key, FusedResult {
+                id: 0,
                 score,
                 name: name.clone(),
                 hit_type: hit_type.clone(),
@@ -115,6 +118,7 @@ fn weighted_fuse_single(
         let is_doc = matches!(hit.hit_type, storage::fts::HitType::Doc);
         let ht = if is_doc { "doc" } else { default_hit_type };
         let entry = entries.entry(key.clone()).or_insert(FusedResult {
+            id: hit.rowid,
             score: 0.0,
             name: hit.name.clone(),
             hit_type: ht.into(),
@@ -138,6 +142,7 @@ fn weighted_fuse_single(
             if *doc_id != 0 { entry.doc_id = *doc_id; }
         } else {
             entries.insert(key, FusedResult {
+                id: 0,
                 score,
                 name: name.clone(),
                 hit_type: hit_type.clone(),
@@ -381,6 +386,7 @@ pub fn bm25_precise_search(
             entries.entry(key)
                 .and_modify(|e| { if score > e.score { e.score = score; } })
                 .or_insert(FusedResult {
+                    id: hit.rowid,
                     score, name: hit.name.clone(), hit_type: ht.into(),
                     file_path: hit.file_path.clone(), line_start: hit.line_start,
                     kind: hit.kind.clone(), signature: hit.sig.clone(),
@@ -489,6 +495,7 @@ pub fn vector_semantic_search(
                 String::new()
             };
             results.push(FusedResult {
+                id: *rowid,
                 score: sim,
                 name: name.clone(),
                 hit_type: "code".into(),

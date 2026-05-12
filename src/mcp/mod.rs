@@ -32,21 +32,21 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
         // DISABLED: {"name":"codeloom_status","description":"查看索引状态：符号数、边数、文档数、数据库大小。在用其他MCP工具前先调用此工具确认仓库已索引且数据非空。branch/repo（必填）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
         {"name":"codeloom_list_symbols","description":"**优先使用**：按名称模糊搜索已索引的符号。优先于grep/rg使用——索引覆盖项目所有文件及#include的第三方头文件（grep只能搜当前目录）。返回结构化结果：名称、类型、文件路径、行号。C++类方法用ClassName::methodName格式。如pattern=\"login\"匹配handleLogin、loginUser等。branch/repo（必填）","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["pattern","repo","branch"]}},
-        {"name":"codeloom_get_call_graph","description":"**首选方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。优于多次调neighbor_graph拼凑——一次到位且带递归深度控制。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。branch/repo（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["name","repo","branch","direction"]}},
+        {"name":"codeloom_get_call_graph","description":"**首选方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。优于多次调neighbor_graph拼凑——一次到位且带递归深度控制。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["repo","branch","direction"]}},
         {"name":"codeloom_search","description":"【必须使用，替代grep/rg】精确BM25关键词搜索：比grep更快（预索引）、覆盖更全（含#include头文件和已索引文档）。搜索符号名、注释、文档内容和文件名，符号名匹配权重高于注释匹配。query可以是符号名（AuthService/compaction）或中文关键词。kind可选按符号类型过滤。不涉及语义理解——如需语义搜索用codeloom_semantic_search。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
 
                 {"name":"codeloom_semantic_search","description":"语义向量搜索：用自然语言描述功能查找相关符号。适合「处理用户登录的函数」「内存分配的代码在哪」这类查询，不适合已知精确符号名的查找。只搜索符号不搜索文档/注释。无kind过滤。需要向量模型已加载。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
-        {"name":"codeloom_inspect","description":"查看符号节点的全部信息：定义、文档注释、所有关联边（调用/继承/包含/参数/返回/字段）。比逐个grep再read_file更高效——一条命令看清符号的全貌。name=符号完整名称（C++类方法用ClassName::methodName格式）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["name","repo","branch"]}},
+        {"name":"codeloom_inspect","description":"查看符号节点的全部信息：定义、文档注释、所有关联边。name或id至少传一个，传id精度最高。name=符号完整名称（C++类方法用ClassName::methodName格式）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
 
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。索引需通过 CLI 执行：codeloom index <path> --repo <name> --branch <branch>。无需任何参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
         // DISABLED: {"name":"codeloom_get_doc","description":"获取文档节点的完整内容及嵌入图片。doc_id=文档节点ID（从搜索或overview结果中获得），repo=仓库名，branch=分支名。返回标题、章节路径、层级、内容、文件路径、格式、节点类型及图片列表（base64编码）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["doc_id","repo","branch"]}},
         // DISABLED: {"name":"codeloom_query_excel","description":"回答Excel表格问题（筛选、查找行列数据等）。doc_id=文档节点ID（Excel文档内节点），repo=仓库名，branch=分支名（必填）。mode可选：row（返回整行键值对）、column（返回整列）、filter（按条件过滤，filter参数为过滤表达式如'销售额 > 5000'）、auto（根据节点类型自动推断）。limit最多返回行数（默认20）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["row","column","filter","auto"]},"filter":{"type":"string"},"search":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["doc_id","repo","branch"]}},
         {"name":"codeloom_schema","description":"导出CodeLoom v0.7元数据：15种节点类型（function/method/class/struct/enum/enum_value/field/global/static_var/template_function/macro/namespace/template_instance/typedef/string_literal）和11种边类型（calls/inherits/overrides/instantiates/param_type/return_type/includes/uses_type/contains/aliases/uses）。拿不准参数值时调用此工具查看可用节点类型和边类型枚举。无需参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
-        {"name":"codeloom_path_analysis","description":"回答『A到B怎么走』『A和B有什么关系』：在两个符号之间搜索关系路径，跨函数调用、数据流、继承等多种边类型。优于逐层调用codeloom_call_graph：一次调用自动跨边类型搜索最短路径，一键覆盖calls/inherits/param_type等多类边。source=起始符号名，target=目标符号名，mode=shortest|all（默认shortest），edge_filter可选限定边类型（如['calls','calls_override']只看调用路径），direction=forward|reverse|both（默认both）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"target":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["shortest","all"]},"max_paths":{"type":"integer","default":20},"max_depth":{"type":"integer","default":10},"direction":{"type":"string","enum":["forward","reverse","both"]},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["source","target","repo","branch"]}},
-        {"name":"codeloom_impact_analysis","description":"回答『改了X会影响谁』『X被谁依赖』：沿边传递闭包N跳分析影响范围。优于codeloom_call_graph：自动N跳递归，不仅是直接调用者。优于codeloom_neighbor_graph：传递闭包而非只看1跳邻居。symbol=要分析的符号名，direction=forward|reverse|both（默认reverse），radius=跳数（默认3），edge_filter可选限定边类型。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]},"radius":{"type":"integer","default":3},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["symbol","repo","branch"]}},
-        {"name":"codeloom_neighbor_graph","description":"回答『X周围都有什么』『X直接调用了什么/被什么调用』：查看符号1跳范围内的直接邻居，按边类型分组返回（calls/returns/param_type/inherits等）。优于codeloom_impact_analysis：只看直接邻居不递归；优于grep：自动关联calls/returns/param_type/uses等所有边类型，无需按类型分别搜索。symbol=符号名，direction=forward|reverse|both（默认both），固定depth=1。对class/struct会跳过其成员（方法/字段），改为暴露成员引用的外部符号。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]}},"required":["symbol","repo","branch"]}},
-        {"name":"codeloom_inheritance_tree","description":"回答『谁继承了X』『X继承了什么』：查看类的完整继承树，含父类、子类和虚方法覆写列表。优于grep 'extends'/'public'：自动递归解析完整继承链，不遗漏间接继承。symbol=类名，direction=up|down|both（默认down），max_depth=递归深度（默认5）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["up","down","both"]},"max_depth":{"type":"integer","default":5}},"required":["symbol","repo","branch"]}},
+        {"name":"codeloom_path_analysis","description":"回答『A到B怎么走』『A和B有什么关系』：在两个符号之间搜索关系路径，跨函数调用、数据流、继承等多种边类型。优于逐层调用codeloom_call_graph：一次调用自动跨边类型搜索最短路径，一键覆盖calls/inherits/param_type等多类边。source=起始符号名，target=目标符号名，mode=shortest|all（默认shortest），edge_filter可选限定边类型（如['calls','calls_override']只看调用路径），direction=forward|reverse|both（默认both）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"source_id":{"type":"integer","description":"起始符号节点ID（优先使用）"},"source":{"type":"string"},"target_id":{"type":"integer","description":"目标符号节点ID（优先使用）"},"target":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["shortest","all"]},"max_paths":{"type":"integer","default":20},"max_depth":{"type":"integer","default":10},"direction":{"type":"string","enum":["forward","reverse","both"]},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["repo","branch"]}},
+        {"name":"codeloom_impact_analysis","description":"回答『改了X会影响谁』『X被谁依赖』：沿边传递闭包N跳分析影响范围。优于codeloom_call_graph：自动N跳递归，不仅是直接调用者。优于codeloom_neighbor_graph：传递闭包而非只看1跳邻居。symbol或id至少传一个，传id精度最高。direction=forward|reverse|both（默认reverse），radius=跳数（默认3），edge_filter可选限定边类型。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]},"radius":{"type":"integer","default":3},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["repo","branch"]}},
+        {"name":"codeloom_neighbor_graph","description":"回答『X周围都有什么』『X直接调用了什么/被什么调用』：查看符号1跳范围内的直接邻居，按边类型分组返回（calls/returns/param_type/inherits等）。优于codeloom_impact_analysis：只看直接邻居不递归；优于grep：自动关联calls/returns/param_type/uses等所有边类型，无需按类型分别搜索。symbol或id至少传一个，传id精度最高。direction=forward|reverse|both（默认both），固定depth=1。对class/struct会跳过其成员，改为暴露成员引用的外部符号。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]}},"required":["repo","branch"]}},
+        {"name":"codeloom_inheritance_tree","description":"回答『谁继承了X』『X继承了什么』：查看类的完整继承树，含父类、子类和虚方法覆写列表。优于grep 'extends'/'public'：自动递归解析完整继承链，不遗漏间接继承。symbol=类名，direction=up|down|both（默认down），max_depth=递归深度（默认5）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["up","down","both"]},"max_depth":{"type":"integer","default":5}},"required":["repo","branch"]}},
     ]}})
 }
 
@@ -81,6 +81,8 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
         "codeloom_path_analysis" => {
             let source = args["source"].as_str().unwrap_or("");
             let target = args["target"].as_str().unwrap_or("");
+            let source_id = args["source_id"].as_i64();
+            let target_id = args["target_id"].as_i64();
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             let branch = args["branch"].as_str().unwrap_or("");
             let mode = args["mode"].as_str().unwrap_or("shortest");
@@ -91,11 +93,14 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
                 .unwrap_or_default();
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
-            if source.is_empty() || target.is_empty() { return err_resp(id, "source and target are required"); }
-            path_analysis(&repo.unwrap(), branch, source, target, mode, max_depth, max_paths, &edge_filter)
+            if (source.is_empty() && source_id.is_none()) || (target.is_empty() && target_id.is_none()) {
+                return err_resp(id, "source/source_id and target/target_id are required (at least one each)");
+            }
+            path_analysis(&repo.unwrap(), branch, source, target, mode, max_depth, max_paths, &edge_filter, source_id, target_id)
         }
         "codeloom_impact_analysis" => {
             let symbol = args["symbol"].as_str().unwrap_or("");
+            let sym_id = args["id"].as_i64();
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             let branch = args["branch"].as_str().unwrap_or("");
             let direction = args["direction"].as_str().unwrap_or("reverse");
@@ -105,29 +110,31 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
                 .unwrap_or_default();
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
-            if symbol.is_empty() { return err_resp(id, "symbol is required"); }
-            impact_analysis(&repo.unwrap(), branch, symbol, direction, radius, &edge_filter)
+            if symbol.is_empty() && sym_id.is_none() { return err_resp(id, "symbol or id is required"); }
+            impact_analysis(&repo.unwrap(), branch, symbol, direction, radius, &edge_filter, sym_id)
         }
         "codeloom_neighbor_graph" => {
             let symbol = args["symbol"].as_str().unwrap_or("");
+            let sym_id = args["id"].as_i64();
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             let branch = args["branch"].as_str().unwrap_or("");
             let direction = args["direction"].as_str().unwrap_or("both");
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
-            if symbol.is_empty() { return err_resp(id, "symbol is required"); }
-            neighbor_graph(&repo.unwrap(), branch, symbol, direction)
+            if symbol.is_empty() && sym_id.is_none() { return err_resp(id, "symbol or id is required"); }
+            neighbor_graph(&repo.unwrap(), branch, symbol, direction, sym_id)
         }
         "codeloom_inheritance_tree" => {
             let symbol = args["symbol"].as_str().unwrap_or("");
+            let sym_id = args["id"].as_i64();
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             let branch = args["branch"].as_str().unwrap_or("");
             let direction = args["direction"].as_str().unwrap_or("down");
             let max_depth = args["max_depth"].as_u64().unwrap_or(5) as usize;
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
-            if symbol.is_empty() { return err_resp(id, "symbol is required"); }
-            inheritance_tree(&repo.unwrap(), branch, symbol, direction, max_depth)
+            if symbol.is_empty() && sym_id.is_none() { return err_resp(id, "symbol or id is required"); }
+            inheritance_tree(&repo.unwrap(), branch, symbol, direction, max_depth, sym_id)
         }
         "codeloom_list_symbols" => {
             let pattern = args["pattern"].as_str().unwrap_or("");
@@ -141,14 +148,16 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
         "codeloom_get_call_graph" => {
             let branch = args["branch"].as_str().unwrap_or("");
             let sym_name = args["name"].as_str().unwrap_or("");
+            let sym_id = args["id"].as_i64();
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             let direction = args["direction"].as_str().unwrap_or("callers");
             let max_depth = args["max_depth"].as_u64().unwrap_or(3) as usize;
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
+            if sym_name.is_empty() && sym_id.is_none() { return err_resp(id, "name or id is required"); }
             let repo = repo.unwrap();
             let conn = match open_repo_db(&repo) { Ok(c) => c, Err(e) => return err_resp(id, &e) };
-            crate::query::call_graph::get_call_graph(&conn, sym_name, &repo, branch, direction, max_depth)
+            crate::query::call_graph::get_call_graph(&conn, sym_name, &repo, branch, direction, max_depth, sym_id)
         }
         "codeloom_search" => {
             let query = args["query"].as_str().unwrap_or("");
@@ -180,11 +189,12 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
         "codeloom_inspect" => {
             let branch = args["branch"].as_str().unwrap_or("");
             let sym_name = args["name"].as_str().unwrap_or("");
+            let sym_id = args["id"].as_i64();
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
-            if sym_name.is_empty() { return err_resp(id, "name is required"); }
-            inspect_symbol(sym_name, &repo.unwrap(), branch)
+            if sym_name.is_empty() && sym_id.is_none() { return err_resp(id, "name or id is required"); }
+            inspect_symbol(sym_name, &repo.unwrap(), branch, sym_id)
         }
                 "codeloom_list_repos" => {
             let repos = crate::query::repo::list_repos();
@@ -283,8 +293,8 @@ fn list_symbols(pattern: &str, repo: &str, branch: &str, limit: usize) -> String
                 out.push_str("  (none)\n");
             } else {
                 for hit in hits {
-                    out.push_str(&format!("  [{:10}] {:40}  @ {}:{}\n",
-                        hit.kind, hit.name, &hit.file_path[..60.min(hit.file_path.len())], hit.line_start));
+                    out.push_str(&format!("  id={} [{:10}] {:40}  @ {}:{}\n",
+                        hit.rowid, hit.kind, hit.name, &hit.file_path[..60.min(hit.file_path.len())], hit.line_start));
                 }
             }
             out
@@ -293,8 +303,9 @@ fn list_symbols(pattern: &str, repo: &str, branch: &str, limit: usize) -> String
     }
 }
 
-fn inspect_symbol(name: &str, repo: &str, branch: &str) -> String {
+fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
+    let name = if name.is_empty() { if let Some(sid) = sym_id { conn.query_row("SELECT name FROM nodes WHERE id=?1", rusqlite::params![sid], |r| r.get::<_, String>(0)).unwrap_or_default() } else { name.to_string() } } else { name.to_string() };
     let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
     let bwc = branch_where_clause(branch);
     let sql = format!("SELECT n.id, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='sym' AND n.repo=?1 AND n.name=?2 {}", bwc);
@@ -393,6 +404,7 @@ fn bm25_precise_search(query: &str, repo: &str, branch: &str, limit: usize, kind
                 let is_code = r.hit_type == "code";
                 let is_doc = r.hit_type == "doc";
                 let mut obj = serde_json::json!({
+                    "id": r.id,
                     "score": r.score,
                     "name": r.name,
                     "type": r.hit_type,
@@ -495,12 +507,12 @@ fn schema_meta() -> String {
 
 // ── Path Analysis ───────────────────────────────────────────────────────
 
-fn path_analysis(repo: &str, branch: &str, source: &str, target: &str, mode: &str, max_depth: usize, max_paths: usize, edge_filter: &[String]) -> String {
+fn path_analysis(repo: &str, branch: &str, source: &str, target: &str, mode: &str, max_depth: usize, max_paths: usize, edge_filter: &[String], source_id: Option<i64>, target_id: Option<i64>) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return err_resp(serde_json::Value::Null, &e).to_string() };
-    let sid = match crate::query::graph::resolve_symbol_id(&conn, source, repo, branch) {
+    let sid = match crate::query::graph::resolve_symbol_id_or_name(&conn, source_id, source, repo, branch) {
         Some(id) => id, None => return format!("Symbol '{}' not found", source),
     };
-    let tid = match crate::query::graph::resolve_symbol_id(&conn, target, repo, branch) {
+    let tid = match crate::query::graph::resolve_symbol_id_or_name(&conn, target_id, target, repo, branch) {
         Some(id) => id, None => return format!("Symbol '{}' not found", target),
     };
     let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
@@ -513,9 +525,9 @@ fn path_analysis(repo: &str, branch: &str, source: &str, target: &str, mode: &st
 
 // ── Impact Analysis ─────────────────────────────────────────────────────
 
-fn impact_analysis(repo: &str, branch: &str, symbol: &str, direction: &str, radius: usize, edge_filter: &[String]) -> String {
+fn impact_analysis(repo: &str, branch: &str, symbol: &str, direction: &str, radius: usize, edge_filter: &[String], sym_id: Option<i64>) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return err_resp(serde_json::Value::Null, &e).to_string() };
-    let sid = match crate::query::graph::resolve_symbol_id(&conn, symbol, repo, branch) {
+    let sid = match crate::query::graph::resolve_symbol_id_or_name(&conn, sym_id, symbol, repo, branch) {
         Some(id) => id, None => return format!("Symbol '{}' not found", symbol),
     };
     let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
@@ -528,9 +540,9 @@ fn impact_analysis(repo: &str, branch: &str, symbol: &str, direction: &str, radi
 
 // ── Neighbor Graph ──────────────────────────────────────────────────────
 
-fn neighbor_graph(repo: &str, branch: &str, symbol: &str, direction: &str) -> String {
+fn neighbor_graph(repo: &str, branch: &str, symbol: &str, direction: &str, sym_id: Option<i64>) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return err_resp(serde_json::Value::Null, &e).to_string() };
-    let sid = match crate::query::graph::resolve_symbol_id(&conn, symbol, repo, branch) {
+    let sid = match crate::query::graph::resolve_symbol_id_or_name(&conn, sym_id, symbol, repo, branch) {
         Some(id) => id, None => return format!("Symbol '{}' not found", symbol),
     };
     let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
@@ -546,9 +558,9 @@ fn neighbor_graph(repo: &str, branch: &str, symbol: &str, direction: &str) -> St
 
 // ── Inheritance Tree ────────────────────────────────────────────────────
 
-fn inheritance_tree(repo: &str, branch: &str, symbol: &str, direction: &str, max_depth: usize) -> String {
+fn inheritance_tree(repo: &str, branch: &str, symbol: &str, direction: &str, max_depth: usize, sym_id: Option<i64>) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return err_resp(serde_json::Value::Null, &e).to_string() };
-    let sid = match crate::query::graph::resolve_symbol_id(&conn, symbol, repo, branch) {
+    let sid = match crate::query::graph::resolve_symbol_id_or_name(&conn, sym_id, symbol, repo, branch) {
         Some(id) => id, None => return format!("Symbol '{}' not found", symbol),
     };
     let root_name = crate::query::graph::symbol_name_by_id(&conn, sid).unwrap_or_default();

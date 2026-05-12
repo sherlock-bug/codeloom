@@ -99,6 +99,31 @@ pub fn resolve_symbol_id(conn: &Connection, name: &str, repo: &str, branch: &str
     ).ok()
 }
 
+/// Resolve symbol by id (preferred) or name (fallback).
+/// Returns None if neither resolves.
+pub fn resolve_symbol_id_or_name(
+    conn: &Connection,
+    id_opt: Option<i64>,
+    name: &str,
+    repo: &str,
+    branch: &str,
+) -> Option<i64> {
+    if let Some(sid) = id_opt {
+        // Validate the id exists
+        conn.query_row(
+            "SELECT 1 FROM nodes WHERE id=?1 AND node_type='sym'",
+            rusqlite::params![sid],
+            |_| Ok(()),
+        )
+        .ok()
+        .map(|_| sid)
+    } else if !name.is_empty() {
+        resolve_symbol_id(conn, name, repo, branch)
+    } else {
+        None
+    }
+}
+
 /// Get symbol name by id.
 pub fn symbol_name_by_id(conn: &Connection, id: i64) -> Option<String> {
     conn.query_row("SELECT name FROM nodes WHERE id = ?1", rusqlite::params![id], |r| r.get(0)).ok()
