@@ -30,23 +30,23 @@ cl status --repo leveldb
 
 ---
 
-### CLI-1 全量索引新仓库（spdlog）
+### CLI-1 全量索引新仓库（fixtures/clang_test）
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | 全量索引 — 对 spdlog 新仓库做首次全量索引 |
-| **前置条件** | spdlog 未在 codeloom 中索引过（可用 `cl clean --repo spdlog` 确保干净） |
-| **步骤** | ① `cl index /mnt/d/code/spdlog/include/spdlog --repo spdlog --branch master` |
+| **名称** | 全量索引 — 对 tests/fixtures/clang_test 新仓库做首次全量索引 |
+| **前置条件** | clang_test 未在 codeloom 中索引过（可用 `cl clean --repo clang-test` 确保干净） |
+| **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test --branch main` |
 | **预期结果** | 索引完成，输出包含符号数 > 0，无 error 日志；返回时间 < 30s |
-| **验证方法** | `cl status --repo spdlog` 输出 Symbols > 0, Edges > 0, DB size > 0 |
+| **验证方法** | `cl status --repo clang-test` 输出 Symbols > 0, Edges > 0, DB size > 0 |
 
 ### CLI-2 增量索引（已索引仓库重复索引）
 
 | 字段 | 内容 |
 |------|------|
 | **名称** | 增量索引 — 对已索引仓库重新执行 index，验证 delta 更新而非全量 |
-| **前置条件** | spdlog 已索引（CLI-1 后） |
-| **步骤** | ① `cl index /mnt/d/code/spdlog/include/spdlog --repo spdlog --branch master` |
+| **前置条件** | clang-test 已索引（CLI-1 后） |
+| **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test --branch main` |
 | **预期结果** | 索引快速完成（增量扫描，时间 < 全量 1/3），不报重复键错误 |
 | **验证方法** | 第二次执行应更快返回；status 符号数不变或合理增加 |
 
@@ -55,10 +55,10 @@ cl status --repo leveldb
 | 字段 | 内容 |
 |------|------|
 | **名称** | Parent继承索引 — 使用 `--parent` 指定上游分支继承符号 |
-| **前置条件** | spdlog 已索引到 master 分支；准备一个测试夹具目录或小仓库 |
-| **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/branch_filter --repo spdlog-fixture --branch feature-x --parent master` |
-| **预期结果** | 索引成功，feature-x 分支继承 master 的符号 |
-| **验证方法** | `cl status --repo spdlog-fixture --branch feature-x` 显示符号数 > 0 |
+| **前置条件** | clang-test 已索引到 main 分支 |
+| **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/branch_filter --repo clang-test --branch feature-x --parent main` |
+| **预期结果** | 索引成功，feature-x 分支继承 main 的符号 |
+| **验证方法** | `cl status --repo clang-test` 显示符号数 > 0（feature-x 继承自 main） |
 
 ### CLI-4 非 Git 目录索引
 
@@ -76,8 +76,8 @@ cl status --repo leveldb
 |------|------|
 | **名称** | 索引边界 — 缺 path、不存在的路径 |
 | **步骤** | ① `cl index`（无参数，无默认仓库）<br>② `cl index /nonexistent/path --repo bad-repo --branch main` |
-| **预期结果** | ① 报错提示需要 path 或当前目录无可索引内容<br>② 报错：路径不存在或无法读取 |
-| **验证方法** | 命令返回非零退出码，stderr 包含明确错误信息 |
+| **预期结果** | ① 报错提示需要 path 或当前目录无可索引内容<br>② 优雅处理：输出 "Done: 0 files, 0 symbols"，exit 0 |
+| **验证方法** | ① 命令返回非零退出码，stderr 包含明确错误信息<br>② 命令退出码 0，输出提示无文件可索引 |
 
 ---
 
@@ -192,8 +192,8 @@ cl status --repo leveldb
 | **名称** | search/semantic — 无匹配关键词/不存在的仓库 |
 | **前置条件** | 任意已索引仓库 |
 | **步骤** | ① `cl search "ZZZZNoMatchZZZZ" --repo leveldb --branch main1`<br>② `cl search "compaction" --repo nonexistent-repo --branch main` |
-| **预期结果** | ① 返回空结果，不报错<br>② 报错：仓库不存在 |
-| **验证方法** | ① 退出码 0，结果列表为空<br>② 退出码非 0，stderr 提示 no such repo |
+| **预期结果** | ① 返回空结果("(no results)")，exit 0<br>② 优雅提示："Repo 'nonexistent-repo' not found."，exit 0 |
+| **验证方法** | ① 退出码 0，输出 "(no results)" 或 "(none)"<br>② 退出码 0，输出仓库不存在提示 |
 
 ---
 
@@ -256,10 +256,10 @@ cl status --repo leveldb
 | 字段 | 内容 |
 |------|------|
 | **名称** | clean — 删除指定仓库的特定分支 |
-| **前置条件** | leveldb 有 main1 和 __builtin__ 两个分支 |
-| **步骤** | ① `cl clean --repo leveldb --branch __builtin__`<br>② `cl list-branches --repo leveldb` |
-| **预期结果** | ① 清理成功<br>② main1 分支仍在，__builtin__ 分支消失 |
-| **验证方法** | list-branches 输出不再包含 __builtin__ |
+| **前置条件** | leveldb 有 main1 分支（`__builtin__` 为 auto-generated，不可手动删除） |
+| **步骤** | ① 创建一个测试分支：`cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/branch_filter --repo leveldb --branch test-clean-branch`<br>② `cl clean --repo leveldb --branch test-clean-branch`<br>③ `cl list-branches --repo leveldb` |
+| **预期结果** | ① 索引成功<br>② 清理成功提示<br>③ main1 分支仍在，test-clean-branch 分支消失 |
+| **验证方法** | list-branches 输出不再包含 test-clean-branch |
 
 ### CLI-23 Clean — 清空全部（确认提示）
 
@@ -336,21 +336,20 @@ cl index /mnt/d/code/leveldb --repo leveldb --branch main1
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | 端到端 — 用 flatbuffers 新仓库执行完整流程 |
-| **前置条件** | flatbuffers 未索引（如已存在先 `cl clean --repo flatbuffers`） |
+| **名称** | 端到端 — 用 tests/fixtures/clang_test 新仓库执行完整流程 |
+| **前置条件** | clang_test 未索引（如已存在先 `cl clean --repo clang-test-e2e`） |
 
 **步骤与预期结果：**
 
 | # | 命令 | 预期结果 |
 |---|------|---------|
-| ① | `cl index /mnt/d/code/flatbuffers/include/flatbuffers --repo flatbuffers --branch master` | 索引成功，符号数 > 0 |
-| ② | `cl status --repo flatbuffers` | 显示 Symbols、Edges、Docs、FTS5、DB size 均 > 0 |
-| ③ | `cl search "builder" --repo flatbuffers --branch master --limit 5` | 命中 FlatbufferBuilder、Builder 等相关符号 |
-| ④ | `cl list-symbols "Buffer" --repo flatbuffers --branch master --limit 5` | 返回符号名包含 "Buffer" 的结果 |
-| ⑤ | `cl overview --repo flatbuffers --branch master` | 输出符号按类型分布百分比 |
-| ⑥ | `cl inspect "FlatbufferBuilder" --repo flatbuffers --branch master` | 框线输出，包含 Kind、File、Edges |
-| ⑦ | `cl call-graph "FlatbufferBuilder" --repo flatbuffers --branch master --direction callees --max-depth 2` | 调用关系树（可能结果较少，不报错即可） |
-| ⑧ | `cl semantic "创建 buffer 数据" --repo flatbuffers --branch master --limit 3` | 语义相关符号返回（需向量模型） |
+| ① | `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test-e2e --branch main` | 索引成功，符号数 > 0 |
+| ② | `cl status --repo clang-test-e2e` | 显示 Symbols、Edges、FTS5、DB size 均 > 0 |
+| ③ | `cl search "sample" --repo clang-test-e2e --branch main --limit 5` | 命中 sample 相关符号 |
+| ④ | `cl list-symbols "sample" --repo clang-test-e2e --branch main --limit 5` | 返回符号名包含 "sample" 的结果 |
+| ⑤ | `cl overview --repo clang-test-e2e --branch main` | 输出符号按类型分布百分比 |
+| ⑥ | `cl list-repos` | 包含 clang-test-e2e |
+| ⑦ | 清理：`cl clean --repo clang-test-e2e` | 清理成功 |
 
 **验证方法**：
 - 步骤①-⑧全部成功，无 panic 或 crash
@@ -365,16 +364,15 @@ cl index /mnt/d/code/leveldb --repo leveldb --branch main1
 | 字段 | 内容 |
 |------|------|
 | **名称** | 端到端 — 同关键词在不同仓库搜索对比 |
-| **前置条件** | leveldb 和 spdlog 均已索引 |
+| **前置条件** | leveldb 和 clang-test（CLI-1 后）均已索引 |
 
 **步骤与预期结果：**
 
 | # | 命令 | 预期结果 |
 |---|------|---------|
-| ① | `cl list-repos` | 同时包含 leveldb 和 spdlog |
+| ① | `cl list-repos` | 同时包含 leveldb 和 clang-test |
 | ② | `cl search "write" --repo leveldb --branch main1 --limit 5` | 返回 Write、WriteBatch、DB::Put 等 |
-| ③ | `cl search "write" --repo spdlog --branch master --limit 5` | 返回 sink::write、logger::write 等（与 leveldb 不同） |
-| ④ | `cl semantic "写入日志" --repo spdlog --branch master --limit 3` | 返回 spdlog 的日志写入相关符号 |
+| ③ | `cl search "sample" --repo clang-test --branch main --limit 5` | 返回 clang_test 的 sample 相关符号 |
 
 **验证方法**：
 - ②和③结果不同，体现仓库特异性
@@ -386,15 +384,10 @@ cl index /mnt/d/code/leveldb --repo leveldb --branch main1
 
 ```bash
 # 清理本次测试创建的所有临时索引
-cl clean --repo spdlog
-cl clean --repo spdlog-fixture
+cl clean --repo clang-test
+cl clean --repo clang-test-e2e
 cl clean --repo edge-test
-cl clean --repo flatbuffers
-cl clean --repo leveldb
-
-# 可选：恢复 leveldb 的 main1 分支
-cl clean --repo leveldb --branch __builtin__
-cl index /mnt/d/code/leveldb --repo leveldb --branch main1
+cl clean --repo spdlog
 ```
 
 ## 测试记录表

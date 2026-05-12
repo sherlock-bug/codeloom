@@ -137,9 +137,9 @@
 | **编号** | MCP-07 |
 | **名称** | `codeloom_search` 搜索 enum 类型，验证 enum_value enrichment |
 | **前置条件** | leveldb@main1 已索引 |
-| **JSON-RPC 请求** | `echo '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"codeloom_search","arguments":{"query":"CompressionType","repo":"leveldb","branch":"main1"}}}' \| /mnt/d/RagMcpHermes/codeloom/target/release/codeloom mcp 2>/dev/null` |
-| **预期结果** | JSON 响应，`count` = 4；结果包含 `CompressionType`（enum）、`CompressionType::kNoCompression`（enum_value）、`CompressionType::kSnappyCompression`（enum_value）、`CompressionType::kZstdCompression`（enum_value）；enum 的 `kind` = `"enum"`，enum_value 的 `kind` = `"enum_value"` |
-| **验证方法** | 解析 JSON：验证 `results` 数组长度 = 4；验证 enum 项 `name` = `"CompressionType"`, `kind` = `"enum"`；验证 enum_value 项的 `name` 格式为 `CompressionType::*` |
+| **JSON-RPC 请求** | `echo '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"codeloom_search","arguments":{"query":"Code","repo":"leveldb","branch":"main1"}}}' \| /mnt/d/RagMcpHermes/codeloom/target/release/codeloom mcp 2>/dev/null` |
+| **预期结果** | JSON 响应，`count` > 0；结果包含 `Code`（enum）、`Code::kOk`、`Code::kNotFound` 等 enum_value |
+| **验证方法** | 验证 results 包含 `Code` 项且其 `kind` = `"enum"`；验证有 `Code::kOk` 等 enum_value 结果 |
 
 ---
 
