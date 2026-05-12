@@ -146,9 +146,17 @@ Indexer（Clang/tree-sitter/doc/files）SHALL 写入 nodes 表作为主存储。
 - THEN INSERT SHALL 直接进入 nodes 表，node_type='sym'
 - AND 同步插入 branches 表（node_id = 刚插入的 nodes.id）
 
-### Requirement: doc 节点的 UNIQUE 约束与设计
+### Requirement: doc 节点的 UNIQUE 约束与设计 ✅ 已调研 (2026-05-12)
 索引器 SHALL 保证 nodes 表的 UNIQUE 约束正确覆盖所有节点类型，且 doc 节点的数据模型设计完备。
-当前疑点：nodes 表的 UNIQUE 约束可能存在覆盖不全的问题（如 doc 节点与 code/sym 节点的 key 构成不一致），doc 节点的字段设计不够周全，可能存在插入冲突或数据丢失的 bug。待详细排查确认。
+当前疑点：~~nodes 表的 UNIQUE 约束可能存在覆盖不全的问题（如 doc 节点与 code/sym 节点的 key 构成不一致），doc 节点的字段设计不够周全，可能存在插入冲突或数据丢失的 bug。待详细排查确认。~~
+
+**调研结论**：逐节点类型分析后，发现主要问题如下：
+1. **File 节点 ON CONFLICT 不匹配 schema** (🔴 高危) — `ON CONFLICT(repo, file_path, branch_id)` 与 schema `UNIQUE(content_hash, file_path, name, branch_id, repo)` 不兼容，SQLite 拒绝执行。**已修复** (2026-05-12)。
+2. **Doc 节点全部 branch_id=0** — section/chunk 写入不设 branch_id，走 DEFAULT 0。跨分支同一文档因 content_hash 相同会被 ON CONFLICT 合并（非覆盖），属于有意设计但 schema 语义矛盾。
+3. **Sym 节点 SELECT 缺 branch_id** — `symbols.rs:90-96` 的 upsert 检查不含 branch_id，跨分支相同符号可能误 UPDATE。属有意设计（跨分支符号去重），但 branch_id 语义被破坏。
+4. **chunk 节点 content 过长** — chunk 的 content 可能达 500 字，content_hash 为完整 SHA256，唯一性可靠。但 `split_at_punctuation` 可能导致同一节在不同索引轮次中切分不一致 → 不同 hash → ON CONFLICT 不命中 → 产生冗余节点。
+
+**剩余风险**：File 节点已修复，其余属低概率或有意设计，暂不处理。
 #### Scenario: 重复索引不丢数据
 - GIVEN 同一份代码库被多次索引
 - WHEN UNIQUE 约束生效时
