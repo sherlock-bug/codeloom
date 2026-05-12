@@ -264,7 +264,8 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             // also index docs
             index_docs(&conn, &path, &repo);
             let t2 = t0.elapsed();
-            index_includes(&conn, &path, &repo);
+            let branch_id = crate::storage::resolve_branch_id(&conn, &repo, &branch)?;
+            let _ = index_includes(&conn, &path, &repo, branch_id)?;
             match crate::storage::fts::fill_all_fts(&conn, &repo) {
                 Ok(n) => { eprintln!("  FTS5: {} entries indexed", n); log_info!("index", "FTS5 完成: {} entries", n); }
                 Err(e) => { eprintln!("  FTS5 warning: {}", e); log_error!("index", "FTS5 失败: {}", e); }
@@ -861,28 +862,134 @@ fn index_docs(conn: &rusqlite::Connection, dir: &str, repo: &str) {
 }
 
 /// Extract #include relations from source files and store as edges
-pub fn index_includes(conn: &rusqlite::Connection, dir: &str, repo: &str) -> usize {
+/// with real source/target file node IDs.
+pub fn index_includes(
+    conn: &rusqlite::Connection,
+    dir: &str,
+    repo: &str,
+    branch_id: i64,
+) -> anyhow::Result<usize> {
     let re = regex::Regex::new(r#"#include\s*[<"]([^>"]+)[>"]"#).unwrap();
     let mut count = 0;
     let ignore_patterns = crate::ignore::load_patterns(dir);
+
+    let mut src_stmt = conn.prepare(
+        "SELECT id FROM nodes WHERE repo=?1 AND node_type='file' AND name=?2"
+    )?;
+    let mut tgt_stmt = conn.prepare(
+        "SELECT id FROM nodes WHERE repo=?1 AND node_type='file' AND name=?2"
+    )?;
+
     for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()).filter(|e| e.file_type().is_file()) {
         let p = entry.path();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !["h","hpp","hxx","cpp","cxx","cc","c"].contains(&ext) { continue; }
         if crate::ignore::is_ignored(&p.to_string_lossy(), &ignore_patterns) { continue; }
-        if let Ok(content) = crate::util::read_file_smart(p) {
-            for cap in re.captures_iter(&content) {
-                let included = cap[1].to_string();
-                conn.execute(
-                    "INSERT OR IGNORE INTO edges (source_id, target_id, edge_type, source_repo) VALUES (0, 0, ?1, ?2)",
-                    rusqlite::params![format!("includes:{}", included), repo],
-                ).ok();
-                count += 1;
-            }
+
+        let content = match std::fs::read_to_string(p) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Resolve source_id from file path → file node
+        let rel_path = p.strip_prefix(dir)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .to_string()
+            .replace('\\', "/");
+
+        let source_id: Option<i64> = src_stmt.query_row(
+            rusqlite::params![repo, rel_path],
+            |r| r.get(0),
+        ).ok();
+
+        let source_id = match source_id {
+            Some(id) => id,
+            None => continue, // file not in nodes table, skip
+        };
+
+        for cap in re.captures_iter(&content) {
+            let included = cap[1].to_string();
+            let target_id = resolve_include_target(
+                &mut tgt_stmt, &included, &rel_path, repo,
+            );
+            conn.execute(
+                "INSERT OR IGNORE INTO edges (source_id, target_id, edge_type, source_repo, branch_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    source_id,
+                    target_id.unwrap_or(0),
+                    format!("includes:{}", included),
+                    repo,
+                    branch_id,
+                ],
+            )?;
+            count += 1;
         }
     }
     if count > 0 { println!("  Includes: {} edges", count); }
-    count
+    Ok(count)
+}
+
+/// Resolve a #include target path to a file node ID.
+/// Tries: (1) same directory as the source file, (2) project root.
+/// Returns None for system headers (e.g. <vector>) or unresolvable paths.
+fn resolve_include_target(
+    stmt: &mut rusqlite::Statement,
+    included: &str,
+    current_rel_path: &str,
+    repo: &str,
+) -> Option<i64> {
+    let included_path = std::path::Path::new(included);
+    if included_path.is_absolute() {
+        return None; // absolute paths are rare in #include, skip
+    }
+
+    // Try relative to the source file's directory
+    if let Some(parent) = std::path::Path::new(current_rel_path).parent() {
+        let candidate = parent.join(included);
+        let normalized = normalize_path(&candidate);
+        if let Some(id) = lookup_file_node(stmt, repo, &normalized) {
+            return Some(id);
+        }
+    }
+
+    // Try from project root (included path is relative to root)
+    if let Some(id) = lookup_file_node(stmt, repo, included) {
+        return Some(id);
+    }
+
+    None
+}
+
+/// Normalize a path: resolve `..` and `.` components.
+fn normalize_path(path: &std::path::Path) -> String {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(c) => {
+                components.push(c.to_str().unwrap_or(""));
+            }
+            std::path::Component::ParentDir => {
+                if !components.is_empty() {
+                    components.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    components.join("/")
+}
+
+/// Look up a file node by its relative path.
+fn lookup_file_node(
+    stmt: &mut rusqlite::Statement,
+    repo: &str,
+    path: &str,
+) -> Option<i64> {
+    stmt.query_row(
+        rusqlite::params![repo, path],
+        |r| r.get(0),
+    ).ok()
 }
 
 // ── Self-update ────────────────────────────────────────────────────────

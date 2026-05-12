@@ -40,7 +40,7 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
             source_repo TEXT, target_repo TEXT,
             branch_id INTEGER NOT NULL DEFAULT 0
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_ed_unique ON edges(source_id, edge_type, branch_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ed_unique ON edges(source_id, target_id, edge_type, branch_id);
         CREATE INDEX IF NOT EXISTS idx_ed_tgt ON edges(target_id);
         CREATE INDEX IF NOT EXISTS idx_ed_type ON edges(edge_type);
 

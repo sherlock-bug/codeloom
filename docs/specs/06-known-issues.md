@@ -38,11 +38,12 @@
 ### BUG-04: #include 边的 source_id/target_id 为 0
 
 - **涉及**: 内部能力（include 索引）
-- **现状**: 正则提取 `#include` 后写入 edges 表，但 `source_id=0, target_id=0`，无法关联到具体符号
-- **预期**: include 关系应关联到符号（至少可查，能用于路径分析）
-- **代码位置**: `src/cli/mod.rs:864-886`
-- **建议**: 需要从 #include 的文件路径解析出符号节点 ID，再写入 edges
-- **状态**: ⏳ 待修（需要符号解析逻辑，非简单改动）
+- **状态**: ✅ **已修复** — 2026-05-12
+- **修复**:
+  - `index_includes()` 从硬编码 `(0, 0)` 改为查询 file node ID
+  - 函数签名增加 `branch_id` 参数
+  - edges 表 UNIQUE 索引改为 `(source_id, target_id, edge_type, branch_id)`
+  - source_id: 源文件路径→file node ID；target_id: 项目内头文件解析为 ID，系统头文件为 0
 
 ---
 
@@ -103,7 +104,7 @@
 | BUG-01 | semantic_search 输出不一致 | 输出不一致 | 🟡 中 | ✅ 已修复 |
 | BUG-02 | list_branches 描述有符号数但不实现 | 描述不实 | 🟢 低 | ✅ 已修复 |
 | BUG-03 | inspect 缺 template_args | 功能缺失 | 🟢 低 | ✅ 已修复 |
-| BUG-04 | #include 无符号关联 | 功能缺失 | 🟡 中 | ⏳ 待修 |
+| BUG-04 | #include 无符号关联 | 功能缺失 | 🟡 中 | ✅ 已修复 |
 | BUG-05 | check 工具数硬编码 9 tools | 展示错误 | 🟢 低 | ✅ 已修复 |
 | BUG-06 | 三个工具被禁用（代码残留） | 代码残留 | ⚪ 记录 | ✅ 已清理 |
 | BUG-07 | search kind 列表与实际不符 | 描述不实 | 🟢 低 | ✅ 已修复 |

@@ -366,6 +366,27 @@ cl index /mnt/d/code/leveldb --repo leveldb --branch main1
 
 ---
 
+### CLI-31 include 边验证
+
+| 字段 | 内容 |
+|------|------|
+| **名称** | include — 验证 `#include` 边正确关联到 file node ID |
+| **前置条件** | 已完成 CLI-29（clang-test-e2e 已索引含 include 边的新版本） |
+
+**步骤与预期结果：**
+
+| # | 命令 | 预期结果 |
+|---|------|---------|
+| ① | 手动清旧库：`rm -f ~/.codeloom/*.rag.db`<br>先过一遍包含 include 边的索引（⚠️ 得用支持 BUG-04 修复的二进制）：`cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test-e2e --branch main` | 索引成功，输出 `Includes: N edges` 且 N > 0 |
+| ② | `cl search "#include" --repo clang-test-e2e --branch main --limit 5` | 正常返回，不 panic |
+| ③ | 直接查 edges 表：<br>`sqlite3 ~/.codeloom/clang-test-e2e.rag.db "SELECT COUNT(*) FROM edges WHERE edge_type LIKE 'includes:%' AND source_id > 0"` | 返回的边数 > 0，且 > 0 的 source_id 占大多数 |
+
+**验证方法**：
+- edges 表中 `source_id > 0` 的 include 边数量 > 0
+- 没有任何 include 边的 `source_id = 0`
+
+---
+
 ## 附录：清理脚本
 
 ```bash
