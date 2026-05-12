@@ -322,7 +322,6 @@ pub fn neighbor_map(
     conn: &Connection,
     symbol_id: i64,
     direction: &str,
-    depth: usize,
     edge_filter: &[String],
     branch_id: i64,
 ) -> NeighborMap {
@@ -331,46 +330,63 @@ pub fn neighbor_map(
         backward: HashMap::new(),
     };
 
+    // Check if this symbol is a class/struct — skip members, expose their refs
+    let is_class_or_struct = conn
+        .query_row(
+            "SELECT 1 FROM nodes WHERE id=?1 AND kind IN ('class','struct')",
+            rusqlite::params![symbol_id],
+            |_| Ok(()),
+        )
+        .is_ok();
+
+    // Get member ids for class/struct (via contains: edges)
+    let member_ids: HashSet<i64> = if is_class_or_struct {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT e.target_id FROM edges e WHERE e.source_id=?1 AND e.edge_type='contains' AND (e.branch_id=?2 OR e.branch_id=0)"
+        ) {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![symbol_id, branch_id], |r| r.get::<_, i64>(0)) {
+                rows.flatten().collect()
+            } else {
+                HashSet::new()
+            }
+        } else {
+            HashSet::new()
+        }
+    } else {
+        HashSet::new()
+    };
+
     let edges = get_edges(conn, symbol_id, direction, edge_filter, branch_id);
 
+    let mut expanded = HashSet::new();
+
     for e in &edges {
-        // Determine if this edge is forward or backward relative to the queried symbol
         let prefix = edge_prefix(&e.edge_type);
+
+        // For class/struct: skip contains: edges to members, expose member refs instead
+        if is_class_or_struct && e.source_id == symbol_id && member_ids.contains(&e.target_id) {
+            if expanded.insert(e.target_id) {
+                for me in get_edges(conn, e.target_id, "forward", &[], branch_id) {
+                    let mp = format!("via_member:{}", edge_prefix(&me.edge_type));
+                    map.forward
+                        .entry(mp)
+                        .or_default()
+                        .push(me.target_name.clone());
+                }
+            }
+            continue;
+        }
+
         if e.source_id == symbol_id {
-            // Forward: we are the source
-            map.forward.entry(prefix.to_string())
+            map.forward
+                .entry(prefix.to_string())
                 .or_default()
                 .push(e.target_name.clone());
         } else {
-            // Backward: we are the target
-            map.backward.entry(prefix.to_string())
+            map.backward
+                .entry(prefix.to_string())
                 .or_default()
                 .push(e.source_name.clone());
-        }
-    }
-
-    // If depth > 1, recurse for each neighbor
-    if depth > 1 {
-        let neighbor_ids: Vec<(i64, bool)> = edges.iter().map(|e| {
-            if e.source_id == symbol_id {
-                (e.target_id, true)  // forward neighbor
-            } else {
-                (e.source_id, false) // backward neighbor
-            }
-        }).collect();
-
-        for (nid, is_fwd) in &neighbor_ids {
-            let sub_edges = get_edges(conn, *nid, "both", edge_filter, branch_id);
-            for se in &sub_edges {
-                if se.source_id == *nid {
-                    let label = format!("depth2:{}", edge_prefix(&se.edge_type));
-                    if *is_fwd {
-                        map.forward.entry(label).or_default().push(se.target_name.clone());
-                    } else {
-                        map.backward.entry(label).or_default().push(se.target_name.clone());
-                    }
-                }
-            }
         }
     }
 

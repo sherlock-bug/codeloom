@@ -45,7 +45,7 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
         {"name":"codeloom_schema","description":"导出CodeLoom v0.7元数据：15种节点类型（function/method/class/struct/enum/enum_value/field/global/static_var/template_function/macro/namespace/template_instance/typedef/string_literal）和11种边类型（calls/inherits/overrides/instantiates/param_type/return_type/includes/uses_type/contains/aliases/uses）。拿不准参数值时调用此工具查看可用节点类型和边类型枚举。无需参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_path_analysis","description":"回答『A到B怎么走』『A和B有什么关系』：在两个符号之间搜索关系路径，跨函数调用、数据流、继承等多种边类型。优于逐层调用codeloom_call_graph：一次调用自动跨边类型搜索最短路径，一键覆盖calls/inherits/param_type等多类边。source=起始符号名，target=目标符号名，mode=shortest|all（默认shortest），edge_filter可选限定边类型（如['calls','calls_override']只看调用路径），direction=forward|reverse|both（默认both）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"target":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["shortest","all"]},"max_paths":{"type":"integer","default":20},"max_depth":{"type":"integer","default":10},"direction":{"type":"string","enum":["forward","reverse","both"]},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["source","target","repo","branch"]}},
         {"name":"codeloom_impact_analysis","description":"回答『改了X会影响谁』『X被谁依赖』：沿边传递闭包N跳分析影响范围。优于codeloom_call_graph：自动N跳递归，不仅是直接调用者。优于codeloom_neighbor_graph：传递闭包而非只看1跳邻居。symbol=要分析的符号名，direction=forward|reverse|both（默认reverse），radius=跳数（默认3），edge_filter可选限定边类型。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]},"radius":{"type":"integer","default":3},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["symbol","repo","branch"]}},
-        {"name":"codeloom_neighbor_graph","description":"回答『X周围都有什么』『X直接调用了什么/被什么调用』：查看符号1跳范围内的直接邻居，按边类型分组返回（calls/returns/param_type/inherits等）。优于codeloom_impact_analysis：只看直接邻居不递归；优于grep：自动关联calls/returns/param_type/uses等所有边类型，无需按类型分别搜索。symbol=符号名，direction=forward|reverse|both（默认both），depth=1|2（默认1）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]},"depth":{"type":"integer","default":1}},"required":["symbol","repo","branch"]}},
+        {"name":"codeloom_neighbor_graph","description":"回答『X周围都有什么』『X直接调用了什么/被什么调用』：查看符号1跳范围内的直接邻居，按边类型分组返回（calls/returns/param_type/inherits等）。优于codeloom_impact_analysis：只看直接邻居不递归；优于grep：自动关联calls/returns/param_type/uses等所有边类型，无需按类型分别搜索。symbol=符号名，direction=forward|reverse|both（默认both），固定depth=1。对class/struct会跳过其成员（方法/字段），改为暴露成员引用的外部符号。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]}},"required":["symbol","repo","branch"]}},
         {"name":"codeloom_inheritance_tree","description":"回答『谁继承了X』『X继承了什么』：查看类的完整继承树，含父类、子类和虚方法覆写列表。优于grep 'extends'/'public'：自动递归解析完整继承链，不遗漏间接继承。symbol=类名，direction=up|down|both（默认down），max_depth=递归深度（默认5）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["up","down","both"]},"max_depth":{"type":"integer","default":5}},"required":["symbol","repo","branch"]}},
     ]}})
 }
@@ -113,11 +113,10 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             let branch = args["branch"].as_str().unwrap_or("");
             let direction = args["direction"].as_str().unwrap_or("both");
-            let depth = args["depth"].as_u64().unwrap_or(1) as usize;
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
             if symbol.is_empty() { return err_resp(id, "symbol is required"); }
-            neighbor_graph(&repo.unwrap(), branch, symbol, direction, depth)
+            neighbor_graph(&repo.unwrap(), branch, symbol, direction)
         }
         "codeloom_inheritance_tree" => {
             let symbol = args["symbol"].as_str().unwrap_or("");
@@ -529,16 +528,16 @@ fn impact_analysis(repo: &str, branch: &str, symbol: &str, direction: &str, radi
 
 // ── Neighbor Graph ──────────────────────────────────────────────────────
 
-fn neighbor_graph(repo: &str, branch: &str, symbol: &str, direction: &str, depth: usize) -> String {
+fn neighbor_graph(repo: &str, branch: &str, symbol: &str, direction: &str) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return err_resp(serde_json::Value::Null, &e).to_string() };
     let sid = match crate::query::graph::resolve_symbol_id(&conn, symbol, repo, branch) {
         Some(id) => id, None => return format!("Symbol '{}' not found", symbol),
     };
     let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
-    let map = crate::query::graph::neighbor_map(&conn, sid, direction, depth, &[], branch_id);
+    let map = crate::query::graph::neighbor_map(&conn, sid, direction, &[], branch_id);
     serde_json::json!({
         "symbol": symbol,
-        "depth": depth,
+        "depth": 1,
         "direction": direction,
         "forward": map.forward,
         "backward": map.backward
