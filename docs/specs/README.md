@@ -22,5 +22,6 @@
 ### CLI 命令（16 active）
 `index` · `status` · `mcp` · `check` · `branch (set-alias/list-aliases)` · `completion` · `update` · `clean` · `list-repos` · `list-branches` · `search` · `semantic` · `overview` · `list-symbols` · `inspect` · `call-graph`
 
-### 禁用功能（3）
-`status (MCP)` · `get_doc` · `query_excel`
+### 测试用例
+CLI 端到端测试 → `tests/e2e-cli-tests.md`（30 用例）
+MCP 端到端测试 → `tests/e2e-mcp-tests.md`（28 用例）
