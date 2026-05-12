@@ -7,11 +7,12 @@
 
 | 文档 | 内容 | 条目数 |
 |------|------|--------|
-| [01-mcp-tools.md](./01-mcp-tools.md) | MCP 工具规格 | 12 active + 3 disabled |
+| [01-mcp-tools.md](./01-mcp-tools.md) | MCP 工具规格 | 12 active |
 | [02-cli-commands.md](./02-cli-commands.md) | CLI 命令规格 | 16 条命令 + 2 子命令 |
 | [03-query-internals.md](./03-query-internals.md) | 内部查询能力 | 14 函数/结构体 |
 | [04-indexing-internals.md](./04-indexing-internals.md) | 索引能力 | 13 模块 |
-| [05-design-vs-impl.md](./05-design-vs-impl.md) | 设计与实现偏差 | 10 偏差 |
+| [05-design-vs-impl.md](./05-design-vs-impl.md) | 设计与实现偏差 | 已清零 |
+| [06-known-issues.md](./06-known-issues.md) | 已知问题（Bug） | 7
 
 ## 快速索引
 

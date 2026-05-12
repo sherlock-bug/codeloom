@@ -56,7 +56,7 @@
 | query | string | Y | — | 关键词 |
 | repo | string | Y | — | — |
 | branch | string | Y | — | — |
-| kind | string | N | — | 符号类型过滤 |
+| kind | string | N | — | 符号类型过滤，可用类型见 codeloom_schema |
 | limit | integer | N | 10 | 最大返回数 |
 
 - **输出**:
@@ -158,7 +158,7 @@
 | repo | string | Y | 仓库名 |
 
 - **输出**: 纯文本分支列表
-- **设计vs实现**: ⚠️ **偏差** — 描述说"返回分支名和符号数"，但实现只返回分支名，未查询符号数量
+- **设计vs实现**: ⚠️ **偏差** — 工具描述说"返回分支名和符号数"，但实现只返回分支名
 
 ---
 
@@ -166,10 +166,10 @@
 
 - **类型**: mcp | **状态**: active
 - **源码位置**: `src/mcp/mod.rs:643`
-- **用途**: 导出元数据枚举（节点类型 + 边类型）
+- **用途**: 导出元数据枚举（节点类型 + 边类型列表）
 - **输入**: 无
 - **输出**: JSON，含 `node_kinds` 和 `edge_types` 数组
-- **设计vs实现**: ⚠️ **偏差** — 描述说"15 种节点/11 种边"，实际返回 16 种节点/10 种边，边类型名称也不完全对应
+- **设计vs实现**: ⚠️ **偏差** — 工具描述仍标注具体数量，与实现不符
 
 ---
 
@@ -211,30 +211,3 @@
 - **输入**: `symbol/id` · `direction(up\|down\|both)` · `max_depth(5)`
 - **输出**: JSON 嵌套树
 - **设计vs实现**: ✅ match
-
----
-
-## 13. codeloom_status (DISABLED)
-
-- **类型**: mcp | **状态**: disabled | **源码位置**: `268`
-- **用途**: 查看索引状态（符号数/边数/文档数/DB 大小）
-- **状态说明**: `status()` 函数已完整实现，但 MCP dispatch 被注释；handle_tool_call 中整段不可达
-
----
-
-## 14. codeloom_get_doc (DISABLED)
-
-- **类型**: mcp | **状态**: disabled | **源码位置**: `845`
-- **用途**: 获取文档节点完整内容及嵌入图片
-- **输入**: `doc_id` · `repo` · `branch`
-- **状态说明**: `get_doc()` 函数已完整实现（含 base64 图片），但 MCP dispatch 被注释
-- **注意**: 只查 `node_type='section'`，不返回 sym/chunk
-
----
-
-## 15. codeloom_query_excel (DISABLED)
-
-- **类型**: mcp | **状态**: disabled | **源码位置**: `920`
-- **用途**: Excel 表格结构化查询
-- **输入**: `doc_id` · `mode(row\|column\|filter\|auto)` · `filter/search` · `limit(20)`
-- **状态说明**: `query_excel()` 函数已完整实现（四模式+比较运算符+文本搜索），但 MCP dispatch 被注释
