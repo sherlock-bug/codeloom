@@ -36,7 +36,7 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
         {"name":"codeloom_search","description":"【必须使用，替代grep/rg】精确BM25关键词搜索：比grep更快（预索引）、覆盖更全（含#include头文件和已索引文档）。搜索符号名、注释、文档内容和文件名，符号名匹配权重高于注释匹配。结果含节点专属增强信息：class/struct→members（字段名列表）+methods（方法名列表），enum→values（枚举值），function→parent_class（所属类），section→prev_section/next_section（前后章节），file→sections（顶层section列表）。query可以是符号名（AuthService/compaction）或中文关键词。kind可选按符号类型过滤。不涉及语义理解——如需语义搜索用codeloom_semantic_search。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
 
                 {"name":"codeloom_semantic_search","description":"语义向量搜索：用自然语言描述功能查找相关符号。适合「处理用户登录的函数」「内存分配的代码在哪」这类查询，不适合已知精确符号名的查找。只搜索符号不搜索文档/注释。无kind过滤。需要向量模型已加载。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
-        {"name":"codeloom_inspect","description":"查看符号节点的全部信息：定义、文档注释、所有关联边。name或id至少传一个，传id精度最高。name=符号完整名称（C++类方法用ClassName::methodName格式）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
+        {"name":"codeloom_inspect","description":"查看符号节点的结构化信息：定义、文档注释。class/struct返回bases+members+methods，enum返回values，section返回parent/children/chunks/siblings，chunk返回parent_section+前后chunk，其余类型返回关联边列表。name或id至少传一个。name=符号完整名称（C++类方法用ClassName::methodName格式）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
 
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。索引需通过 CLI 执行：codeloom index <path> --repo <name> --branch <branch>。无需任何参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
@@ -322,11 +322,11 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
     let name = if name.is_empty() { if let Some(sid) = sym_id { conn.query_row("SELECT name FROM nodes WHERE id=?1", rusqlite::params![sid], |r| r.get::<_, String>(0)).unwrap_or_default() } else { name.to_string() } } else { name.to_string() };
     let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
     let bwc = branch_where_clause(branch);
-    let sql = format!("SELECT n.id, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='sym' AND n.repo=?1 AND n.name=?2 {}", bwc);
-    let rows: Vec<(i64,String,String,String,i64,i64,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)> = match conn.prepare(&sql) {
+    let sql = format!("SELECT n.id, n.node_type, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name=?2 {}", bwc);
+    let rows: Vec<(i64,String,String,String,String,i64,i64,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)> = match conn.prepare(&sql) {
         Ok(mut stmt) => stmt.query_map(rusqlite::params![repo, name], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
-                r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?))
+                r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?))
         }).map(|r| r.flatten().collect()).unwrap_or_default(),
         Err(_) => return format!("{{\"error\":\"Error querying symbol '{}'\"}}", name),
     };
@@ -334,57 +334,209 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
         return format!("{{\"error\":\"Symbol '{}' not found in {} (branch={})\"}}", name, repo, branch);
     }
     let mut results = Vec::new();
-    for (sid, sname, kind, file, lstart, lend, sig, parent, ns, lang, doc) in &rows {
+    for (sid, ntype, sname, kind, file, lstart, lend, sig, parent, ns, lang, doc) in &rows {
         let esc = |s: &str| s.replace('\\', "\\\\").replace('\"', "\\\"");
         let mut json = format!(
-            "{{\"name\":\"{}\",\"kind\":\"{}\"",
-            esc(sname), esc(kind)
+            "{{\"name\":\"{}\",\"kind\":\"{}\",\"node_type\":\"{}\"",
+            esc(sname), esc(kind), esc(ntype)
         );
-        if let Some(l) = lang { json.push_str(&format!(",\"language\":\"{}\"", esc(l))); }
-        if let Some(n) = ns { json.push_str(&format!(",\"namespace\":\"{}\"", esc(n))); }
-        if let Some(p) = parent { json.push_str(&format!(",\"in_class\":\"{}\"", esc(p))); }
+        // Common fields
         json.push_str(&format!(",\"file\":\"{}\",\"line_start\":{},\"line_end\":{}", esc(file), lstart, lend));
-        if let Some(s) = sig { json.push_str(&format!(",\"signature\":\"{}\"", esc(s))); }
-        if let Some(d) = doc {
-            let trimmed = d.trim();
-            if !trimmed.is_empty() {
-                json.push_str(&format!(",\"documentation\":\"{}\"", esc(trimmed)));
-            }
-        }
-        // Edges
-        let e_sql = format!("SELECT e.edge_type, n.name, n.kind FROM edges e LEFT JOIN nodes n ON ((e.source_id={0} AND n.id=e.target_id) OR (e.target_id={0} AND n.id=e.source_id)) AND n.node_type='sym' WHERE (e.source_id={0} OR e.target_id={0}) AND n.id IS NOT NULL AND e.branch_id={1} ORDER BY e.edge_type LIMIT 200", sid, branch_id);
-        if let Ok(mut e_stmt) = conn.prepare(&e_sql) {
-            if let Ok(e_rows) = e_stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?))) {
-                use std::collections::BTreeMap;
-                let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-                for row in e_rows.flatten() {
-                    let (etype, ename, ekind) = row;
-                    let entry = format!("{{\"name\":\"{}\",\"kind\":\"{}\"}}", esc(&ename), esc(&ekind));
-                    let cat = mcp_edge_category(&etype).to_string();
-                    groups.entry(cat).or_default().push(entry);
-                }
-                json.push_str(",\"edges\":{");
-                let mut first_cat = true;
-                for (cat, entries) in &groups {
-                    if !entries.is_empty() {
-                        if !first_cat { json.push(','); }
-                        first_cat = false;
-                        json.push_str(&format!("\"{}\":[{}]", cat, entries.join(",")));
+        // Type-specific enrichment
+        match ntype.as_str() {
+            "sym" => {
+                // Language, namespace, in_class
+                if let Some(l) = lang { json.push_str(&format!(",\"language\":\"{}\"", esc(l))); }
+                if let Some(n) = ns { json.push_str(&format!(",\"namespace\":\"{}\"", esc(n))); }
+                if let Some(p) = parent { json.push_str(&format!(",\"in_class\":\"{}\"", esc(p))); }
+                if let Some(s) = sig { json.push_str(&format!(",\"signature\":\"{}\"", esc(s))); }
+                if let Some(d) = doc {
+                    let trimmed = d.trim();
+                    if !trimmed.is_empty() {
+                        json.push_str(&format!(",\"documentation\":\"{}\"", esc(trimmed)));
                     }
                 }
-                json.push('}');
+                match kind.as_str() {
+                    "class" | "struct" => {
+                        // Bases (inherits edges)
+                        let bsql = format!("SELECT n.name FROM edges e JOIN nodes n ON n.id=e.target_id AND n.node_type='sym' WHERE e.source_id={0} AND e.edge_type LIKE 'inherits:%' AND e.branch_id={1} LIMIT 20", sid, branch_id);
+                        if let Ok(mut stmt) = conn.prepare(&bsql) {
+                            if let Ok(rows) = stmt.query_map([], |r| r.get::<_,String>(0)) {
+                                let names: Vec<String> = rows.flatten().collect();
+                                if !names.is_empty() {
+                                    json.push_str(&format!(",\"bases\":[\"{}\"]", names.join("\",\"")));
+                                }
+                            }
+                        }
+                        // Members (fields with types)
+                        let msql = format!("SELECT n.name, json_extract(n.attrs,'$.field_type') FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type='contains:' AND n.kind='field' AND e.branch_id={1} LIMIT 40", sid, branch_id);
+                        if let Ok(mut stmt) = conn.prepare(&msql) {
+                            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,Option<String>>(1)?))) {
+                                let entries: Vec<String> = rows.flatten().map(|(n,t)| {
+                                    if let Some(ty) = t { format!("{}:{}", esc(&n), esc(&ty)) } else { esc(&n) }
+                                }).collect();
+                                if !entries.is_empty() {
+                                    json.push_str(&format!(",\"members\":[\"{}\"]", entries.join("\",\"")));
+                                }
+                            }
+                        }
+                        // Methods
+                        let methsql = format!("SELECT n.name, json_extract(n.attrs,'$.signature') FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type='contains:' AND n.kind='method' AND e.branch_id={1} LIMIT 60", sid, branch_id);
+                        if let Ok(mut stmt) = conn.prepare(&methsql) {
+                            if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,Option<String>>(1)?))) {
+                                let entries: Vec<String> = rows.flatten().map(|(n,s)| {
+                                    if let Some(sig) = s { format!("{}({})", esc(&n), esc(&sig)) } else { esc(&n) }
+                                }).collect();
+                                if !entries.is_empty() {
+                                    json.push_str(&format!(",\"methods\":[\"{}\"]", entries.join("\",\"")));
+                                }
+                            }
+                        }
+                        // Terminal deps
+                        let (uses, refs, literals) = crate::query::graph::get_terminal_deps(&conn, *sid);
+                        if !uses.is_empty() { json.push_str(&format!(",\"uses\":[\"{}\"]", uses.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\""))); }
+                        if !refs.is_empty() { json.push_str(&format!(",\"references\":[\"{}\"]", refs.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\""))); }
+                        if !literals.is_empty() { json.push_str(&format!(",\"string_literals\":[\"{}\"]", literals.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\""))); }
+                    }
+                    "enum" => {
+                        // Enum values
+                        let vsql = format!("SELECT n.name FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type='contains:' AND n.kind='enum_value' AND e.branch_id={1} ORDER BY n.id LIMIT 100", sid, branch_id);
+                        if let Ok(mut stmt) = conn.prepare(&vsql) {
+                            if let Ok(rows) = stmt.query_map([], |r| r.get::<_,String>(0)) {
+                                let names: Vec<String> = rows.flatten().collect();
+                                if !names.is_empty() {
+                                    json.push_str(&format!(",\"values\":[\"{}\"]", names.join("\",\"")));
+                                }
+                            }
+                        }
+                        // Terminal deps
+                        let (uses, refs, literals) = crate::query::graph::get_terminal_deps(&conn, *sid);
+                        if !uses.is_empty() { json.push_str(&format!(",\"uses\":[\"{}\"]", uses.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\""))); }
+                        if !refs.is_empty() { json.push_str(&format!(",\"references\":[\"{}\"]", refs.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\""))); }
+                        if !literals.is_empty() { json.push_str(&format!(",\"string_literals\":[\"{}\"]", literals.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\""))); }
+                    }
+                    _ => {
+                        // Other sym types: current generic edges behavior
+                        let e_sql = format!("SELECT e.edge_type, n.name, n.kind FROM edges e LEFT JOIN nodes n ON ((e.source_id={0} AND n.id=e.target_id) OR (e.target_id={0} AND n.id=e.source_id)) AND n.node_type='sym' WHERE (e.source_id={0} OR e.target_id={0}) AND n.id IS NOT NULL AND e.branch_id={1} ORDER BY e.edge_type LIMIT 200", sid, branch_id);
+                        if let Ok(mut e_stmt) = conn.prepare(&e_sql) {
+                            if let Ok(e_rows) = e_stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?))) {
+                                use std::collections::BTreeMap;
+                                let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                                for row in e_rows.flatten() {
+                                    let (etype, ename, ekind) = row;
+                                    let entry = format!("{{\"name\":\"{}\",\"kind\":\"{}\"}}", esc(&ename), esc(&ekind));
+                                    let cat = mcp_edge_category(&etype).to_string();
+                                    groups.entry(cat).or_default().push(entry);
+                                }
+                                if !groups.is_empty() {
+                                    json.push_str(",\"edges\":{");
+                                    let mut first_cat = true;
+                                    for (cat, entries) in &groups {
+                                        if !first_cat { json.push(','); }
+                                        first_cat = false;
+                                        json.push_str(&format!("\"{}\":[{}]", cat, entries.join(",")));
+                                    }
+                                    json.push('}');
+                                }
+                            }
+                        }
+                        // Terminal deps
+                        let (uses, refs, literals) = crate::query::graph::get_terminal_deps(&conn, *sid);
+                        if !uses.is_empty() { json.push_str(&format!(",\"uses\":[\"{}\"]", uses.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\""))); }
+                        if !refs.is_empty() { json.push_str(&format!(",\"references\":[\"{}\"]", refs.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\""))); }
+                        if !literals.is_empty() { json.push_str(&format!(",\"string_literals\":[\"{}\"]", literals.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\""))); }
+                    }
+                }
             }
-        }
-        // Terminal dependencies (uses:, references:, string_literals)
-        let (uses, refs, literals) = crate::query::graph::get_terminal_deps(&conn, *sid);
-        if !uses.is_empty() {
-            json.push_str(&format!(",\"uses\":[\"{}\"]", uses.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\"")));
-        }
-        if !refs.is_empty() {
-            json.push_str(&format!(",\"references\":[\"{}\"]", refs.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\"")));
-        }
-        if !literals.is_empty() {
-            json.push_str(&format!(",\"string_literals\":[\"{}\"]", literals.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\"")));
+            "section" => {
+                // Parent section (reverse contains: edge)
+                let psql = format!("SELECT n.id, n.name FROM edges e JOIN nodes n ON n.id=e.source_id WHERE e.target_id={0} AND e.edge_type='contains:' AND n.node_type='section' AND e.branch_id={1} LIMIT 1", sid, branch_id);
+                if let Ok(mut stmt) = conn.prepare(&psql) {
+                    if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+                        for row in rows.flatten() {
+                            json.push_str(&format!(",\"parent_section\":{{\"id\":{},\"name\":\"{}\"}}", row.0, esc(&row.1)));
+                        }
+                    }
+                }
+                // Children sections
+                let csql = format!("SELECT n.id, n.name FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type='contains:' AND n.node_type='section' AND e.branch_id={1} ORDER BY n.id LIMIT 50", sid, branch_id);
+                if let Ok(mut stmt) = conn.prepare(&csql) {
+                    if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+                        let entries: Vec<String> = rows.flatten().map(|(id,n)| format!("{{\"id\":{},\"name\":\"{}\"}}", id, esc(&n))).collect();
+                        if !entries.is_empty() {
+                            json.push_str(&format!(",\"children_sections\":[{}]", entries.join(",")));
+                        }
+                    }
+                }
+                // Children chunks
+                let chsql = format!("SELECT n.id, n.name FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type='contains:' AND n.node_type='chunk' AND e.branch_id={1} ORDER BY n.id LIMIT 50", sid, branch_id);
+                if let Ok(mut stmt) = conn.prepare(&chsql) {
+                    if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+                        let entries: Vec<String> = rows.flatten().map(|(id,n)| format!("{{\"id\":{},\"name\":\"{}\"}}", id, esc(&n))).collect();
+                        if !entries.is_empty() {
+                            json.push_str(&format!(",\"children_chunks\":[{}]", entries.join(",")));
+                        }
+                    }
+                }
+                // Prev/next siblings
+                let prev_sql = format!("SELECT n.id, n.name FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='section' AND n.file_path=?1 AND n.id<?2 AND b.branch_id={0} ORDER BY n.id DESC LIMIT 1", branch_id);
+                if let Ok(mut stmt) = conn.prepare(&prev_sql) {
+                    if let Ok(rows) = stmt.query_map(rusqlite::params![file, sid], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+                        for row in rows.flatten() {
+                            json.push_str(&format!(",\"prev_section\":{{\"id\":{},\"name\":\"{}\"}}", row.0, esc(&row.1)));
+                        }
+                    }
+                }
+                let next_sql = format!("SELECT n.id, n.name FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='section' AND n.file_path=?1 AND n.id>?2 AND b.branch_id={0} ORDER BY n.id ASC LIMIT 1", branch_id);
+                if let Ok(mut stmt) = conn.prepare(&next_sql) {
+                    if let Ok(rows) = stmt.query_map(rusqlite::params![file, sid], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+                        for row in rows.flatten() {
+                            json.push_str(&format!(",\"next_section\":{{\"id\":{},\"name\":\"{}\"}}", row.0, esc(&row.1)));
+                        }
+                    }
+                }
+            }
+            "chunk" => {
+                // Parent section (reverse contains:)
+                let psql = format!("SELECT n.id, n.name FROM edges e JOIN nodes n ON n.id=e.source_id WHERE e.target_id={0} AND e.edge_type='contains:' AND n.node_type='section' AND e.branch_id={1} LIMIT 1", sid, branch_id);
+                if let Ok(mut stmt) = conn.prepare(&psql) {
+                    if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+                        for row in rows.flatten() {
+                            json.push_str(&format!(",\"parent_section\":{{\"id\":{},\"name\":\"{}\"}}", row.0, esc(&row.1)));
+                        }
+                    }
+                }
+                // Prev/next chunk
+                let prev_sql = format!("SELECT n.id, n.name FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='chunk' AND n.file_path=?1 AND n.id<?2 AND b.branch_id={0} ORDER BY n.id DESC LIMIT 1", branch_id);
+                if let Ok(mut stmt) = conn.prepare(&prev_sql) {
+                    if let Ok(rows) = stmt.query_map(rusqlite::params![file, sid], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+                        for row in rows.flatten() {
+                            json.push_str(&format!(",\"prev_chunk\":{{\"id\":{},\"name\":\"{}\"}}", row.0, esc(&row.1)));
+                        }
+                    }
+                }
+                let next_sql = format!("SELECT n.id, n.name FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='chunk' AND n.file_path=?1 AND n.id>?2 AND b.branch_id={0} ORDER BY n.id ASC LIMIT 1", branch_id);
+                if let Ok(mut stmt) = conn.prepare(&next_sql) {
+                    if let Ok(rows) = stmt.query_map(rusqlite::params![file, sid], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+                        for row in rows.flatten() {
+                            json.push_str(&format!(",\"next_chunk\":{{\"id\":{},\"name\":\"{}\"}}", row.0, esc(&row.1)));
+                        }
+                    }
+                }
+            }
+            "file" => {
+                // Top-level sections under this file
+                let fsql = format!("SELECT n.id, n.name FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='section' AND n.file_path=?1 AND b.branch_id={0} ORDER BY n.id LIMIT 80", branch_id);
+                if let Ok(mut stmt) = conn.prepare(&fsql) {
+                    if let Ok(rows) = stmt.query_map(rusqlite::params![file], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
+                        let entries: Vec<String> = rows.flatten().map(|(id,n)| format!("{{\"id\":{},\"name\":\"{}\"}}", id, esc(&n))).collect();
+                        if !entries.is_empty() {
+                            json.push_str(&format!(",\"sections\":[{}]", entries.join(",")));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
         json.push('}');
         results.push(json);
