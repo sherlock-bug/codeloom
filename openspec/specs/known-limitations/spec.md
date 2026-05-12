@@ -236,9 +236,10 @@ Clang 索引器 SHALL 正确提取 `#include` 的头文件中定义的符号（�
 - AND `file_path` SHALL 指向正确的头文件而非引用它的 .cc 文件
 - AND `line_start` SHALL 不为 0
 
-### Requirement: INT8 向量量化
+### Requirement: INT8 向量量化 ✅ 已修复 (2026-05-12)
 在保证搜索质量不降级的前提下，向量嵌入 SHALL 从 FLOAT32 量化到 INT8，减少存储体积和查询延迟。
-当前偏差：当前向量存储使用 FLOAT32（384 维 × 4 字节 = 1,536 字节/向量）。INT8 可压缩到 384 字节/向量（4 倍压缩），同时利用 SIMD 整型指令加速距离计算。需评估量化对 top-k 检索准确率的影响，确认 μ/σ 退化在可接受范围内（如余弦相似度下降 < 3%）。
+~~当前偏差：当前向量存储使用 FLOAT32（384 维 × 4 字节 = 1,536 字节/向量）。INT8 可压缩到 384 字节/向量（4 倍压缩），同时利用 SIMD 整型指令加速距离计算。需评估量化对 top-k 检索准确率的影响，确认 μ/σ 退化在可接受范围内（如余弦相似度下降 < 3%）。~~
+**实施**：`src/storage/vector.rs` 全量 INT8 化——`create_tables` 用 `INT8[{dim}]`、`insert_vectors`/`knn_search` 自动量化、使用 `vec_int8()` + BLOB 二进制 match。旧 FLOAT 表需 `clear_vectors` + 重新索引后自动切换。
 
 #### Scenario: 向量存储压缩
 - GIVEN 某项目索引产生 100,000 个嵌入向量
