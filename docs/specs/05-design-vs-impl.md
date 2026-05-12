@@ -85,7 +85,6 @@
 
 | 等级 | 数量 | 项目 |
 |------|------|------|
-| 🔴 高 | 1 | Tree-sitter queries 未实现 |
 | 🟡 中 | 3 | semantic_search 输出不一致 · schema 类型不准 · include edges 无符号关联 |
 | 🟢 低 | 5 | search kind 列表 · inspect template_args · list_branches 缺数量 · hybrid 阈值注释 · check 工具数 |
 | ⚪ 记录 | 3 | status/get_doc/query_excel 被禁用但代码完整 |

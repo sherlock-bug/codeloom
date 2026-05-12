@@ -87,28 +87,20 @@
 
 ---
 
-## 4. Tree-sitter 文件收集与多语言解析
+## 4. 文件收集与语言检测
 
 - **类型**: internal
-- **状态**: active (文件收集 + Python/Java/TS/Go 解析)
-- **源码位置**: `src/indexer/tree_sitter.rs` (73行) + `src/indexer/queries/mod.rs` (1行, 空)
-- **用途**: 文件发现、语言检测、C++ 以外的多语言解析
+- **状态**: active
+- **源码位置**: `src/indexer/tree_sitter.rs` (73行)
+- **用途**: 文件发现、语言检测，C++ 路由到 Clang，其他语言由文件收集创建 file node
 - **支持格式/语言**:
   - C/C++: `.cpp/.cc/.cxx/.hpp/.hxx/.c/.h` → 路由到 Clang
-  - Python: `.py` → tree-sitter-python
-  - Java: `.java` → tree-sitter-java
-  - TypeScript/JavaScript: `.ts/.tsx/.js/.jsx` → tree-sitter-typescript
-  - Go: `.go` → tree-sitter-go
+  - 其他扩展名 → 收集创建 file node，无符号提取
 - **核心算法**:
   - `collect_files()`: WalkDir 遍历目录 → git ls-files 过滤 → .codeloomignore 过滤 → detect_language
-  - `get_git()`: `git ls-files --cached --others --exclude-standard` 获取 git tracked + untracked 文件
+  - `get_git()`: `git ls-files --cached --others --exclude-standard`
   - `detect_language()`: 基于文件扩展名映射
-  - `parse_file()`: 使用 tree-sitter parser 解析 → 当前返回空 (C++ 路由到 Clang，其他语言的 queries 为空)
-- **局限性/已知问题**:
-  - `src/indexer/queries/mod.rs` 为空 — tree-sitter 的符号提取查询尚未实现
-  - 非 C++ 语言的 `parse_file()` 当前返回空 symbol/edge — Python/Java/TS/Go 的文件能被收集并创建 file node，但无符号提取
-  - tree-sitter 只在 C++ 之外的回落中被使用，但 C++ 已经路由到 Clang
-- **设计 vs 实现**: diverges — 设计意图是 tree-sitter 做多语言解析，但只有文件收集 + 语言检测功能实际工作，非 C++ 语言的符号提取为空 (queries 未实现)
+- **设计 vs 实现**: ✅ match
 
 ---
 
@@ -308,23 +300,22 @@ codeloom index <path> --repo <name> --branch <b>
   ├─ 1. smart_index()
   │     ├─ head commit? → delta from git_index_state
   │     ├─ parent branch? → merge-base delta
-  │     └─ no history → full_scan() → collect_files() → index_one() each
-  │           ├─ C/C++ → clang -ast-dump=json → Python filter → ast.rs extract
-  │           ├─ Python/Java/TS/Go → tree-sitter (stub: no symbols extracted)
-  │           └─ Other → skip
+  │     └─ no history → full_scan()
+  │           ├─ C/C++ → clang -ast-dump=json → filter → extract
+  │           └─ Other → skip (file node created)
   │
-  ├─ 2. index_docs() → parse_document(ext)
-  │     ├─ md/rst → parse_markdown() → sections
-  │     ├─ xlsx → parse_xlsx() → 4-layer model
-  │     ├─ docx → parse_docx() → heading sections + embedded images
-  │     ├─ pdf → parse_pdf() → page sections
-  │     └─ xml/html → parse_xml() → element sections
+  ├─ 2. index_docs() → parse_document(ext) → sections + chunks
+  │     ├─ md/rst → heading-based sections
+  │     ├─ xlsx → 4-layer (sheet → header → row → cell)
+  │     ├─ docx → heading styles + embedded images
+  │     ├─ pdf → page-based sections
+  │     └─ xml/html → element-based sections
   │
   ├─ 3. index_includes() → regex #include → edges (source=0 target=0)
   │
-  ├─ 4. fill_all_fts() → DELETE+INSERT fts5_all
+  ├─ 4. fill_all_fts() → DELETE + INSERT into fts5_all
   │
-  ├─ 5. index_vectors() → symbol name → API embedder → vec0 FLOAT32
+  ├─ 5. index_vectors() → symbol name → API embedder → vec0
   │     index_file_vectors() → file path|summary → API embedder → vec0
   │
   └─ 6. calibrate() → 5 noise probes × KNN Top 5 → noise profile
@@ -333,9 +324,6 @@ codeloom index <path> --repo <name> --branch <b>
 **关键发现**:
 1. **Clang C++ 解析**是最完善的能力 — 15 种符号、11 种边类型、外部符号 stub、声明-定义合并
 2. **文档索引**能力完整 — 6 种格式、图片压缩、中文文本分块
-3. **非 C++ 语言**的 tree-sitter 符号提取为空 — queries 未实现
-4. **文档-代码桥接**已被从规格中移除（非 bug，`src/linking/mod.rs` 的 stub 为残留）
-5. **#include 关系**的 edge 没有真正的符号关联 (source_id=0)
-6. **增量索引**使用 `git diff --name-only` — 简单但可靠
-7. **噪声标定**是独创的能力 — 用噪声探针自适应计算向量搜索阈值
-8. **已索引的仓库**可用 MCP 工具查询：`codeloom_list_repos`, `codeloom_list_symbols`, `codeloom_search`, `codeloom_semantic_search` 等
+3. **#include 关系**的 edge 没有真正的符号关联 (source_id=0)
+4. **增量索引**使用 `git diff --name-only` — 简单但可靠
+5. **噪声标定**是独创的能力 — 用噪声探针自适应计算向量搜索阈值
