@@ -83,12 +83,15 @@
 - **发现时间**: 2026-05-12（手工测试）
 - **测试用例**: MCP-12
 - **涉及**: `codeloom_inspect` MCP 工具
-- **现状**: inspect leveldb 的 `Compaction` 类时，返回 `"edges":{}`（通用 edges 回退），未输出预期的 `bases`/`members`/`methods` 字段
-- **预期**: class 应输出 `bases`、`members`、`methods`（和已记录的 `template_args`）
-- **代码位置**: `src/mcp/mod.rs:372-421`
-- **可能原因**: class 分支的条件判断可能未命中，或 DB 中该类无 `contains:` 边
-- **影响**: 🟡 中 — class 类型符号的 inspect 增强可能对部分类不生效
-- **状态**: open（已加入 template_args 查询，但 bases/members/methods 仍依赖 DB 数据质量）
+- **根因**: 两重 Bug 叠加：
+  1. SQL 中 `e.edge_type='contains:'` 精确匹配 → 实际 edge_type 格式是 `contains:MethodName`，永远不匹配
+  2. 所有边缘查询过滤 `e.branch_id={id}` 但 DB 中全部边的 `branch_id=0`（索引器写入时未设置），导致查询不到任何边
+- **修复**:
+  - 3 处 `e.edge_type='contains:'` 改为 `e.edge_type LIKE 'contains:%'`
+  - 4 处 `e.branch_id={id}` 改为 `(e.branch_id={id} OR e.branch_id=0)`（回退兼容）
+- **验证**: `codeloom_inspect Compaction` 现在正确输出 10 个 members + 11 个 methods，Status 输出 1 member + 16 methods
+- **影响**: 🟡 中 — 已修复所有 class/struct/enum 类型符号的 inspect 增强
+- **状态**: ✅ **已修复** — 2026-05-12
 
 ---
 
@@ -103,4 +106,4 @@
 | BUG-05 | check 工具数硬编码 9 tools | 展示错误 | 🟢 低 | ✅ 已修复 |
 | BUG-06 | 三个工具被禁用（代码残留） | 代码残留 | ⚪ 记录 | ✅ 已清理 |
 | BUG-07 | search kind 列表与实际不符 | 描述不实 | 🟢 低 | ✅ 已修复 |
-| BUG-08 | inspect class enrichment 未生效 | 功能缺陷 | 🟡 中 | open |
+| BUG-08 | inspect class enrichment 未生效 | 功能缺陷 | 🟡 中 | ✅ 已修复 |

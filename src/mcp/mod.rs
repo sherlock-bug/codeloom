@@ -341,7 +341,7 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
                             }
                         }
                         // Members (fields with types)
-                        let msql = format!("SELECT n.name, json_extract(n.attrs,'$.field_type') FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type='contains:' AND n.kind='field' AND e.branch_id={1} LIMIT 40", sid, branch_id);
+                        let msql = format!("SELECT n.name, json_extract(n.attrs,'$.field_type') FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type LIKE 'contains:%' AND n.kind='field' AND (e.branch_id={1} OR e.branch_id=0) LIMIT 40", sid, branch_id);
                         if let Ok(mut stmt) = conn.prepare(&msql) {
                             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,Option<String>>(1)?))) {
                                 let entries: Vec<String> = rows.flatten().map(|(n,t)| {
@@ -353,7 +353,7 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
                             }
                         }
                         // Methods
-                        let methsql = format!("SELECT n.name, json_extract(n.attrs,'$.signature') FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type='contains:' AND n.kind='method' AND e.branch_id={1} LIMIT 60", sid, branch_id);
+                        let methsql = format!("SELECT n.name, json_extract(n.attrs,'$.signature') FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type LIKE 'contains:%' AND n.kind='method' AND (e.branch_id={1} OR e.branch_id=0) LIMIT 60", sid, branch_id);
                         if let Ok(mut stmt) = conn.prepare(&methsql) {
                             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,Option<String>>(1)?))) {
                                 let entries: Vec<String> = rows.flatten().map(|(n,s)| {
@@ -383,7 +383,7 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
                     }
                     "enum" => {
                         // Enum values
-                        let vsql = format!("SELECT n.name FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type='contains:' AND n.kind='enum_value' AND e.branch_id={1} ORDER BY n.id LIMIT 100", sid, branch_id);
+                        let vsql = format!("SELECT n.name FROM edges e JOIN nodes n ON n.id=e.target_id WHERE e.source_id={0} AND e.edge_type LIKE 'contains:%' AND n.kind='enum_value' AND (e.branch_id={1} OR e.branch_id=0) ORDER BY n.id LIMIT 100", sid, branch_id);
                         if let Ok(mut stmt) = conn.prepare(&vsql) {
                             if let Ok(rows) = stmt.query_map([], |r| r.get::<_,String>(0)) {
                                 let names: Vec<String> = rows.flatten().collect();
@@ -400,7 +400,7 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
                     }
                     _ => {
                         // Other sym types: current generic edges behavior
-                        let e_sql = format!("SELECT e.edge_type, n.name, n.kind FROM edges e LEFT JOIN nodes n ON ((e.source_id={0} AND n.id=e.target_id) OR (e.target_id={0} AND n.id=e.source_id)) AND n.node_type='sym' WHERE (e.source_id={0} OR e.target_id={0}) AND n.id IS NOT NULL AND e.branch_id={1} ORDER BY e.edge_type LIMIT 200", sid, branch_id);
+                        let e_sql = format!("SELECT e.edge_type, n.name, n.kind FROM edges e LEFT JOIN nodes n ON ((e.source_id={0} AND n.id=e.target_id) OR (e.target_id={0} AND n.id=e.source_id)) AND n.node_type='sym' WHERE (e.source_id={0} OR e.target_id={0}) AND n.id IS NOT NULL AND (e.branch_id={1} OR e.branch_id=0) ORDER BY e.edge_type LIMIT 200", sid, branch_id);
                         if let Ok(mut e_stmt) = conn.prepare(&e_sql) {
                             if let Ok(e_rows) = e_stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?))) {
                                 use std::collections::BTreeMap;
