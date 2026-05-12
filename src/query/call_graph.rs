@@ -128,6 +128,18 @@ fn traverse_calls(
                     traverse_calls(
                         branch_id, conn, other_id, direction, max_depth, depth + 1, visited, out,
                     );
+                } else {
+                    // Terminal node — show terminal dependencies
+                    let (uses, refs, literals) = crate::query::graph::get_terminal_deps(conn, other_id);
+                    if !uses.is_empty() {
+                        out.push_str(&format!("{}   Uses: {}\n", prefix, uses.join(", ")));
+                    }
+                    if !refs.is_empty() {
+                        out.push_str(&format!("{}   References: {}\n", prefix, refs.join(", ")));
+                    }
+                    if !literals.is_empty() {
+                        out.push_str(&format!("{}   StringLiterals: {}\n", prefix, literals.join(", ")));
+                    }
                 }
             }
         }

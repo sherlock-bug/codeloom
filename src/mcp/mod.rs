@@ -351,6 +351,17 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str) -> String {
                 json.push('}');
             }
         }
+        // Terminal dependencies (uses:, references:, string_literals)
+        let (uses, refs, literals) = crate::query::graph::get_terminal_deps(&conn, *sid);
+        if !uses.is_empty() {
+            json.push_str(&format!(",\"uses\":[\"{}\"]", uses.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\"")));
+        }
+        if !refs.is_empty() {
+            json.push_str(&format!(",\"references\":[\"{}\"]", refs.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\"")));
+        }
+        if !literals.is_empty() {
+            json.push_str(&format!(",\"string_literals\":[\"{}\"]", literals.iter().map(|s| esc(s)).collect::<Vec<_>>().join("\",\"")));
+        }
         json.push('}');
         results.push(json);
     }
