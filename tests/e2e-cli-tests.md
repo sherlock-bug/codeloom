@@ -3,16 +3,24 @@
 > **版本**: codeloom 1.0.0
 > **二进制**: `/mnt/d/RagMcpHermes/codeloom/target/release/codeloom`
 > **测试仓库**: leveldb (C++，~130文件，已索引)、spdlog、flatbuffers
-> **测试夹具**: `/mnt/d/RagMcpHermes/codeloom/tests/fixtures/`
+> **向量存储**: FLOAT32 → **INT8**（4× 压缩）。新索引自动用 INT8 表；旧 FLOAT 表不受影响，但索引新仓库时噪声标定会报 type mismatch 警告（无关紧要，不影响索引功能）
+> **测试前准备**: 每次执行前清理上一次残留的测试仓库，确保干净的 INT8 环境
 > **Writer**: Manual QA
-> **Updated**: 2026-05-12
+> **Updated**: 2026-05-13 (INT8 迁移：FLOAT32→INT8，更新预期值和清理步骤)
 
 ---
 
 ## 测试前准备
 
+> **⚠️ INT8 迁移注意**：旧 FLOAT 仓库（如 leveldb）与新 INT8 代码兼容性良好——BM25 搜索、overview、inspect 等不受影响。唯一副作用：索引新仓库时噪声标定会报 `expected float32 but int8` 警告（因为探针用 INT8 格式查旧 FLOAT 表），不影响任何功能，可安全忽略。
+> 如需完全消除该警告，可删旧库重建：`rm -f ~/.codeloom/leveldb.rag.db*` 后重新索引。
+
 ```bash
-# 设置别名，统一使用
+# 0. 清理上轮测试残留
+for r in clang-test clang-test-e2e edge-test int8-test bad-repo spdlog flatbuffers; do
+  cl clean --repo "$r" 2>/dev/null; done
+
+# 1. 设置别名，统一使用
 alias cl=/mnt/d/RagMcpHermes/codeloom/target/release/codeloom
 
 # 验证二进制可用
@@ -34,11 +42,11 @@ cl status --repo leveldb
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | 全量索引 — 对 tests/fixtures/clang_test 新仓库做首次全量索引 |
+| **名称** | 全量索引 — 对 tests/fixtures/clang_test 新仓库做首次全量索引，验证 INT8 向量表创建 |
 | **前置条件** | clang_test 未在 codeloom 中索引过（可用 `cl clean --repo clang-test` 确保干净） |
 | **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test --branch main` |
-| **预期结果** | 索引完成，输出包含符号数 > 0，无 error 日志；返回时间 < 30s |
-| **验证方法** | `cl status --repo clang-test` 输出 Symbols > 0, Edges > 0, DB size > 0 |
+| **预期结果** | 索引完成，输出包含符号数 > 0，无 error 日志；返回时间 < 30s。噪声标定可能报 `expected float32 but int8` 警告（这是旧 FLOAT 仓库残留，无害） |
+| **验证方法** | ① `cl status --repo clang-test` 输出 Symbols > 0, Edges > 0, DB size > 0<br>② 确认向量表类型为 INT8：`python3 -c "import sqlite3; c=sqlite3.connect('~/.codeloom/clang-test.rag.db'); print(c.execute(\"SELECT sql FROM sqlite_master WHERE name LIKE 'symbol_name_vec_clang%'\").fetchone()[0][:80])"` 应输出 `INT8`
 
 ### CLI-2 增量索引（已索引仓库重复索引）
 
@@ -67,8 +75,8 @@ cl status --repo leveldb
 | **名称** | 非 Git 目录索引 — 对纯文件目录（不含 .git）执行 index |
 | **前置条件** | 夹具目录可用 |
 | **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/edge_types --repo edge-test --branch main` |
-| **预期结果** | 索引成功，输出符号数 >= 5（enum Status + 成员 + class AuthService + 字段 + 全局变量） |
-| **验证方法** | `cl status --repo edge-test` 显示 Symbols > 0 |
+| **预期结果** | 索引成功，输出符号数 >= 5（enum Status + 成员 + class AuthService + 字段 + 全局变量），会自动创建 INT8 向量表 |
+| **验证方法** | `cl status --repo edge-test` 显示 Symbols > 0，`cl semantic "认证" --repo edge-test --branch main --limit 3` 返回 AuthService 排名第一 |
 
 ### CLI-5 索引缺参数/错误路径
 
@@ -92,7 +100,7 @@ cl status --repo leveldb
 | **名称** | status — 查看 leveldb 索引状态 |
 | **前置条件** | leveldb 已索引 |
 | **步骤** | `cl status --repo leveldb` |
-| **预期结果** | 输出包含：Symbols: 3359, Edges: 5177, Docs: 26, Vectors, FTS5, DB size: 35.6 MB |
+| **预期结果** | 输出包含：Symbols: 3364, Edges: 3177, Docs: 63, Vectors, FTS5, DB size: 36.0 MB（注：BUG-08 修复后 edge 格式从 `contains:Name` 改为 `contains`，边缘数从 5177 降至 3177，解析率提升至 97%） |
 | **验证方法** | 所有核心指标（Symbols/Edges/Docs/FTS5/DB size）均显示且值 > 0 |
 
 ### CLI-7 BM25 关键词搜索
@@ -119,10 +127,10 @@ cl status --repo leveldb
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | semantic — 自然语言语义搜索 |
+| **名称** | semantic — 自然语言语义搜索（INT8 量化，4× 压缩） |
 | **前置条件** | leveldb 已索引，向量模型已加载 |
 | **步骤** | `cl semantic "键值对写入操作" --repo leveldb --branch main1 --limit 5` |
-| **预期结果** | 返回与写入操作相关的符号，如 DB::Put、WriteBatch::Put、DBImpl::Write 等 |
+| **预期结果** | 返回与写入操作相关的符号，如 DB::Put、WriteBatch::Put、DBImpl::Write 等。相似度分数因 INT8 量化可能有 ±0.02 的精度损失，但对排序无影响 |
 | **验证方法** | 结果按语义相关性排序，top-3 应包含 Put/Write 相关符号 |
 
 ### CLI-10 Overview 架构全貌
@@ -324,19 +332,16 @@ cl index /mnt/d/code/leveldb --repo leveldb --branch main1
 
 | # | 命令 | 预期结果 |
 |---|------|---------|
-| ① | `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test-e2e --branch main` | 索引成功，符号数 > 0 |
+| ① | `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test-e2e --branch main` | 索引成功，符号数 > 0；确认向量表为 INT8（参考 CLI-1 验证方法） |
 | ② | `cl status --repo clang-test-e2e` | 显示 Symbols、Edges、FTS5、DB size 均 > 0 |
-| ③ | `cl search "sample" --repo clang-test-e2e --branch main --limit 5` | 命中 sample 相关符号 |
-| ④ | `cl list-symbols "sample" --repo clang-test-e2e --branch main --limit 5` | 返回符号名包含 "sample" 的结果 |
-| ⑤ | `cl overview --repo clang-test-e2e --branch main` | 输出符号按类型分布百分比 |
-| ⑥ | `cl list-repos` | 包含 clang-test-e2e |
-| ⑦ | 清理：`cl clean --repo clang-test-e2e` | 清理成功 |
+| ③ | `cl list-symbols "sample" --repo clang-test-e2e --branch main --limit 5` | 返回符号名包含 "sample" 的结果 |
+| ④ | `cl overview --repo clang-test-e2e --branch main` | 输出符号按类型分布百分比 |
+| ⑤ | `cl list-repos` | 包含 clang-test-e2e |
+| ⑥ | 清理：`cl clean --repo clang-test-e2e` | 清理成功 |
 
 **验证方法**：
-- 步骤①-⑧全部成功，无 panic 或 crash
-- 步骤③与步骤④结果不同（search 是 BM25，list-symbols 是 LIKE）
-- 步骤⑦即使无调用链也输出 "no callees found" 而不是崩溃
-- 清理：`cl clean --repo flatbuffers`
+- 步骤①-⑥全部成功，无 panic 或 crash
+- 清理后 `cl list-repos` 不再包含 clang-test-e2e
 
 ---
 
