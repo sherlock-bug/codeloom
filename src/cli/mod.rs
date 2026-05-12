@@ -344,7 +344,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
             let syms: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo=?1 AND node_type='sym'", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
             let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
-            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo=?1 AND node_type='doc'", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
+            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo=?1 AND node_type='section'", rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
             let resolved: i64 = conn.query_row("SELECT COUNT(*) FROM edges WHERE target_id!=0", [], |r| r.get(0)).unwrap_or(0);
             let sym_name_table = format!("symbol_name_vec_{}", repo.replace('-', "_"));
             let sym_comment_table = format!("symbol_comment_vec_{}", repo.replace('-', "_"));
@@ -633,7 +633,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 "SELECT COUNT(*) FROM nodes n JOIN branches b ON b.node_id=n.id WHERE b.repo=?1 AND b.branch_name=?2 AND n.node_type='sym'",
                 rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
             let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
-            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name=?2) AND node_type='doc'",
+            let docs: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE repo=?1 AND (branch_name IS NULL OR branch_name=?2) AND node_type='section'",
                 rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
             println!("=== {} (branch={}) ===", repo, branch);
             println!("Symbols: {}  |  Edges: {}  |  Docs: {}\n", syms, edges, docs);

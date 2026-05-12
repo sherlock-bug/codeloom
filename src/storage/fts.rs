@@ -142,7 +142,7 @@ fn search_hits(
             JOIN nodes n ON n.id = fts5_all.rowid
             WHERE fts5_all MATCH ?1
               AND n.repo = ?2
-              AND n.node_type = 'doc'
+              AND n.node_type = 'section'
             ORDER BY score
             LIMIT ?3";
 
@@ -257,7 +257,7 @@ mod tests {
         // Insert a doc node
         conn.execute(
             "INSERT INTO nodes (repo,node_type,name,content,content_hash,file_path) \
-             VALUES (?1,'doc','Getting Started','Installation guide content here','h2','docs/start.md')",
+             VALUES (?1,'section','Getting Started','Installation guide content here','h2','docs/start.md')",
             rusqlite::params![repo],
         ).unwrap();
         fill_all_fts(&conn, repo).unwrap();

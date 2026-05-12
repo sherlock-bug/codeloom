@@ -262,7 +262,7 @@ fn status(repo: &str, branch: &str) -> String {
     let sym_sql = format!("SELECT COUNT(*) FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='sym' AND b.repo=?1 {}", bwc);
     let syms: i64 = conn.query_row(&sym_sql, rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
     let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
-    let docs: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_type='doc' AND repo=?1 AND (branch_name IS NULL OR branch_name=?2)", rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
+    let docs: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_type='section' AND repo=?1 AND (branch_name IS NULL OR branch_name=?2)", rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
     let resolved: i64 = conn.query_row("SELECT COUNT(*) FROM edges WHERE target_id!=0", [], |r| r.get(0)).unwrap_or(0);
     let resolve_pct = if edges > 0 { resolved as f64 / edges as f64 * 100.0 } else { 0.0 };
     format!(
@@ -655,7 +655,7 @@ fn get_doc(doc_id: i64, repo: &str, branch: &str) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
     // Query doc_node
     let (title, section_path, level, content_text, file_path, file_format, node_type) = match conn.query_row(
-        "SELECT name, json_extract(attrs, '$.section_path'), CAST(json_extract(attrs, '$.level') AS INTEGER), content, file_path, json_extract(attrs, '$.file_format'), node_type FROM nodes WHERE node_type='doc' AND id=?1 AND repo=?2 AND (branch_name IS NULL OR branch_name=?3)",
+        "SELECT name, json_extract(attrs, '$.section_path'), CAST(json_extract(attrs, '$.level') AS INTEGER), content, file_path, json_extract(attrs, '$.file_format'), node_type FROM nodes WHERE node_type='section' AND id=?1 AND repo=?2 AND (branch_name IS NULL OR branch_name=?3)",
         rusqlite::params![doc_id, repo, branch],
         |row| Ok((
             row.get::<_,String>(0).unwrap_or_default(),
@@ -730,7 +730,7 @@ fn query_excel(doc_id: i64, repo: &str, branch: &str, mode: &str, filter_expr: &
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
     // Get the source node
     let (src_title, src_section_path, src_level, src_node_type, src_file_path) = match conn.query_row(
-        "SELECT name, json_extract(attrs, '$.section_path'), CAST(json_extract(attrs, '$.level') AS INTEGER), node_type, file_path FROM nodes WHERE node_type='doc' AND id=?1 AND repo=?2 AND (branch_name IS NULL OR branch_name=?3)",
+        "SELECT name, json_extract(attrs, '$.section_path'), CAST(json_extract(attrs, '$.level') AS INTEGER), node_type, file_path FROM nodes WHERE node_type='section' AND id=?1 AND repo=?2 AND (branch_name IS NULL OR branch_name=?3)",
         rusqlite::params![doc_id, repo, branch],
         |row| Ok((
             row.get::<_,String>(0).unwrap_or_default(),
@@ -775,7 +775,7 @@ fn query_excel(doc_id: i64, repo: &str, branch: &str, mode: &str, filter_expr: &
             // Query all cells for this row (level=4 under this row path)
             let row_prefix = format!("{}%", row_path);
             let mut out = format!("=== 行数据 ({}) ===\n", row_path);
-            let sql = "SELECT name, content FROM nodes WHERE node_type='doc' AND file_path=?1 AND CAST(json_extract(attrs, '$.level') AS INTEGER)=4 AND json_extract(attrs, '$.section_path') LIKE ?2 AND repo=?3 AND (branch_name IS NULL OR branch_name=?4) ORDER BY json_extract(attrs, '$.section_path') LIMIT ?5";
+            let sql = "SELECT name, content FROM nodes WHERE node_type='section' AND file_path=?1 AND CAST(json_extract(attrs, '$.level') AS INTEGER)=4 AND json_extract(attrs, '$.section_path') LIKE ?2 AND repo=?3 AND (branch_name IS NULL OR branch_name=?4) ORDER BY json_extract(attrs, '$.section_path') LIMIT ?5";
             if let Ok(mut stmt) = conn.prepare(sql) {
                 if let Ok(rows) = stmt.query_map(rusqlite::params![sheet_file_path, row_prefix, repo, branch, limit as i64], |row| {
                     Ok((row.get::<_,String>(0).unwrap_or_default(), row.get::<_,String>(1).unwrap_or_default()))
@@ -798,7 +798,7 @@ fn query_excel(doc_id: i64, repo: &str, branch: &str, mode: &str, filter_expr: &
                 );
             let col_prefix = format!("{}/Row%/{}%", safe_sheet, column_name);
             let mut out = format!("=== 列数据 ({}) ===\n", column_name);
-            let sql = "SELECT content, name, json_extract(attrs, '$.section_path') FROM nodes WHERE node_type='doc' AND file_path=?1 AND CAST(json_extract(attrs, '$.level') AS INTEGER)=4 AND json_extract(attrs, '$.section_path') LIKE ?2 AND repo=?3 AND (branch_name IS NULL OR branch_name=?4) ORDER BY json_extract(attrs, '$.section_path') LIMIT ?5";
+            let sql = "SELECT content, name, json_extract(attrs, '$.section_path') FROM nodes WHERE node_type='section' AND file_path=?1 AND CAST(json_extract(attrs, '$.level') AS INTEGER)=4 AND json_extract(attrs, '$.section_path') LIKE ?2 AND repo=?3 AND (branch_name IS NULL OR branch_name=?4) ORDER BY json_extract(attrs, '$.section_path') LIMIT ?5";
             if let Ok(mut stmt) = conn.prepare(sql) {
                 if let Ok(rows) = stmt.query_map(rusqlite::params![sheet_file_path, col_prefix, repo, branch, limit as i64], |row| {
                     Ok((
@@ -837,7 +837,7 @@ fn query_excel(doc_id: i64, repo: &str, branch: &str, mode: &str, filter_expr: &
             };
             // Query all cells in this sheet, group by row
             let sheet_prefix = format!("{}%", safe_sheet);
-            let sql = "SELECT id, name, content, json_extract(attrs, '$.section_path') FROM nodes WHERE node_type='doc' AND file_path=?1 AND CAST(json_extract(attrs, '$.level') AS INTEGER)=4 AND json_extract(attrs, '$.section_path') LIKE ?2 AND repo=?3 AND (branch_name IS NULL OR branch_name=?4) ORDER BY json_extract(attrs, '$.section_path')";
+            let sql = "SELECT id, name, content, json_extract(attrs, '$.section_path') FROM nodes WHERE node_type='section' AND file_path=?1 AND CAST(json_extract(attrs, '$.level') AS INTEGER)=4 AND json_extract(attrs, '$.section_path') LIKE ?2 AND repo=?3 AND (branch_name IS NULL OR branch_name=?4) ORDER BY json_extract(attrs, '$.section_path')";
             if let Ok(mut stmt) = conn.prepare(sql) {
                 if let Ok(rows) = stmt.query_map(rusqlite::params![sheet_file_path, sheet_prefix, repo, branch], |row| {
                     Ok((

@@ -148,14 +148,38 @@ pub fn write_doc_sections(
     let max_chunk = 500;
     let mut count = 0;
 
+    // Get file node id for contains: edges
+    let file_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM nodes WHERE repo=?1 AND node_type='file' AND name=?2",
+            rusqlite::params![repo, path],
+            |r| r.get(0),
+        )
+        .ok();
+
     for sec in sections {
         // Check if content needs chunking
         if sec.content.chars().count() <= max_chunk {
             // Short content — write directly
-            count += write_one_section(conn, repo, path, file_format, sec, None)?;
+            let section_id = write_one_section(conn, repo, path, file_format, sec, None)?;
+            // file → section contains: edge
+            if let Some(fid) = file_id {
+                conn.execute(
+                    "INSERT OR IGNORE INTO edges (source_id, target_id, edge_type) VALUES (?1, ?2, 'contains')",
+                    rusqlite::params![fid, section_id],
+                )?;
+            }
+            count += 1;
         } else {
             // Long content — write parent + chunks
             let parent_id = write_one_parent(conn, repo, path, file_format, sec)?;
+            // file → section contains: edge for parent
+            if let Some(fid) = file_id {
+                conn.execute(
+                    "INSERT OR IGNORE INTO edges (source_id, target_id, edge_type) VALUES (?1, ?2, 'contains')",
+                    rusqlite::params![fid, parent_id],
+                )?;
+            }
             // Delete old chunks
             conn.execute(
                 "DELETE FROM nodes WHERE json_extract(attrs, '$.parent_id')=?1 AND node_type='chunk'",
@@ -190,7 +214,7 @@ fn write_one_section(
     file_format: &str,
     sec: &DocSection,
     parent_id: Option<i64>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<i64> {
     let hash = crate::storage::dedup::hash_content(
         &format!("{}:{}:{}", sec.title, sec.section_path, sec.content)
     );
@@ -198,12 +222,21 @@ fn write_one_section(
     let pid: Option<i64> = parent_id.or(sec.parent_id);
 
     // Build attrs JSON with doc-specific fields
-    let attrs = serde_json::json!({
+    let mut attrs = serde_json::json!({
         "section_path": sp,
         "level": sec.level,
         "file_format": file_format,
         "parent_id": pid,
     });
+
+    // Add chunk index for ordering within parent section
+    if sec.node_type == "chunk" {
+        if let Some(idx_str) = sec.section_path.rsplit('/').next() {
+            if let Ok(idx) = idx_str.parse::<i32>() {
+                attrs["idx"] = serde_json::json!(idx);
+            }
+        }
+    }
 
     conn.execute(
         "INSERT INTO nodes (repo, node_type, name, content, file_path, content_hash, kind, attrs) \
@@ -218,7 +251,16 @@ fn write_one_section(
     if !sec.images.is_empty() {
         crate::storage::insert_doc_images(conn, last_node_id, &sec.images)?;
     }
-    Ok(1)
+
+    // Build contains: edge from parent
+    if let Some(pid) = parent_id {
+        conn.execute(
+            "INSERT OR IGNORE INTO edges (source_id, target_id, edge_type) VALUES (?1, ?2, 'contains')",
+            rusqlite::params![pid, last_node_id],
+        )?;
+    }
+
+    Ok(last_node_id)
 }
 
 fn write_one_parent(
@@ -243,7 +285,7 @@ fn write_one_parent(
 
     conn.execute(
         "INSERT INTO nodes (repo, node_type, name, content, file_path, content_hash, kind, attrs) \
-         VALUES (?1, 'doc', ?2, '', ?3, ?4, ?5, ?6) \
+         VALUES (?1, 'section', ?2, '', ?3, ?4, ?5, ?6) \
          ON CONFLICT(content_hash, file_path, name, branch_id, repo) DO UPDATE SET \
          kind=excluded.kind, attrs=excluded.attrs",
         rusqlite::params![repo, sec.title, path, hash, sec.node_type, attrs.to_string()],

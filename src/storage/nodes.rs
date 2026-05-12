@@ -7,7 +7,7 @@ use serde::{Serialize, Deserialize};
 pub struct Node {
     pub id: i64,
     pub repo: String,
-    pub node_type: String,       // "sym" | "doc" | "file"
+    pub node_type: String,       // "sym" | "section" | "file"
     pub name: String,
     pub content: String,
     pub file_path: String,
