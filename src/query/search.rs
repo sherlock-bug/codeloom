@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 /// A fused search result from hybrid (BM25 + vector) search
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FusedResult {
     pub id: i64,         // node rowid, 0 for fused/aggregated results
     pub score: f64, // weighted fusion score
@@ -18,6 +18,18 @@ pub struct FusedResult {
     pub signature: String, // function/method signature, empty for non-code or no-sig
     pub snippet: String,   // doc_comment for code, content for docs
     pub doc_id: i64,       // doc_nodes rowid (= doc_id for codeloom_get_doc), 0 for code results
+
+    // Enrichment fields — populated by enrich_search_results(); leave as defaults otherwise
+    pub members: String,       // class/struct: 字段名列表 "name,age,..."
+    pub methods: String,       // class/struct: 方法名列表 "getUser,setName,..."
+    pub values: String,        // enum: 枚举值列表 "RED,GREEN,BLUE"
+    pub parent_class: String,  // function/method: 所属类名
+    pub prev_section: String,  // section: 前一章节标题
+    pub next_section: String,  // section: 后一章节标题
+    pub prev_chunk: String,    // chunk: 前一 chunk 标题
+    pub next_chunk: String,    // chunk: 后一 chunk 标题
+    pub sections: String,      // file: 顶层 section 列表
+    pub parent_section: String, // chunk: 所属 section 名
 }
 
 /// Weighted fusion: normalize BM25 scores to (0,1] then combine with vector cosine similarity.
@@ -55,6 +67,7 @@ pub fn weighted_fuse(
             signature: hit.sig.clone(),
             snippet: hit.snippet.clone(),
             doc_id: if is_doc { hit.rowid } else { 0 },
+            ..Default::default()
         });
         // Take max — same name+file_path from multiple BM25 rows (multi-section doc) gets best score
         entry.score = entry.score.max(score);
@@ -85,7 +98,7 @@ pub fn weighted_fuse(
                 signature: sig.clone(),
                 snippet: snippet.clone(),
                 doc_id: *doc_id,
-            });
+            ..Default::default()            });
         }
     }
 
@@ -128,7 +141,7 @@ fn weighted_fuse_single(
             signature: hit.sig.clone(),
             snippet: hit.snippet.clone(),
             doc_id: if is_doc { hit.rowid } else { 0 },
-        });
+        ..Default::default()        });
         entry.score = entry.score.max(score);
     }
 
@@ -152,7 +165,7 @@ fn weighted_fuse_single(
                 signature: sig.clone(),
                 snippet: snippet.clone(),
                 doc_id: *doc_id,
-            });
+            ..Default::default()            });
         }
     }
 
@@ -392,7 +405,7 @@ pub fn bm25_precise_search(
                     kind: hit.kind.clone(), signature: hit.sig.clone(),
                     snippet: hit.snippet.clone(),
                     doc_id: if is_doc { hit.rowid } else { 0 },
-                });
+                ..Default::default()                });
         }
     };
 
@@ -408,6 +421,7 @@ pub fn bm25_precise_search(
     }
 
     fused.truncate(limit);
+    enrich_search_results(conn, repo, branch, &mut fused);
     Ok(fused)
 }
 
@@ -505,7 +519,7 @@ pub fn vector_semantic_search(
                 signature: signature.clone(),
                 snippet,
                 doc_id: 0,
-            });
+            ..Default::default()            });
         }
     }
 
@@ -523,7 +537,149 @@ pub fn vector_semantic_search(
     }
 
     results.truncate(limit);
+    enrich_search_results(conn, repo, branch, &mut results);
     Ok(results)
+}
+
+fn enrich_search_results(
+    conn: &rusqlite::Connection,
+    repo: &str,
+    branch: &str,
+    results: &mut [FusedResult],
+) {
+    let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).unwrap_or(0);
+    for r in results.iter_mut() {
+        let is_doc = r.hit_type == "doc";
+        let is_file = r.hit_type == "file";
+
+        match r.kind.as_str() {
+            "class" | "struct" => {
+                // Members (fields)
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
+                     WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'field' \
+                     ORDER BY n.id LIMIT 15"
+                ) {
+                    let names: Vec<String> = stmt.query_map([r.id, branch_id], |row| {
+                        row.get::<_, String>(0)
+                    }).ok().into_iter().flatten().filter_map(|r| r.ok()).collect();
+                    if !names.is_empty() {
+                        r.members = names.join(", ");
+                    }
+                }
+                // Methods
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
+                     WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'method' \
+                     ORDER BY n.id LIMIT 15"
+                ) {
+                    let names: Vec<String> = stmt.query_map([r.id, branch_id], |row| {
+                        row.get::<_, String>(0)
+                    }).ok().into_iter().flatten().filter_map(|r| r.ok()).collect();
+                    if !names.is_empty() {
+                        r.methods = names.join(", ");
+                    }
+                }
+            }
+            "enum" => {
+                // Enum values
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
+                     WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'enum_value' \
+                     ORDER BY n.id LIMIT 15"
+                ) {
+                    let names: Vec<String> = stmt.query_map([r.id, branch_id], |row| {
+                        row.get::<_, String>(0)
+                    }).ok().into_iter().flatten().filter_map(|r| r.ok()).collect();
+                    if !names.is_empty() {
+                        r.values = names.join(", ");
+                    }
+                }
+            }
+            "function" | "method" => {
+                // Parent class from attrs
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT json_extract(attrs, '$.parent_class') FROM nodes WHERE id = ?1"
+                ) {
+                    if let Ok(parent) = stmt.query_row([r.id], |row| row.get::<_, Option<String>>(0)) {
+                        if let Some(p) = parent {
+                            if !p.is_empty() {
+                                r.parent_class = p;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Section: prev/next sibling
+        if is_doc {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT name FROM nodes WHERE file_path = ?1 AND node_type = 'section' AND id < ?2 ORDER BY id DESC LIMIT 1"
+            ) {
+                if let Ok(name) = stmt.query_row(rusqlite::params![&r.file_path, &r.id], |row| row.get::<_, String>(0)) {
+                    r.prev_section = name;
+                }
+            }
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT name FROM nodes WHERE file_path = ?1 AND node_type = 'section' AND id > ?2 ORDER BY id ASC LIMIT 1"
+            ) {
+                if let Ok(name) = stmt.query_row(rusqlite::params![&r.file_path, &r.id], |row| row.get::<_, String>(0)) {
+                    r.next_section = name;
+                }
+            }
+        }
+
+        // File: top-level sections
+        if is_file {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT name FROM nodes WHERE file_path = ?1 AND node_type = 'section' ORDER BY id LIMIT 15"
+            ) {
+                let names: Vec<String> = stmt.query_map([&r.file_path], |row| {
+                    row.get::<_, String>(0)
+                }).ok().into_iter().flatten().filter_map(|r| r.ok()).collect();
+                if !names.is_empty() {
+                    r.sections = names.join(", ");
+                }
+            }
+        }
+
+        // Chunk: parent section + prev/next chunk
+        if is_doc && r.doc_id > 0 {
+            // Chunk is a doc with doc_id set; find parent section id first
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT e.source_id, n.name FROM edges e JOIN nodes n ON e.source_id = n.id \
+                 WHERE e.target_id = ?1 AND e.edge_type = 'contains:' AND e.branch_id = ?2 LIMIT 1"
+            ) {
+                if let Ok((parent_id, parent_name)) = stmt.query_row([r.id, branch_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                }) {
+                    r.parent_section = parent_name;
+                    // prev chunk: same parent, lower idx
+                    if let Ok(mut stmt2) = conn.prepare(
+                        "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
+                         WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'chunk' AND n.id < ?3 \
+                         ORDER BY n.id DESC LIMIT 1"
+                    ) {
+                        if let Ok(name) = stmt2.query_row([parent_id, branch_id, r.id], |row| row.get::<_, String>(0)) {
+                            r.prev_chunk = name;
+                        }
+                    }
+                    // next chunk
+                    if let Ok(mut stmt3) = conn.prepare(
+                        "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
+                         WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'chunk' AND n.id > ?3 \
+                         ORDER BY n.id ASC LIMIT 1"
+                    ) {
+                        if let Ok(name) = stmt3.query_row([parent_id, branch_id, r.id], |row| row.get::<_, String>(0)) {
+                            r.next_chunk = name;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

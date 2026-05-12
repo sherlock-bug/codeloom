@@ -33,7 +33,7 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
         // DISABLED: {"name":"codeloom_status","description":"查看索引状态：符号数、边数、文档数、数据库大小。在用其他MCP工具前先调用此工具确认仓库已索引且数据非空。branch/repo（必填）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
         {"name":"codeloom_list_symbols","description":"**优先使用**：按名称模糊搜索已索引的符号。优先于grep/rg使用——索引覆盖项目所有文件及#include的第三方头文件（grep只能搜当前目录）。返回结构化结果：名称、类型、文件路径、行号。C++类方法用ClassName::methodName格式。如pattern=\"login\"匹配handleLogin、loginUser等。branch/repo（必填）","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["pattern","repo","branch"]}},
         {"name":"codeloom_get_call_graph","description":"**首选方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。优于多次调neighbor_graph拼凑——一次到位且带递归深度控制。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["repo","branch","direction"]}},
-        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】精确BM25关键词搜索：比grep更快（预索引）、覆盖更全（含#include头文件和已索引文档）。搜索符号名、注释、文档内容和文件名，符号名匹配权重高于注释匹配。query可以是符号名（AuthService/compaction）或中文关键词。kind可选按符号类型过滤。不涉及语义理解——如需语义搜索用codeloom_semantic_search。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
+        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】精确BM25关键词搜索：比grep更快（预索引）、覆盖更全（含#include头文件和已索引文档）。搜索符号名、注释、文档内容和文件名，符号名匹配权重高于注释匹配。结果含节点专属增强信息：class/struct→members（字段名列表）+methods（方法名列表），enum→values（枚举值），function→parent_class（所属类），section→prev_section/next_section（前后章节），file→sections（顶层section列表）。query可以是符号名（AuthService/compaction）或中文关键词。kind可选按符号类型过滤。不涉及语义理解——如需语义搜索用codeloom_semantic_search。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
 
                 {"name":"codeloom_semantic_search","description":"语义向量搜索：用自然语言描述功能查找相关符号。适合「处理用户登录的函数」「内存分配的代码在哪」这类查询，不适合已知精确符号名的查找。只搜索符号不搜索文档/注释。无kind过滤。需要向量模型已加载。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
         {"name":"codeloom_inspect","description":"查看符号节点的全部信息：定义、文档注释、所有关联边。name或id至少传一个，传id精度最高。name=符号完整名称（C++类方法用ClassName::methodName格式）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
@@ -283,6 +283,20 @@ fn status(repo: &str, branch: &str) -> String {
     )
 }
 
+/// Add enrichment fields (parent_class, member_count, etc.) to a search result JSON object.
+fn add_enrichment_fields(obj: &mut serde_json::Value, r: &crate::query::search::FusedResult) {
+    if !r.parent_class.is_empty() { obj["parent_class"] = serde_json::Value::String(r.parent_class.clone()); }
+    if !r.members.is_empty() { obj["members"] = serde_json::Value::String(r.members.clone()); }
+    if !r.methods.is_empty() { obj["methods"] = serde_json::Value::String(r.methods.clone()); }
+    if !r.values.is_empty() { obj["values"] = serde_json::Value::String(r.values.clone()); }
+    if !r.prev_section.is_empty() { obj["prev_section"] = serde_json::Value::String(r.prev_section.clone()); }
+    if !r.next_section.is_empty() { obj["next_section"] = serde_json::Value::String(r.next_section.clone()); }
+    if !r.sections.is_empty() { obj["sections"] = serde_json::Value::String(r.sections.clone()); }
+    if !r.parent_section.is_empty() { obj["parent_section"] = serde_json::Value::String(r.parent_section.clone()); }
+    if !r.prev_chunk.is_empty() { obj["prev_chunk"] = serde_json::Value::String(r.prev_chunk.clone()); }
+    if !r.next_chunk.is_empty() { obj["next_chunk"] = serde_json::Value::String(r.next_chunk.clone()); }
+}
+
 fn list_symbols(pattern: &str, repo: &str, branch: &str, limit: usize) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
     // Use FTS5 BM25 search on symbol names (upgraded from LIKE)
@@ -419,6 +433,8 @@ fn bm25_precise_search(query: &str, repo: &str, branch: &str, limit: usize, kind
                     obj["doc_id"] = serde_json::Value::Number(serde_json::Number::from(r.doc_id));
                 }
                 if !r.snippet.is_empty() { obj["snippet"] = serde_json::Value::String(r.snippet.clone()); }
+                // Enrichment fields
+                add_enrichment_fields(&mut obj, r);
                 obj
             }).collect();
             serde_json::json!({
@@ -457,6 +473,7 @@ fn semantic_search(query: &str, repo: &str, branch: &str, limit: usize) -> Strin
                 if !r.signature.is_empty() { obj["signature"] = serde_json::Value::String(r.signature.clone()); }
                 if r.line_start > 0 { obj["line"] = serde_json::Value::Number(serde_json::Number::from(r.line_start)); }
                 if !r.snippet.is_empty() { obj["snippet"] = serde_json::Value::String(r.snippet.clone()); }
+                add_enrichment_fields(&mut obj, r);
                 obj
             }).collect();
             serde_json::json!({
