@@ -88,9 +88,9 @@ CodeLoom SHALL 将测试用例按执行时间分为快速门禁用例和耗时�
 - WHEN 运行快速测试门禁
 - THEN 测试 SHALL 在 10 秒内返回结果，覆盖核心逻辑但不加载大型模型或索引外部仓库
 
-### Requirement: 安装脚本保护用户配置与清理
+### Requirement: 安装脚本保护用户配置与清理 ✅ 已修复 (2026-05-12)
 install.sh SHALL 保护用户自定义模型不被覆盖，并在安装完成后清理临时文件。
-当前偏差：install.sh 尚未实现。两个关键点需在实施时处理：① 安装前检测 ~/.codeloom/models/ 是否已有用户模型，默认跳过模型覆盖仅更新二进制；② 安装成功后删除当前目录的临时文件（zip 解压产物），失败时保留现场。
+~~当前偏差：install.sh 尚未实现。两个关键点需在实施时处理：① 安装前检测 ~/.codeloom/models/ 是否已有用户模型，默认跳过模型覆盖仅更新二进制；② 安装成功后删除当前目录的临时文件（zip 解压产物），失败时保留现场。~~
 
 #### Scenario: 用户模型保护
 - GIVEN 用户已在 ~/.codeloom/models/ 部署了自定义嵌入模型
@@ -174,9 +174,9 @@ Indexer（Clang/tree-sitter/doc/files）SHALL 写入 nodes 表作为主存储。
 - THEN 索引器 SHALL 跳过所有 Python 文件（`collect_files()` 不收录，或 `index_one()` 直接 `return Ok(0)`）
 | - AND 不创建 file node
 
-### Requirement: MCP 工具（除搜索外）需全面审视
+### Requirement: MCP 工具（除搜索外）需全面审视 ✅ 已修复 (2026-05-12)
 除 `codeloom_search` / `codeloom_semantic_search` 外的所有 MCP 工具 SHALL 经过功能审查和正确性验证，确保在 v0.9 unified-node-table 重构后行为一致。
-当前偏差：search/calibrate 之外的工具（如 analyze、query_graph 等）在 v0.9 nodes 表重构后未经过系统性回归测试，可能存在 SQL 查询引用旧表、字段名不匹配、返回格式错误等 bug。同时部分工具的功能边界和 description 可能不再准确，需要更新。
+~~当前偏差：search/calibrate 之外的工具（如 analyze、query_graph 等）在 v0.9 nodes 表重构后未经过系统性回归测试，可能存在 SQL 查询引用旧表、字段名不匹配、返回格式错误等 bug。同时部分工具的功能边界和 description 可能不再准确，需要更新。~~
 
 #### Scenario: 调用图工具回归
 - GIVEN 项目已完成 v0.9 重构
@@ -184,9 +184,9 @@ Indexer（Clang/tree-sitter/doc/files）SHALL 写入 nodes 表作为主存储。
 - THEN 结果 SHALL 正确反映 nodes 表中的调用关系
 - AND 不引用已删除的 symbols 表
 
-### Requirement: 日志系统完善
+### Requirement: 日志系统完善 ✅ 已修复 (2026-05-12)
 CodeLoom SHALL 在关键执行节点（索引/搜索/校准的入口、退出、异常分支、耗时操作）输出带级别的结构化日志，便于诊断和性能分析。
-当前偏差：现有日志散落在各个模块，缺乏统一规范。部分模块用 `log_info!`/`log_warn!`，部分直接 `println!`。关键异常路径无日志输出，导致问题排查困难。耗时操作（如语义索引、全库校准）没有耗时标记。
+~~当前偏差：现有日志散落在各个模块，缺乏统一规范。部分模块用 `log_info!`/`log_warn!`，部分直接 `println!`。关键异常路径无日志输出，导致问题排查困难。耗时操作（如语义索引、全库校准）没有耗时标记。~~
 
 #### Scenario: 校准失败诊断
 - GIVEN 用户执行 `codeloom calibrate`

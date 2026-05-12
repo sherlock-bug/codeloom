@@ -21,7 +21,7 @@ impl FileNode {
         Ok(conn.query_row(
             "INSERT INTO nodes (repo, node_type, name, content, file_path, content_hash, branch_id, kind, attrs) \
              VALUES (?1, 'file', ?2, ?3, ?2, ?4, ?5, '', ?6) \
-             ON CONFLICT(repo, file_path, branch_id) DO UPDATE SET \
+             ON CONFLICT(content_hash, file_path, name, branch_id, repo) DO UPDATE SET \
              content = excluded.content, content_hash = excluded.content_hash \
              RETURNING id",
             rusqlite::params![

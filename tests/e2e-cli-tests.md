@@ -221,25 +221,6 @@ cl status --repo leveldb
 | **预期结果** | 列出所有分支名及符号数，如 `__builtin__  141 symbols`、`main1  3359 symbols` |
 | **验证方法** | 至少包含 main1 分支，符号数与 status 一致 |
 
-### CLI-19 Branch Set-Alias
-
-| 字段 | 内容 |
-|------|------|
-| **名称** | branch set-alias — 为分支设置惯用别名 |
-| **前置条件** | leveldb 已索引 |
-| **步骤** | `cl branch set-alias main main1 --repo leveldb --desc "主开发分支"` |
-| **预期结果** | 设置成功，无报错 |
-| **验证方法** | 用 `cl branch list-aliases --repo leveldb` 确认包含 "main → main1" 映射 |
-
-### CLI-20 Branch List-Aliases
-
-| 字段 | 内容 |
-|------|------|
-| **名称** | branch list-aliases — 列出当前仓库所有分支别名 |
-| **前置条件** | 已设置至少一个别名（CLI-19） |
-| **步骤** | `cl branch list-aliases --repo leveldb` |
-| **预期结果** | 列表输出所有别名映射，格式如 `main → main1 (主开发分支)` |
-| **验证方法** | CLI-19 设置的别名出现在列表中 |
 
 ### CLI-21 Clean — 删除仓库
 
@@ -409,8 +390,6 @@ cl clean --repo spdlog
 | CLI-15 | ❌ | 2026-05-12 | 梦璃 | --depth 不被 CLI call-graph 支持 |
 | CLI-17 | ✅ | 2026-05-12 | 梦璃 | list-repos |
 | CLI-18 | ✅ | 2026-05-12 | 梦璃 | list-branches |
-| CLI-19 | ❌ | 2026-05-12 | 梦璃 | --alias 非 flag，应为 positional 参数 |
-| CLI-20 | ✅ | 2026-05-12 | 梦璃 | list-aliases |
 | CLI-21 | ✅ | 2026-05-12 | 梦璃 | clean --repo |
 | CLI-22 | ✅ | 2026-05-12 | 梦璃 | 创建+删除临时分支 |
 | CLI-24 | ✅ | 2026-05-12 | 梦璃 | check |

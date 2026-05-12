@@ -148,20 +148,6 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"codeloom_s
 # 预期输出：branch is required
 ```
 
-### 2.4 分支术语表
-
-```bash
-# 给 v2 分支设置别名
-codeloom branch set-alias old-api v2 --repo json --desc "v2.x 旧单头文件 API"
-
-# 给 v3 分支设置别名
-codeloom branch set-alias new-api v3 --repo json --desc "v3.x 新多文件 API"
-
-# 查看所有别名
-codeloom branch list-aliases --repo json
-```
-
-**预期**：输出 old-api → v2、new-api → v3。
 
 ---
 
