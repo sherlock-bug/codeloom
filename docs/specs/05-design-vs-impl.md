@@ -66,12 +66,6 @@
 - **实现**: `source_id=0, target_id=0`，无法关联到具体符号
 - **影响**: 中。#include 边存在但不可查
 
-### 9. 文档-代码桥接 — 未实现
-
-- **描述**: 设计为将文档术语桥接到代码符号
-- **实现**: `src/linking/mod.rs` 仅有注释 stub
-- **影响**: **高**。这是核心能力缺失，用户无法通过文档描述找到对应代码
-
 ---
 
 ## 其他偏差
@@ -91,7 +85,7 @@
 
 | 等级 | 数量 | 项目 |
 |------|------|------|
-| 🔴 高 | 2 | Tree-sitter queries 未实现 · 文档-代码桥接 stub |
+| 🔴 高 | 1 | Tree-sitter queries 未实现 |
 | 🟡 中 | 3 | semantic_search 输出不一致 · schema 类型不准 · include edges 无符号关联 |
 | 🟢 低 | 5 | search kind 列表 · inspect template_args · list_branches 缺数量 · hybrid 阈值注释 · check 工具数 |
 | ⚪ 记录 | 3 | status/get_doc/query_excel 被禁用但代码完整 |

@@ -278,11 +278,10 @@
 ## 12. 文档-代码桥接 (Doc-Code Linking)
 
 - **类型**: internal
-- **状态**: stub (计划中)
+- **状态**: removed（规格砍掉，非 bug）
 - **源码位置**: `src/linking/mod.rs` — 仅注释 `// doc-code linking — stub`
-- **用途**: 将文档中的术语、API 引用桥接到代码符号
-- **设计文档**: 无
-- **设计 vs 实现**: diverges — 仅有 stub，未实现
+- **备注**: 该功能已被用户从规格中移除，`src/linking/mod.rs` 的 stub 为残留代码。不是设计vs实现的偏差。
+- **设计vs实现**: N/A（已从规格移除）
 
 ---
 
@@ -335,7 +334,7 @@ codeloom index <path> --repo <name> --branch <b>
 1. **Clang C++ 解析**是最完善的能力 — 15 种符号、11 种边类型、外部符号 stub、声明-定义合并
 2. **文档索引**能力完整 — 6 种格式、图片压缩、中文文本分块
 3. **非 C++ 语言**的 tree-sitter 符号提取为空 — queries 未实现
-4. **文档-代码桥接**仅为 stub — 是最大的能力缺口
+4. **文档-代码桥接**已被从规格中移除（非 bug，`src/linking/mod.rs` 的 stub 为残留）
 5. **#include 关系**的 edge 没有真正的符号关联 (source_id=0)
 6. **增量索引**使用 `git diff --name-only` — 简单但可靠
 7. **噪声标定**是独创的能力 — 用噪声探针自适应计算向量搜索阈值
