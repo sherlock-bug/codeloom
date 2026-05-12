@@ -39,11 +39,14 @@
 
 - **涉及**: 内部能力（include 索引）
 - **状态**: ✅ **已修复** — 2026-05-12
+- **根因**: Clang 索引器不创建 file node，`index_includes` 查不到节点 ID；加上 UNIQUE 索引缺 `target_id` 列导致大部分 include 边被静默丢弃
 - **修复**:
-  - `index_includes()` 从硬编码 `(0, 0)` 改为查询 file node ID
-  - 函数签名增加 `branch_id` 参数
-  - edges 表 UNIQUE 索引改为 `(source_id, target_id, edge_type, branch_id)`
-  - source_id: 源文件路径→file node ID；target_id: 项目内头文件解析为 ID，系统头文件为 0
+  - 两趟扫描：Phase 1 遍历所有 C/C++ 文件，为每个源文件新建 `type='file'` 节点；Phase 2 逐文件提取 `#include`，resolve target_id
+  - source_id: 源文件的 file node ID（通过相对路径查找）
+  - target_id: 项目头文件（带扩展名）自动创建 file node 并关联；系统头文件（无扩展名，如 `cstdio`, `vector`）→ 0
+  - 函数签名增加 `branch_id` 参数，edges 写入含分支隔离
+  - UNIQUE 索引 `(source_id, edge_type, branch_id)` → `(source_id, target_id, edge_type, branch_id)`
+- **验证**: 4 条 include 边全部 `source_id > 0`，project header (`sample.hpp`) 正确关联，system headers 优雅降级
 
 ---
 
