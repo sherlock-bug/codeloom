@@ -99,7 +99,8 @@ pub fn index_clang(
 
                 for edge in &extracted.edges {
                     let src_key = format!("{}::{}", edge.source_ns, edge.source_name);
-                    let src_id = name_to_id.get(&src_key)
+                    let src_id = name_to_id
+                        .get(&src_key)
                         .or_else(|| name_to_id.get(&edge.source_name));
 
                     let tgt_id = name_to_id.get(&edge.target_name);
@@ -113,9 +114,12 @@ pub fn index_clang(
                         };
 
                         if tid > 0 {
+                            let branch_id =
+                                crate::storage::resolve_branch_id(conn, repo_name, branch_name)
+                                    .unwrap_or(0);
                             let _ = conn.execute(
-                                "INSERT OR IGNORE INTO edges (source_id, target_id, edge_type, source_repo) VALUES (?1,?2,?3,?4)",
-                                rusqlite::params![sid, tid, edge.edge_type, repo_name],
+                                "INSERT OR IGNORE INTO edges (source_id, target_id, edge_type, source_repo, branch_id) VALUES (?1,?2,?3,?4,?5)",
+                                rusqlite::params![sid, tid, edge.edge_type, repo_name, branch_id],
                             );
                             edges_count += 1;
                         }
@@ -136,13 +140,15 @@ pub fn index_clang(
 /// Convergence logic:
 /// Infer symbol kind from edge_type prefix for stub creation.
 fn infer_stub_kind(edge_type: &str) -> &str {
-    if edge_type.starts_with("instantiates:") { "template_function" }
-    else if edge_type.starts_with("contains:") { "method" }
-    else if edge_type.starts_with("aliases:") { "typedef" }
-    else if edge_type.starts_with("overrides:") { "method" }
-    else if edge_type.starts_with("uses_type:") { "class" }
-    else if edge_type.starts_with("param_type:") || edge_type.starts_with("return_type:") { "class" }
-    else { "function" }
+    match edge_type {
+        "instantiates" | "instantiates:" => "template_function",
+        "contains" | "contains:" => "method",
+        "aliases" | "aliases:" => "typedef",
+        "overrides" | "overrides:" => "method",
+        "uses_type" | "uses_type:" => "class",
+        "param_type" | "param_type:" | "return_type" | "return_type:" => "class",
+        _ => "function",
+    }
 }
 
 /// - Full-key match on (name, namespace, kind, parent_class, file_path, repo)

@@ -210,7 +210,7 @@ impl ExtractCtx {
                             self.result.edges.push(Edge {
                                 source_name: qname.clone(), source_ns: ns.clone(),
                                 target_name: parent_method,
-                                edge_type: format!("overrides:{}", pm),
+                                edge_type: "overrides".to_string(),
                             });
                         }
                     }
@@ -253,7 +253,7 @@ impl ExtractCtx {
                                 self.result.edges.push(Edge {
                                     source_name: n.to_string(), source_ns: ns.clone(),
                                     target_name: base_name.to_string(),
-                                    edge_type: format!("inherits:{}", base_name),
+                                    edge_type: "inherits".to_string(),
                                 });
                             }
                         }
@@ -283,7 +283,7 @@ impl ExtractCtx {
                                     self.result.edges.push(Edge {
                                         source_name: n.to_string(), source_ns: ns.clone(),
                                         target_name: qcn.clone(),
-                                        edge_type: format!("contains:{}", qcn),
+                                        edge_type: "contains".to_string(),
                                     });
                                 }
                             }
