@@ -25,6 +25,7 @@ pub fn get_edges(
     symbol_id: i64,
     direction: &str,
     edge_filter: &[String],
+    branch_id: i64,
 ) -> Vec<Edge> {
     let mut edges = Vec::new();
     let filter_clause = if edge_filter.is_empty() {
@@ -40,11 +41,11 @@ pub fn get_edges(
              FROM edges e \
              JOIN nodes s1 ON e.source_id = s1.id \
              LEFT JOIN nodes s2 ON e.target_id = s2.id \
-             WHERE e.source_id = ?1 AND e.target_id != 0 {}",
+             WHERE e.source_id = ?1 AND e.target_id != 0 AND (e.branch_id = ?2 OR e.branch_id = 0) {}",
             filter_clause
         );
         if let Ok(mut stmt) = conn.prepare(&sql) {
-            let rows = stmt.query_map(rusqlite::params![symbol_id], |row| {
+            let rows = stmt.query_map(rusqlite::params![symbol_id, branch_id], |row| {
                 Ok(Edge {
                     source_id: row.get(0)?,
                     target_id: row.get(1)?,
@@ -65,11 +66,11 @@ pub fn get_edges(
              FROM edges e \
              JOIN nodes s2 ON e.source_id = s2.id \
              LEFT JOIN nodes s1 ON e.target_id = s1.id \
-             WHERE e.target_id = ?1 AND e.source_id != 0 {}",
+             WHERE e.target_id = ?1 AND e.source_id != 0 AND (e.branch_id = ?2 OR e.branch_id = 0) {}",
             filter_clause
         );
         if let Ok(mut stmt) = conn.prepare(&sql) {
-            let rows = stmt.query_map(rusqlite::params![symbol_id], |row| {
+            let rows = stmt.query_map(rusqlite::params![symbol_id, branch_id], |row| {
                 Ok(Edge {
                     source_id: row.get(0)?,
                     target_id: row.get(1)?,
@@ -104,23 +105,25 @@ pub fn symbol_name_by_id(conn: &Connection, id: i64) -> Option<String> {
 }
 
 /// Build forward adjacency map: source_id → [(target_id, edge_type)]
+/// branch_id: filter edges by branch (0 = unassigned, backward compatible).
 pub fn build_forward_adj(
     conn: &Connection,
     edge_filter: &[String],
+    branch_id: i64,
 ) -> HashMap<i64, Vec<(i64, String)>> {
     let filter = if edge_filter.is_empty() {
         String::new()
     } else {
         let parts: Vec<String> = edge_filter.iter().map(|p| format!("edge_type LIKE '{}%'", p.replace('\'', "''"))).collect();
-        format!("WHERE {}", parts.join(" OR "))
+        format!("AND {}", parts.join(" OR "))
     };
     let sql = format!(
-        "SELECT source_id, target_id, edge_type FROM edges WHERE target_id != 0 {}",
+        "SELECT source_id, target_id, edge_type FROM edges WHERE target_id != 0 AND (branch_id = ?1 OR branch_id = 0) {}",
         filter
     );
     let mut adj: HashMap<i64, Vec<(i64, String)>> = HashMap::new();
     if let Ok(mut stmt) = conn.prepare(&sql) {
-        if let Ok(rows) = stmt.query_map([], |row| {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![branch_id], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
         }) {
             for r in rows.flatten() {
@@ -135,20 +138,21 @@ pub fn build_forward_adj(
 pub fn build_reverse_adj(
     conn: &Connection,
     edge_filter: &[String],
+    branch_id: i64,
 ) -> HashMap<i64, Vec<(i64, String)>> {
     let filter = if edge_filter.is_empty() {
         String::new()
     } else {
         let parts: Vec<String> = edge_filter.iter().map(|p| format!("edge_type LIKE '{}%'", p.replace('\'', "''"))).collect();
-        format!("WHERE {}", parts.join(" OR "))
+        format!("AND {}", parts.join(" OR "))
     };
     let sql = format!(
-        "SELECT target_id, source_id, edge_type FROM edges WHERE source_id != 0 {}",
+        "SELECT target_id, source_id, edge_type FROM edges WHERE source_id != 0 AND (branch_id = ?1 OR branch_id = 0) {}",
         filter
     );
     let mut adj: HashMap<i64, Vec<(i64, String)>> = HashMap::new();
     if let Ok(mut stmt) = conn.prepare(&sql) {
-        if let Ok(rows) = stmt.query_map([], |row| {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![branch_id], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
         }) {
             for r in rows.flatten() {
@@ -171,11 +175,12 @@ pub fn bfs_path_search(
     target_id: i64,
     edge_filter: &[String],
     max_depth: usize,
-    mode: &str,         // "shortest" or "all"
+    mode: &str,
     max_paths: usize,
+    branch_id: i64,
 ) -> Vec<PathResult> {
-    let fwd_adj = build_forward_adj(conn, edge_filter);
-    let rev_adj = build_reverse_adj(conn, edge_filter);
+    let fwd_adj = build_forward_adj(conn, edge_filter, branch_id);
+    let rev_adj = build_reverse_adj(conn, edge_filter, branch_id);
 
     let mut results: Vec<PathResult> = Vec::new();
     let mut visited_nodes: HashSet<i64> = HashSet::new();
@@ -240,9 +245,10 @@ pub fn transitive_closure(
     direction: &str,
     radius: usize,
     edge_filter: &[String],
+    branch_id: i64,
 ) -> Vec<ImpactResult> {
-    let fwd_adj = build_forward_adj(conn, edge_filter);
-    let rev_adj = build_reverse_adj(conn, edge_filter);
+    let fwd_adj = build_forward_adj(conn, edge_filter, branch_id);
+    let rev_adj = build_reverse_adj(conn, edge_filter, branch_id);
     let mut results: Vec<ImpactResult> = Vec::new();
     let mut visited: HashSet<i64> = HashSet::new();
     visited.insert(symbol_id);
@@ -318,13 +324,14 @@ pub fn neighbor_map(
     direction: &str,
     depth: usize,
     edge_filter: &[String],
+    branch_id: i64,
 ) -> NeighborMap {
     let mut map = NeighborMap {
         forward: HashMap::new(),
         backward: HashMap::new(),
     };
 
-    let edges = get_edges(conn, symbol_id, direction, edge_filter);
+    let edges = get_edges(conn, symbol_id, direction, edge_filter, branch_id);
 
     for e in &edges {
         // Determine if this edge is forward or backward relative to the queried symbol
@@ -353,7 +360,7 @@ pub fn neighbor_map(
         }).collect();
 
         for (nid, is_fwd) in &neighbor_ids {
-            let sub_edges = get_edges(conn, *nid, "both", edge_filter);
+            let sub_edges = get_edges(conn, *nid, "both", edge_filter, branch_id);
             for se in &sub_edges {
                 if se.source_id == *nid {
                     let label = format!("depth2:{}", edge_prefix(&se.edge_type));

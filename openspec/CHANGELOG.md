@@ -1,5 +1,13 @@
 # CodeLoom CHANGELOG
 
+## 2026-05-12 — fix-mcp-graph-branch-filtering
+
+- **FIX**: 所有图分析 MCP 工具（call_graph、path_analysis、impact_analysis、neighbor_graph、inheritance_tree、inspect_symbol）的 `edges` 表查询统一添加 `branch_id` 过滤，多分支索引边数据不再污染。
+- **FIX**: `inheritance_tree` 中的 `build_tree` 和 `get_overrides` 修复——从硬编码 `branch_id = 0` 改为传参透传实际 branch_id。
+- **CHANGE**: `graph.rs` 的 `get_edges()`、`build_forward_adj()`、`build_reverse_adj()`、`bfs_path_search()`、`transitive_closure()`、`neighbor_map()` 新增 `branch_id` 参数。
+- **CHANGE**: `call_graph.rs` 的 `traverse_calls()` 从 `branch: &str` 改为 `branch_id: i64` 参数，移除内联的 `resolve_branch_id` 调用。
+- **NEW**: `openspec/specs/mcp-tools/spec.md` 新增域规范，定义图分析工具的分支隔离共享约束。
+
 ## 2026-05-10 — add-logging-system
 
 - **NEW**: 文件日志系统（`src/logger.rs`），支持时间戳、PID、TID、级别、模块路径的格式化日志。

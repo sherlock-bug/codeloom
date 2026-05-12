@@ -54,7 +54,7 @@ pub fn get_call_graph(
         let mut visited = HashSet::new();
         visited.insert(first_id);
         out.push_str(&format!("  * {} (id={})\n", first_name, first_id));
-        traverse_calls(branch, conn, first_id, direction, max_depth, 1, &mut visited, &mut out);
+        traverse_calls(branch_id, conn, first_id, direction, max_depth, 1, &mut visited, &mut out);
         return out;
     }
     let mut out = format!("Call graph for '{}' ({}):\n", name, direction);
@@ -62,13 +62,13 @@ pub fn get_call_graph(
     for &root_id in &sym_ids {
         visited.insert(root_id);
         out.push_str(&format!("  * {} (id={})\n", name, root_id));
-        traverse_calls(branch, conn, root_id, direction, max_depth, 1, &mut visited, &mut out);
+        traverse_calls(branch_id, conn, root_id, direction, max_depth, 1, &mut visited, &mut out);
     }
     out
 }
 
 fn traverse_calls(
-    branch: &str,
+    branch_id: i64,
     conn: &Connection,
     sym_id: i64,
     direction: &str,
@@ -83,16 +83,16 @@ fn traverse_calls(
     let prefix = "  ".repeat(depth + 1);
     let query = match direction {
         "callees" => format!(
-            "SELECT e.target_id, e.edge_type FROM edges e WHERE e.source_id={} AND e.target_id!=0 AND (e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')",
+            "SELECT e.target_id, e.edge_type FROM edges e WHERE e.source_id={} AND e.target_id!=0 AND e.branch_id=? AND (e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')",
             sym_id
         ),
         _ => format!(
-            "SELECT e.source_id, e.edge_type FROM edges e WHERE e.target_id={} AND (e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')",
+            "SELECT e.source_id, e.edge_type FROM edges e WHERE e.target_id={} AND e.branch_id=? AND (e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')",
             sym_id
         ),
     };
     if let Ok(mut stmt) = conn.prepare(&query) {
-        if let Ok(rows) = stmt.query_map([], |r| {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![branch_id], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         }) {
             for row in rows.flatten() {
@@ -112,8 +112,6 @@ fn traverse_calls(
                     continue;
                 }
                 visited.insert(other_id);
-                let branch_id = crate::storage::resolve_branch_id(conn, "repo_placeholder", branch).unwrap_or(0);
-                // We don't have repo here, use 0 as fallback -- this is just for display
                 let other_name = conn
                     .query_row(
                         "SELECT n.name FROM nodes n JOIN branches b ON n.id=b.node_id WHERE n.id=?1 AND n.node_type='sym' AND (b.branch_id=?2 OR b.branch_id=0)",
@@ -128,7 +126,7 @@ fn traverse_calls(
                 ));
                 if depth < max_depth {
                     traverse_calls(
-                        branch, conn, other_id, direction, max_depth, depth + 1, visited, out,
+                        branch_id, conn, other_id, direction, max_depth, depth + 1, visited, out,
                     );
                 }
             }

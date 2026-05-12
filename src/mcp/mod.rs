@@ -310,6 +310,7 @@ fn list_symbols(pattern: &str, repo: &str, branch: &str, limit: usize) -> String
 
 fn inspect_symbol(name: &str, repo: &str, branch: &str) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
+    let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
     let bwc = branch_where_clause(branch);
     let sql = format!("SELECT n.id, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='sym' AND n.repo=?1 AND n.name=?2 {}", bwc);
     let rows: Vec<(i64,String,String,String,i64,i64,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)> = match conn.prepare(&sql) {
@@ -341,7 +342,7 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str) -> String {
             }
         }
         // Edges
-        let e_sql = format!("SELECT e.edge_type, n.name, n.kind FROM edges e LEFT JOIN nodes n ON ((e.source_id={0} AND n.id=e.target_id) OR (e.target_id={0} AND n.id=e.source_id)) AND n.node_type='sym' WHERE (e.source_id={0} OR e.target_id={0}) AND n.id IS NOT NULL ORDER BY e.edge_type LIMIT 200", sid);
+        let e_sql = format!("SELECT e.edge_type, n.name, n.kind FROM edges e LEFT JOIN nodes n ON ((e.source_id={0} AND n.id=e.target_id) OR (e.target_id={0} AND n.id=e.source_id)) AND n.node_type='sym' WHERE (e.source_id={0} OR e.target_id={0}) AND n.id IS NOT NULL AND e.branch_id={1} ORDER BY e.edge_type LIMIT 200", sid, branch_id);
         if let Ok(mut e_stmt) = conn.prepare(&e_sql) {
             if let Ok(e_rows) = e_stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?))) {
                 use std::collections::BTreeMap;
@@ -506,7 +507,8 @@ fn path_analysis(repo: &str, branch: &str, source: &str, target: &str, mode: &st
     let tid = match crate::query::graph::resolve_symbol_id(&conn, target, repo, branch) {
         Some(id) => id, None => return format!("Symbol '{}' not found", target),
     };
-    let results = crate::query::graph::bfs_path_search(&conn, sid, tid, edge_filter, max_depth, mode, max_paths);
+    let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
+    let results = crate::query::graph::bfs_path_search(&conn, sid, tid, edge_filter, max_depth, mode, max_paths, branch_id);
     let paths: Vec<serde_json::Value> = results.into_iter().map(|r| {
         serde_json::json!({"edges": r.edges})
     }).collect();
@@ -520,7 +522,8 @@ fn impact_analysis(repo: &str, branch: &str, symbol: &str, direction: &str, radi
     let sid = match crate::query::graph::resolve_symbol_id(&conn, symbol, repo, branch) {
         Some(id) => id, None => return format!("Symbol '{}' not found", symbol),
     };
-    let results = crate::query::graph::transitive_closure(&conn, sid, direction, radius, edge_filter);
+    let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
+    let results = crate::query::graph::transitive_closure(&conn, sid, direction, radius, edge_filter, branch_id);
     let affected: Vec<serde_json::Value> = results.into_iter().map(|r| {
         serde_json::json!({"symbol": r.symbol, "distance": r.distance, "via": r.via})
     }).collect();
@@ -534,7 +537,8 @@ fn neighbor_graph(repo: &str, branch: &str, symbol: &str, direction: &str, depth
     let sid = match crate::query::graph::resolve_symbol_id(&conn, symbol, repo, branch) {
         Some(id) => id, None => return format!("Symbol '{}' not found", symbol),
     };
-    let map = crate::query::graph::neighbor_map(&conn, sid, direction, depth, &[]);
+    let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
+    let map = crate::query::graph::neighbor_map(&conn, sid, direction, depth, &[], branch_id);
     serde_json::json!({
         "symbol": symbol,
         "depth": depth,
@@ -552,23 +556,24 @@ fn inheritance_tree(repo: &str, branch: &str, symbol: &str, direction: &str, max
         Some(id) => id, None => return format!("Symbol '{}' not found", symbol),
     };
     let root_name = crate::query::graph::symbol_name_by_id(&conn, sid).unwrap_or_default();
+    let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
 
-    fn build_tree(conn: &rusqlite::Connection, parent_id: i64, dir: &str, depth: usize, max_depth: usize) -> Vec<serde_json::Value> {
+    fn build_tree(conn: &rusqlite::Connection, parent_id: i64, dir: &str, depth: usize, max_depth: usize, branch_id: i64) -> Vec<serde_json::Value> {
         if depth >= max_depth { return vec![]; }
         let mut children = vec![];
         
         if dir == "up" || dir == "both" {
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT e.source_id, n.name FROM edges e JOIN nodes n ON e.source_id = n.id WHERE n.node_type='sym' AND e.target_id = ?1 AND e.edge_type LIKE 'inherits:%' AND (n.kind = 'class' OR n.kind = 'struct')"
+                "SELECT e.source_id, n.name FROM edges e JOIN nodes n ON e.source_id = n.id WHERE n.node_type='sym' AND e.target_id = ?1 AND e.branch_id = ?2 AND e.edge_type LIKE 'inherits:%' AND (n.kind = 'class' OR n.kind = 'struct')"
             ) {
-                if let Ok(rows) = stmt.query_map(rusqlite::params![parent_id], |row| {
+                if let Ok(rows) = stmt.query_map(rusqlite::params![parent_id, branch_id], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
                 }) {
                     for r in rows.flatten() {
-                        let ov = get_overrides(conn, r.0);
+                        let ov = get_overrides(conn, r.0, branch_id);
                         children.push(serde_json::json!({
                             "symbol": r.1, "relation": "parent", "overrides": ov,
-                            "children": build_tree(conn, r.0, "up", depth+1, max_depth)
+                            "children": build_tree(conn, r.0, "up", depth+1, max_depth, branch_id)
                         }));
                     }
                 }
@@ -577,16 +582,16 @@ fn inheritance_tree(repo: &str, branch: &str, symbol: &str, direction: &str, max
         
         if dir == "down" || dir == "both" {
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT e.target_id, n.name FROM edges e JOIN nodes n ON e.target_id = n.id WHERE n.node_type='sym' AND e.source_id = ?1 AND e.edge_type LIKE 'inherits:%' AND (n.kind = 'class' OR n.kind = 'struct')"
+                "SELECT e.target_id, n.name FROM edges e JOIN nodes n ON e.target_id = n.id WHERE n.node_type='sym' AND e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type LIKE 'inherits:%' AND (n.kind = 'class' OR n.kind = 'struct')"
             ) {
-                if let Ok(rows) = stmt.query_map(rusqlite::params![parent_id], |row| {
+                if let Ok(rows) = stmt.query_map(rusqlite::params![parent_id, branch_id], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
                 }) {
                     for r in rows.flatten() {
-                        let ov = get_overrides(conn, r.0);
+                        let ov = get_overrides(conn, r.0, branch_id);
                         children.push(serde_json::json!({
                             "symbol": r.1, "relation": "child", "overrides": ov,
-                            "children": build_tree(conn, r.0, "down", depth+1, max_depth)
+                            "children": build_tree(conn, r.0, "down", depth+1, max_depth, branch_id)
                         }));
                     }
                 }
@@ -595,19 +600,19 @@ fn inheritance_tree(repo: &str, branch: &str, symbol: &str, direction: &str, max
         children
     }
     
-    fn get_overrides(conn: &rusqlite::Connection, class_id: i64) -> Vec<String> {
+    fn get_overrides(conn: &rusqlite::Connection, class_id: i64, branch_id: i64) -> Vec<String> {
         let mut ov = vec![];
         if let Ok(mut stmt) = conn.prepare(
-            "SELECT n.name FROM edges e JOIN nodes n ON e.source_id = n.id WHERE n.node_type='sym' AND e.source_id = ?1 AND e.edge_type LIKE 'overrides:%'"
+            "SELECT n.name FROM edges e JOIN nodes n ON e.source_id = n.id WHERE n.node_type='sym' AND e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type LIKE 'overrides:%'"
         ) {
-            if let Ok(rows) = stmt.query_map(rusqlite::params![class_id], |r| r.get::<_,String>(0)) {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![class_id, branch_id], |r| r.get::<_,String>(0)) {
                 ov = rows.flatten().collect();
             }
         }
         ov
     }
 
-    let result_children = build_tree(&conn, sid, direction, 0, max_depth);
+    let result_children = build_tree(&conn, sid, direction, 0, max_depth, branch_id);
     serde_json::json!({"root": root_name, "children": result_children}).to_string()
 }
 

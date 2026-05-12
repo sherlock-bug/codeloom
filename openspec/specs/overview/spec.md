@@ -105,12 +105,13 @@ Clang 子进程解析 C/C++ 代码，提取符号和关系边。
 | mcp-search-with-images | 搜索结果含图片 |
 | inline-vectorization | 内联向量化 |
 
-#### G. MCP 与集成（5 域）— src/mcp/
+#### G. MCP 与集成（6 域）— src/mcp/
 MCP 服务器和 OpenCode 集成。
 
 | 域目录 | 简述 |
 |--------|------|
 | mcp-server | MCP stdio JSON-RPC 服务器 |
+| mcp-tools | 图分析 MCP 工具共享查询规范（分支隔离） |
 | mcp-tool-descriptions | MCP 工具 description 撰写规范 |
 | mcp-get-doc | 文档获取 MCP 工具 |
 | opencode-commands | OpenCode 斜杠命令（/codeloom:*） |
