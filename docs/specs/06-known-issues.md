@@ -88,6 +88,22 @@
 - **代码位置**: `src/mcp/mod.rs:34-36`
 - **建议**: 改工具描述，删掉 kind 枚举列表，用"可用类型见 codeloom_schema"代替
 
+|---
+
+## 六、实测发现
+
+### BUG-08: inspect class Compaction  enrichment 字段未生效
+
+- **发现时间**: 2026-05-12（手工测试）
+- **测试用例**: MCP-12
+- **涉及**: `codeloom_inspect` MCP 工具
+- **现状**: inspect leveldb 的 `Compaction` 类时，返回 `"edges":{}`（通用 edges 回退），未输出预期的 `bases`/`members`/`methods` 字段
+- **预期**: class 应输出 `bases`、`members`、`methods`（和已记录的 `template_args`）
+- **代码位置**: `src/mcp/mod.rs:372-421`
+- **可能原因**: class 分支的条件判断可能未命中，或 DB 中该类无 `contains:` 边
+- **影响**: 🟡 中 — class 类型符号的 inspect 增强可能对部分类不生效
+- **状态**: open
+
 ---
 
 ## Bug 汇总
@@ -101,3 +117,4 @@
 | BUG-05 | check 工具数硬编码 9 tools | 展示错误 | 🟢 低 | cli:509 |
 | BUG-06 | 三个工具被禁用（代码残留） | 代码残留 | ⚪ 记录 | mcp:268/845/920 |
 | BUG-07 | search kind 列表与实际不符 | 描述不实 | 🟢 低 | mcp:34-36 |
+| BUG-08 | inspect class enrichment 未生效 | 功能缺陷 | 🟡 中 | mcp:372-421 |
