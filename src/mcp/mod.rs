@@ -30,18 +30,15 @@ pub async fn serve_stdio() -> anyhow::Result<()> {
 
 fn tools_list(id: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
-        // DISABLED: {"name":"codeloom_status","description":"查看索引状态：符号数、边数、文档数、数据库大小。在用其他MCP工具前先调用此工具确认仓库已索引且数据非空。branch/repo（必填）","inputSchema":{"type":"object","properties":{"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
         {"name":"codeloom_list_symbols","description":"**优先使用**：按名称模糊搜索已索引的符号。优先于grep/rg使用——索引覆盖项目所有文件及#include的第三方头文件（grep只能搜当前目录）。返回结构化结果：名称、类型、文件路径、行号。C++类方法用ClassName::methodName格式。如pattern=\"login\"匹配handleLogin、loginUser等。branch/repo（必填）","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["pattern","repo","branch"]}},
         {"name":"codeloom_get_call_graph","description":"**首选方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。优于多次调neighbor_graph拼凑——一次到位且带递归深度控制。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["repo","branch","direction"]}},
-        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】精确BM25关键词搜索：比grep更快（预索引）、覆盖更全（含#include头文件和已索引文档）。搜索符号名、注释、文档内容和文件名，符号名匹配权重高于注释匹配。结果含节点专属增强信息：class/struct→members（字段名列表）+methods（方法名列表），enum→values（枚举值），function→parent_class（所属类），section→prev_section/next_section（前后章节），file→sections（顶层section列表）。query可以是符号名（AuthService/compaction）或中文关键词。kind可选按符号类型过滤。不涉及语义理解——如需语义搜索用codeloom_semantic_search。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用值: function, method, class, struct, enum, enum_value, field, global, static_var, variable"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
+        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】精确BM25关键词搜索：比grep更快（预索引）、覆盖更全（含#include头文件和已索引文档）。搜索符号名、注释、文档内容和文件名，符号名匹配权重高于注释匹配。结果含节点专属增强信息：class/struct→members（字段名列表）+methods（方法名列表），enum→values（枚举值），function→parent_class（所属类），section→prev_section/next_section（前后章节），file→sections（顶层section列表）。query可以是符号名（AuthService/compaction）或中文关键词。kind可选按符号类型过滤。不涉及语义理解——如需语义搜索用codeloom_semantic_search。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用类型见 codeloom_schema"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
 
                 {"name":"codeloom_semantic_search","description":"语义向量搜索：用自然语言描述功能查找相关符号。适合「处理用户登录的函数」「内存分配的代码在哪」这类查询，不适合已知精确符号名的查找。只搜索符号不搜索文档/注释。无kind过滤。需要向量模型已加载。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
         {"name":"codeloom_inspect","description":"查看符号节点的结构化信息：定义、文档注释。class/struct返回bases+members+methods，enum返回values，section返回parent/children/chunks/siblings，chunk返回parent_section+前后chunk，其余类型返回关联边列表。name或id至少传一个。name=符号完整名称（C++类方法用ClassName::methodName格式）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
 
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。索引需通过 CLI 执行：codeloom index <path> --repo <name> --branch <branch>。无需任何参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
-        {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支及各自符号数量。repo=仓库名（必填）。返回分支名和符号数，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
-        // DISABLED: {"name":"codeloom_get_doc","description":"获取文档节点的完整内容及嵌入图片。doc_id=文档节点ID（从搜索或overview结果中获得），repo=仓库名，branch=分支名。返回标题、章节路径、层级、内容、文件路径、格式、节点类型及图片列表（base64编码）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["doc_id","repo","branch"]}},
-        // DISABLED: {"name":"codeloom_query_excel","description":"回答Excel表格问题（筛选、查找行列数据等）。doc_id=文档节点ID（Excel文档内节点），repo=仓库名，branch=分支名（必填）。mode可选：row（返回整行键值对）、column（返回整列）、filter（按条件过滤，filter参数为过滤表达式如'销售额 > 5000'）、auto（根据节点类型自动推断）。limit最多返回行数（默认20）。","inputSchema":{"type":"object","properties":{"doc_id":{"type":"integer"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["row","column","filter","auto"]},"filter":{"type":"string"},"search":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["doc_id","repo","branch"]}},
+        {"name":"codeloom_list_branches","description":"列出指定仓库的所有已索引分支。repo=仓库名（必填）。返回分支名，用于团队协作时确认分支状态。","inputSchema":{"type":"object","properties":{"repo":{"type":"string"}},"required":["repo"]}},
         {"name":"codeloom_schema","description":"导出CodeLoom v0.7元数据：15种节点类型（function/method/class/struct/enum/enum_value/field/global/static_var/template_function/macro/namespace/template_instance/typedef/string_literal）和11种边类型（calls/inherits/overrides/instantiates/param_type/return_type/includes/uses_type/contains/aliases/uses）。拿不准参数值时调用此工具查看可用节点类型和边类型枚举。无需参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"codeloom_path_analysis","description":"回答『A到B怎么走』『A和B有什么关系』：在两个符号之间搜索关系路径，跨函数调用、数据流、继承等多种边类型。优于逐层调用codeloom_call_graph：一次调用自动跨边类型搜索最短路径，一键覆盖calls/inherits/param_type等多类边。source=起始符号名，target=目标符号名，mode=shortest|all（默认shortest），edge_filter可选限定边类型（如['calls','calls_override']只看调用路径），direction=forward|reverse|both（默认both）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"source_id":{"type":"integer","description":"起始符号节点ID（优先使用）"},"source":{"type":"string"},"target_id":{"type":"integer","description":"目标符号节点ID（优先使用）"},"target":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"mode":{"type":"string","enum":["shortest","all"]},"max_paths":{"type":"integer","default":20},"max_depth":{"type":"integer","default":10},"direction":{"type":"string","enum":["forward","reverse","both"]},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["repo","branch"]}},
         {"name":"codeloom_impact_analysis","description":"回答『改了X会影响谁』『X被谁依赖』：沿边传递闭包N跳分析影响范围。优于codeloom_call_graph：自动N跳递归，不仅是直接调用者。优于codeloom_neighbor_graph：传递闭包而非只看1跳邻居。symbol或id至少传一个，传id精度最高。direction=forward|reverse|both（默认reverse），radius=跳数（默认3），edge_filter可选限定边类型。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"symbol":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["forward","reverse","both"]},"radius":{"type":"integer","default":3},"edge_filter":{"type":"array","items":{"type":"string"}}},"required":["repo","branch"]}},
@@ -69,12 +66,6 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
     log_info!("mcp", "tool call: name={}, args={}", name, args_preview);
     let result = match name {
         
-        // DISABLED: codeloom_get_doc
-        /* "codeloom_get_doc" => { ... } */
-        // DISABLED: codeloom_query_excel
-        /* "codeloom_query_excel" => { ... } */
-        // DISABLED: codeloom_status
-        /* "codeloom_status" => { ... } */
         "codeloom_schema" => {
             schema_meta()
         }
@@ -265,25 +256,6 @@ fn branch_where_clause(branch: &str) -> String {
     format!("AND (b.branch_name = '{}' OR b.branch_name IS NULL)", branch.replace('\'', "''"))
 }
 
-fn status(repo: &str, branch: &str) -> String {
-    let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    let bwc = branch_where_clause(branch);
-    let sym_sql = format!("SELECT COUNT(*) FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.node_type='sym' AND b.repo=?1 {}", bwc);
-    let syms: i64 = conn.query_row(&sym_sql, rusqlite::params![repo], |r| r.get(0)).unwrap_or(0);
-    let edges: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0)).unwrap_or(0);
-    let docs: i64 = conn.query_row("SELECT COUNT(*) FROM nodes WHERE node_type='section' AND repo=?1 AND (branch_name IS NULL OR branch_name=?2)", rusqlite::params![repo, branch], |r| r.get(0)).unwrap_or(0);
-    let resolved: i64 = conn.query_row("SELECT COUNT(*) FROM edges WHERE target_id!=0", [], |r| r.get(0)).unwrap_or(0);
-    let resolve_pct = if edges > 0 { resolved as f64 / edges as f64 * 100.0 } else { 0.0 };
-    format!(
-        "Repo: {} (branch: {})\n\
-         Symbols: {}  |  Edges: {} (resolved: {:.1}%)  |  Docs: {}\n\
-         Database: ~/.codeloom/{}.rag.db\n\
-         Status: indexed OK",
-        repo, branch, syms, edges, resolve_pct, docs, repo
-    )
-}
-
-/// Add enrichment fields (parent_class, member_count, etc.) to a search result JSON object.
 fn add_enrichment_fields(obj: &mut serde_json::Value, r: &crate::query::search::FusedResult) {
     if !r.parent_class.is_empty() { obj["parent_class"] = serde_json::Value::String(r.parent_class.clone()); }
     if !r.members.is_empty() { obj["members"] = serde_json::Value::String(r.members.clone()); }
@@ -389,6 +361,17 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
                                 }).collect();
                                 if !entries.is_empty() {
                                     json.push_str(&format!(",\"methods\":[\"{}\"]", entries.join("\",\"")));
+                                }
+                            }
+                        }
+                        // Template args (from node attrs)
+                        let targs_sql = format!("SELECT json_extract(n.attrs, '$.template_args') FROM nodes n WHERE n.id={}", sid);
+                        if let Ok(mut tstmt) = conn.prepare(&targs_sql) {
+                            if let Ok(mut trows) = tstmt.query_map([], |r| r.get::<_, Option<String>>(0)) {
+                                if let Some(Ok(Some(targs))) = trows.next() {
+                                    if !targs.is_empty() && targs != "null" {
+                                        json.push_str(&format!(",\"template_args\":{}", targs));
+                                    }
                                 }
                             }
                         }
@@ -616,9 +599,10 @@ fn semantic_search(query: &str, repo: &str, branch: &str, limit: usize) -> Strin
             }
             let items: Vec<serde_json::Value> = results.iter().map(|r| {
                 let mut obj = serde_json::json!({
+                    "id": r.id,
                     "score": r.score,
                     "name": r.name,
-                    "type": "code",
+                    "type": r.hit_type,
                     "file": r.file_path,
                 });
                 if !r.kind.is_empty() { obj["kind"] = serde_json::Value::String(r.kind.clone()); }
@@ -842,247 +826,7 @@ pub async fn serve_http(addr: &str) -> anyhow::Result<()> {
 
 // ── get_doc ──────────────────────────────────────────────────────────────
 
-fn get_doc(doc_id: i64, repo: &str, branch: &str) -> String {
-    let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    // Query doc_node
-    let (title, section_path, level, content_text, file_path, file_format, node_type) = match conn.query_row(
-        "SELECT name, json_extract(attrs, '$.section_path'), CAST(json_extract(attrs, '$.level') AS INTEGER), content, file_path, json_extract(attrs, '$.file_format'), node_type FROM nodes WHERE node_type='section' AND id=?1 AND repo=?2 AND (branch_name IS NULL OR branch_name=?3)",
-        rusqlite::params![doc_id, repo, branch],
-        |row| Ok((
-            row.get::<_,String>(0).unwrap_or_default(),
-            row.get::<_,String>(1).unwrap_or_default(),
-            row.get::<_,i64>(2).unwrap_or(0),
-            row.get::<_,String>(3).unwrap_or_default(),
-            row.get::<_,String>(4).unwrap_or_default(),
-            row.get::<_,String>(5).unwrap_or_default(),
-            row.get::<_,String>(6).unwrap_or_default(),
-        ))
-    ) {
-        Ok(r) => r,
-        Err(e) => return format!("文档节点 {} 未找到: {}", doc_id, e),
-    };
-    let mut out = format!("=== 文档节点 #{} ===\n", doc_id);
-    out.push_str(&format!("标题: {}\n", title));
-    out.push_str(&format!("章节路径: {}\n", section_path));
-    out.push_str(&format!("层级: {}\n", level));
-    out.push_str(&format!("文件: {} [{}]\n", file_path, file_format));
-    out.push_str(&format!("节点类型: {}\n", node_type));
-    // Show snippet of content
-    let snippet: String = content_text.chars().take(500).collect();
-    out.push_str(&format!("内容(前500字):\n{}\n", snippet));
-    if content_text.len() > 500 {
-        out.push_str(&format!("... (+{} 字)\n", content_text.len() - 500));
-    }
-    // Query images
-    match conn.prepare(
-        "SELECT alt_text, image_data, width, height, section_context FROM doc_images WHERE doc_node_id=?1 ORDER BY position"
-    ) {
-        Ok(mut stmt) => {
-            if let Ok(rows) = stmt.query_map(rusqlite::params![doc_id], |row| {
-                Ok((
-                    row.get::<_,String>(0).unwrap_or_default(),
-                    row.get::<_,Vec<u8>>(1).unwrap_or_default(),
-                    row.get::<_,i32>(2).unwrap_or(0),
-                    row.get::<_,i32>(3).unwrap_or(0),
-                    row.get::<_,String>(4).unwrap_or_default(),
-                ))
-            }) {
-                let images: Vec<_> = rows.flatten().collect();
-                if images.is_empty() {
-                    out.push_str("\n图片: 无\n");
-                } else {
-                    out.push_str(&format!("\n图片 ({}) 张:\n", images.len()));
-                    for (i, (alt, img_data, w, h, ctx)) in images.iter().enumerate() {
-                        out.push_str(&format!("  [{}] alt={}", i + 1, alt));
-                        if *w > 0 { out.push_str(&format!(" {}x{}", w, h)); }
-                        if !ctx.is_empty() {
-                            let ctx_snippet: String = ctx.chars().take(80).collect();
-                            out.push_str(&format!(" context=\"{}\"", ctx_snippet));
-                        }
-                        if !img_data.is_empty() {
-                            let b64 = crate::doc::to_base64(img_data);
-                            out.push_str(&format!(" base64_length={}", b64.len()));
-                        } else {
-                            out.push_str(" (no data)");
-                        }
-                        out.push('\n');
-                    }
-                }
-            }
-        }
-        Err(e) => out.push_str(&format!("\n图片查询失败: {}\n", e)),
-    }
-    out
-}
-
 // ── query_excel ─────────────────────────────────────────────────────────
-
-fn query_excel(doc_id: i64, repo: &str, branch: &str, mode: &str, filter_expr: &str, search: &str, limit: usize) -> String {
-    let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    // Get the source node
-    let (src_title, src_section_path, src_level, src_node_type, src_file_path) = match conn.query_row(
-        "SELECT name, json_extract(attrs, '$.section_path'), CAST(json_extract(attrs, '$.level') AS INTEGER), node_type, file_path FROM nodes WHERE node_type='section' AND id=?1 AND repo=?2 AND (branch_name IS NULL OR branch_name=?3)",
-        rusqlite::params![doc_id, repo, branch],
-        |row| Ok((
-            row.get::<_,String>(0).unwrap_or_default(),
-            row.get::<_,String>(1).unwrap_or_default(),
-            row.get::<_,i64>(2).unwrap_or(0),
-            row.get::<_,String>(3).unwrap_or_default(),
-            row.get::<_,String>(4).unwrap_or_default(),
-        ))
-    ) {
-        Ok(r) => r,
-        Err(e) => return format!("文档节点 {} 未找到: {}", doc_id, e),
-    };
-
-    // Determine effective mode
-    let eff_mode = if mode == "auto" {
-        match src_node_type.as_str() {
-            "cell" => "row",
-            "row" => "row",
-            "header_cell" => "column",
-            "sheet" => "filter",
-            _ => "row",
-        }
-    } else {
-        mode
-    };
-
-    let safe_sheet = src_section_path.split('/').next().unwrap_or(&src_section_path);
-    // Ensure we use the file path for the whole sheet
-    let sheet_file_path = &src_file_path;
-
-    match eff_mode {
-        "row" => {
-            // Determine the row path from the source node
-            let row_path = if src_node_type == "cell" || src_node_type == "row" {
-                // Extract row path: the section_path is like sheet/RowN or sheet/RowN/col
-                let parts: Vec<&str> = src_section_path.split('/').collect();
-                format!("{}/{}", safe_sheet, parts.get(1).unwrap_or(&"Row1"))
-            } else {
-                // From a sheet or header, just get the first row
-                format!("{}/Row1", safe_sheet)
-            };
-            // Query all cells for this row (level=4 under this row path)
-            let row_prefix = format!("{}%", row_path);
-            let mut out = format!("=== 行数据 ({}) ===\n", row_path);
-            let sql = "SELECT name, content FROM nodes WHERE node_type='section' AND file_path=?1 AND CAST(json_extract(attrs, '$.level') AS INTEGER)=4 AND json_extract(attrs, '$.section_path') LIKE ?2 AND repo=?3 AND (branch_name IS NULL OR branch_name=?4) ORDER BY json_extract(attrs, '$.section_path') LIMIT ?5";
-            if let Ok(mut stmt) = conn.prepare(sql) {
-                if let Ok(rows) = stmt.query_map(rusqlite::params![sheet_file_path, row_prefix, repo, branch, limit as i64], |row| {
-                    Ok((row.get::<_,String>(0).unwrap_or_default(), row.get::<_,String>(1).unwrap_or_default()))
-                }) {
-                    let mut count = 0;
-                    for row in rows.flatten() {
-                        count += 1;
-                        out.push_str(&format!("  {}: {}\n", row.0, row.1));
-                    }
-                    if count == 0 { out.push_str("  (无数据)\n"); }
-                }
-            }
-            out
-        }
-        "column" => {
-            // Find which column by looking at the source section_path
-            let column_name = src_section_path.split('/').last().unwrap_or("")
-                .strip_prefix("_header/").unwrap_or(
-                    src_section_path.rsplit('/').next().unwrap_or("")
-                );
-            let col_prefix = format!("{}/Row%/{}%", safe_sheet, column_name);
-            let mut out = format!("=== 列数据 ({}) ===\n", column_name);
-            let sql = "SELECT content, name, json_extract(attrs, '$.section_path') FROM nodes WHERE node_type='section' AND file_path=?1 AND CAST(json_extract(attrs, '$.level') AS INTEGER)=4 AND json_extract(attrs, '$.section_path') LIKE ?2 AND repo=?3 AND (branch_name IS NULL OR branch_name=?4) ORDER BY json_extract(attrs, '$.section_path') LIMIT ?5";
-            if let Ok(mut stmt) = conn.prepare(sql) {
-                if let Ok(rows) = stmt.query_map(rusqlite::params![sheet_file_path, col_prefix, repo, branch, limit as i64], |row| {
-                    Ok((
-                        row.get::<_,String>(0).unwrap_or_default(),
-                        row.get::<_,String>(1).unwrap_or_default(),
-                        row.get::<_,String>(2).unwrap_or_default(),
-                    ))
-                }) {
-                    let mut count = 0;
-                    for row in rows.flatten() {
-                        count += 1;
-                        let row_num = row.2.split('/').nth(1).unwrap_or("?");
-                        out.push_str(&format!("  {}: {}\n", row_num, row.0));
-                    }
-                    if count == 0 { out.push_str("  (无数据)\n"); }
-                }
-            }
-            out
-        }
-        "filter" => {
-            let mut out = format!("=== 过滤结果 ===\n");
-            if filter_expr.is_empty() && search.is_empty() {
-                out.push_str("请提供 filter 或 search 参数\n");
-                return out;
-            }
-            // Simple numeric filter: "column > 5000"
-            let (filter_col, filter_op, filter_val) = if !filter_expr.is_empty() {
-                let parts: Vec<&str> = filter_expr.splitn(3, ' ').collect();
-                if parts.len() == 3 {
-                    (parts[0], parts[1], parts[2])
-                } else {
-                    ("", "", "")
-                }
-            } else {
-                ("", "", "")
-            };
-            // Query all cells in this sheet, group by row
-            let sheet_prefix = format!("{}%", safe_sheet);
-            let sql = "SELECT id, name, content, json_extract(attrs, '$.section_path') FROM nodes WHERE node_type='section' AND file_path=?1 AND CAST(json_extract(attrs, '$.level') AS INTEGER)=4 AND json_extract(attrs, '$.section_path') LIKE ?2 AND repo=?3 AND (branch_name IS NULL OR branch_name=?4) ORDER BY json_extract(attrs, '$.section_path')";
-            if let Ok(mut stmt) = conn.prepare(sql) {
-                if let Ok(rows) = stmt.query_map(rusqlite::params![sheet_file_path, sheet_prefix, repo, branch], |row| {
-                    Ok((
-                        row.get::<_,i64>(0).unwrap_or(0),
-                        row.get::<_,String>(1).unwrap_or_default(),
-                        row.get::<_,String>(2).unwrap_or_default(),
-                        row.get::<_,String>(3).unwrap_or_default(),
-                    ))
-                }) {
-                    // Group by row
-                    use std::collections::BTreeMap;
-                    let mut rows_map: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-                    for row in rows.flatten() {
-                        let (_, col_name, cell_val, section_path) = row;
-                        let parts: Vec<&str> = section_path.split('/').collect();
-                        let row_key = if parts.len() >= 2 { parts[1].to_string() } else { String::new() };
-                        rows_map.entry(row_key).or_default().push((col_name, cell_val));
-                    }
-                    let mut matched = 0usize;
-                    for (row_key, cells) in &rows_map {
-                        // Apply filter
-                        if !filter_col.is_empty() && !filter_op.is_empty() {
-                            let default_val = String::new();
-                            let col_val = cells.iter().find(|(c, _)| c == filter_col).map(|(_, v)| v).unwrap_or(&default_val);
-                            let ok = match filter_op {
-                                ">" | ">" => col_val.parse::<f64>().ok().map(|v| v > filter_val.parse::<f64>().unwrap_or(0.0)).unwrap_or(false),
-                                "<" | "<" => col_val.parse::<f64>().ok().map(|v| v < filter_val.parse::<f64>().unwrap_or(0.0)).unwrap_or(false),
-                                ">=" | ">=" => col_val.parse::<f64>().ok().map(|v| v >= filter_val.parse::<f64>().unwrap_or(0.0)).unwrap_or(false),
-                                "<=" | "<=" => col_val.parse::<f64>().ok().map(|v| v <= filter_val.parse::<f64>().unwrap_or(0.0)).unwrap_or(false),
-                                "=" | "==" => col_val == filter_val,
-                                "!=" | "<>" => col_val != filter_val,
-                                _ => false,
-                            };
-                            if !ok { continue; }
-                        }
-                        // Apply search
-                        if !search.is_empty() {
-                            if !cells.iter().any(|(_, v)| v.contains(search)) { continue; }
-                        }
-                        matched += 1;
-                        if matched > limit { break; }
-                        out.push_str(&format!("  {}:\n", row_key));
-                        for (col, val) in cells {
-                            out.push_str(&format!("    {}: {}\n", col, val));
-                        }
-                    }
-                    if matched == 0 { out.push_str("  (无匹配行)\n"); }
-                }
-            }
-            out
-        }
-        _ => format!("未知模式: {}. 可用模式: row, column, filter, auto", eff_mode),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1142,17 +886,6 @@ mod tests {
         assert!(clause.contains("b.branch_name = 'it''s'"));
     }
 
-    #[test]
-    fn test_handle_tool_call_missing_branch() {
-        // Need to pass a valid repo (even if DB doesn't exist), or repo validation fires first
-        // We test branch validation by passing an empty branch
-        // DISABLED: codeloom_status removed
-        let _resp = handle_tool_call(
-            serde_json::Value::Number(1.into()),
-            "codeloom_status_DISABLED",
-            &serde_json::json!({"repo": "testrepo", "branch": ""}),
-        );
-    }
 
     #[test]
     fn test_unknown_tool() {
@@ -1166,10 +899,6 @@ mod tests {
     }
 
 
-
-    #[test]
-
-    #[test]
     #[ignore = "API embedding not configured in CI"]
     fn test_api_semantic_search_no_fallback() {
         // Embedding requires API config in config.yaml — skip in CI
@@ -1177,48 +906,14 @@ mod tests {
 
 
     #[test]
-    fn test_get_doc_not_found() {
-        // DISABLED: codeloom_get_doc removed
-        let _resp = handle_tool_call(
-            serde_json::Value::Number(1.into()),
-            "codeloom_get_doc_DISABLED",
-            &serde_json::json!({"doc_id": 999, "repo": "nonexistent", "branch": "main"}),
-        );
-    }
-
-    #[test]
-    fn test_get_doc_missing_doc_id() {
-        // DISABLED: codeloom_get_doc removed
-        let _resp = handle_tool_call(
-            serde_json::Value::Number(1.into()),
-            "codeloom_get_doc_DISABLED",
-            &serde_json::json!({"repo": "test", "branch": "main"}),
-        );
-    }
-
-    #[test]
-    fn test_query_excel_missing_doc_id() {
-        // DISABLED: codeloom_query_excel removed
-        let _resp = handle_tool_call(
-            serde_json::Value::Number(1.into()),
-            "codeloom_query_excel_DISABLED",
-            &serde_json::json!({"repo": "test", "branch": "main"}),
-        );
-    }
-
-    #[test]
     fn test_get_doc_has_get_doc_in_tools_list() {
         let resp = tools_list(serde_json::Value::Number(1.into()));
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-        // DISABLED: codeloom_get_doc and codeloom_query_excel removed
-        // assert!(names.contains(&"codeloom_get_doc"));
         // assert!(names.contains(&"codeloom_query_excel"));
     }
 
-    #[test]
 
-    #[test]
     fn test_hybrid_search_enhanced_output() {
         // Test that the search output template includes snippet/image info
         // by checking the format string patterns in the source

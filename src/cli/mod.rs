@@ -508,7 +508,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             }
 
             println!();
-            println!("MCP tools: codeloom mcp  (9 tools, use codeloom_search for hybrid BM25+vector search)");
+            println!("MCP tools: codeloom mcp  (12 tools, use codeloom_search for hybrid BM25+vector search)");
         }
         Command::Update => do_update(),
         Command::Clean { all, repo, branch } => do_clean(all, repo, branch),
