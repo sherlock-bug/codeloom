@@ -83,15 +83,16 @@
 - **发现时间**: 2026-05-12（手工测试）
 - **测试用例**: MCP-12
 - **涉及**: `codeloom_inspect` MCP 工具
-- **根因**: 两重 Bug 叠加：
-  1. SQL 中 `e.edge_type='contains:'` 精确匹配 → 实际 edge_type 格式是 `contains:MethodName`，永远不匹配
-  2. 所有边缘查询过滤 `e.branch_id={id}` 但 DB 中全部边的 `branch_id=0`（索引器写入时未设置），导致查询不到任何边
-- **修复**:
-  - 3 处 `e.edge_type='contains:'` 改为 `e.edge_type LIKE 'contains:%'`
-  - 4 处 `e.branch_id={id}` 改为 `(e.branch_id={id} OR e.branch_id=0)`（回退兼容）
-- **验证**: `codeloom_inspect Compaction` 现在正确输出 10 个 members + 11 个 methods，Status 输出 1 member + 16 methods
+- **根因**: 双重问题：
+  1. 索引器写入的 `edge_type` 格式为 `contains:MethodName`（含目标名后缀），查询端用 `='contains:'` 精确匹配永远不匹配
+  2. 索引器 INSERT edges 时未设置 `branch_id`（全部为 DEFAULT 0），查询端过滤 `e.branch_id={id}` 查不到任何边
+- **修复**（最终方案 — 索引器端根治）:
+  - `clang/ast.rs`: 3 处 `edge_type` 去掉 `:Name` 后缀（`contains:Name` → `contains`，`inherits:Name` → `inherits`，`overrides:Name` → `overrides`）
+  - `clang/mod.rs`: INSERT edges 增加 `branch_id` 列
+  - 查询端使用 `='contains'` 精确匹配 + `e.branch_id={id}`，零 workaround
+- **验证**（reindex leveldb 后）: `codeloom_inspect Compaction` 正确输出 methods，无 `"edges":{}` 回退
 - **影响**: 🟡 中 — 已修复所有 class/struct/enum 类型符号的 inspect 增强
-- **状态**: ✅ **已修复** — 2026-05-12
+- **状态**: ✅ **已修复** — 2026-05-12（最终方案）
 
 ---
 

@@ -470,7 +470,19 @@ echo '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"codeloom_n
 
 ## 附录
 
-### A. 测试数据速查
+### A. 测试记录表
+
+| 用例编号 | 状态 | 测试日期 | 测试人 | 备注 |
+|---------|------|---------|-------|------|
+| MCP-01 | ✅ | 2026-05-12 | 梦璃 | list_repos |
+| MCP-04 | ✅ | 2026-05-12 | 梦璃 | list_symbols |
+| MCP-06 | ✅ | 2026-05-12 | 梦璃 | search Compaction |
+| MCP-07 | ✅ | 2026-05-12 | 梦璃 | search enum Code |
+| MCP-12 | ✅ | 2026-05-12 | 梦璃 | inspect class Compaction |
+| MCP-13 | ✅ | 2026-05-12 | 梦璃 | inspect method DB::Open |
+| MCP-24 | ✅ | 2026-05-12 | 梦璃 | 缺 branch 报错 |
+
+### B. 测试数据速查
 
 | 符号名 | kind | 文件 | 说明 |
 |--------|------|------|------|

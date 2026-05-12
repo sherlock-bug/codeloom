@@ -295,7 +295,7 @@ fn test_clang_parser() {
 
     // Check inherited edge exists
     let inherits: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM edges WHERE edge_type LIKE 'inherits:%'",
+        "SELECT COUNT(*) FROM edges WHERE edge_type='inherits'",
         [], |r| r.get(0)
     ).unwrap();
     assert!(inherits > 0, "should have inheritance edges");
