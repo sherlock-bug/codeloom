@@ -82,6 +82,12 @@ if $HAS_LOCAL_BIN && ! $FROM_SOURCE; then
 #   api_base: "http://your-api:port/v1"
 #   model: "bge-m3"
 #   api_key: "not-needed"
+
+# logging: 文件日志配置（默认启用，日志在 ~/.codeloom/logs/）
+#   enabled: true          # 是否启用文件日志
+#   level: "info"          # 日志级别: error / warn / info / debug
+#   max_file_size_mb: 50   # 单日志文件上限（MB）
+#   max_files: 10          # 保留的日志文件数（旧的自动清理）
 YAML
         echo "  Config: 已创建默认配置 → ${CONFIG_DIR}/config.yaml"
     fi

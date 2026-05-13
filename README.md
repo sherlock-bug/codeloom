@@ -108,6 +108,12 @@ cat > ~/.codeloom/config.yaml << 'YAML'
 embedding:
   api_base: "http://localhost:11434/v1"   # Ollama
   model: "bge-m3"
+
+# logging:          # 可选，默认值如下
+#   enabled: true
+#   level: "info"
+#   max_file_size_mb: 50
+#   max_files: 10
 YAML
 
 # 2. 索引 + 搜索
