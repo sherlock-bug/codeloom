@@ -48,7 +48,7 @@ pub fn collect_comments_for_symbol(
     let mut parts: Vec<String> = Vec::new();
 
     // 1. Above comments: scan upwards from line_start-2
-    if line_start > 1 {
+    if line_start > 1 && line_start <= lines.len() as u32 {
         collect_above_comments(&lines, line_start as usize, &mut parts);
     }
 
