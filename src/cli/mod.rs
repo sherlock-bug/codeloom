@@ -86,7 +86,7 @@ pub enum Command {
         repo: Option<String>,
     },
 
-    /// 精确 BM25 关键词搜索（符号名/注释/文档/文件），不涉及向量语义。语义搜索用 `codeloom semantic` 命令
+    /// 精确关键词搜索（符号名/注释/文档/文件），BM25 算法。模糊语义搜索用 `codeloom fuzzy`
     Search {
         /// 搜索关键词或功能描述
         query: String,
@@ -104,8 +104,8 @@ pub enum Command {
         kind: Option<String>,
     },
 
-    /// 向量语义搜索 — 用自然语言描述功能查找相关符号。不依赖关键词匹配，理解语义
-    Semantic {
+    /// 模糊语义搜索 — 不知道确切符号名、只有功能描述时用。靠向量嵌入匹配符号名，不搜注释。
+    Fuzzy {
         /// 语义搜索描述（自然语言）
         query: String,
         /// 仓库标识名（默认自动检测）
@@ -509,7 +509,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             }
 
             println!();
-            println!("MCP tools: codeloom mcp  (12 tools, use codeloom_search for hybrid BM25+vector search)");
+            println!("MCP tools: codeloom mcp  (12 tools, use codeloom_search for BM25 text search)");
         }
         Command::Update => do_update(),
         Command::Clean { all, repo, branch } => do_clean(all, repo, branch),
@@ -591,7 +591,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Semantic { query, repo, branch, limit } => {
+        Command::Fuzzy { query, repo, branch, limit } => {
             let repo = repo.unwrap_or_else(autodetect_repo);
             let branch = branch.or_else(autodetect_branch).unwrap_or_else(|| "main".into());
             if repo.is_empty() { println!("No repo detected. Specify --repo or run from a git repo."); return Ok(()); }
@@ -608,7 +608,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             if results.is_empty() {
                 println!("(no results)");
             } else {
-                log_info!("semantic", "语义搜索 \"{}\" → {} results", q, results.len());
+                log_info!("fuzzy", "模糊搜索 \"{}\" → {} results", q, results.len());
                 println!("语义搜索 \"{}\" ({}条):", q, results.len());
                 for r in &results {
                     let typ = if r.hit_type == "code" && !r.kind.is_empty() {
@@ -877,7 +877,7 @@ pub fn index_includes(
 
     let mut insert_stmt = conn.prepare(
         "INSERT INTO nodes (repo, node_type, name, content, file_path, branch_id, kind, attrs)
-         VALUES (?1, 'file', ?2, '', ?2, ?3, '', '{}')
+         VALUES (?1, 'file', ?2, ?4, ?2, ?3, '', '{}')
          ON CONFLICT(content_hash, file_path, name, branch_id, repo) DO NOTHING"
     )?;
     let mut lookup_stmt = conn.prepare(
@@ -897,7 +897,12 @@ pub fn index_includes(
             .to_string_lossy()
             .to_string()
             .replace('\\', "/");
-        insert_stmt.execute(rusqlite::params![repo, rel_path, branch_id])?;
+
+        // Extract file header comment as content
+        let header = crate::indexer::clang::collect_comments::collect_file_header(
+            &p.to_string_lossy()
+        );
+        insert_stmt.execute(rusqlite::params![repo, rel_path, branch_id, header])?;
         file_entries.push((p, rel_path));
     }
 

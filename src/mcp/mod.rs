@@ -32,9 +32,9 @@ fn tools_list(id: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"tools":[
         {"name":"codeloom_list_symbols","description":"**优先使用**：按名称模糊搜索已索引的符号。优先于grep/rg使用——索引覆盖项目所有文件及#include的第三方头文件（grep只能搜当前目录）。返回结构化结果：名称、类型、文件路径、行号。C++类方法用ClassName::methodName格式。如pattern=\"login\"匹配handleLogin、loginUser等。branch/repo（必填）","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":20}},"required":["pattern","repo","branch"]}},
         {"name":"codeloom_get_call_graph","description":"**首选方式**：分析函数/方法的调用者和被调用者（callers/callees）。grep无法获取调用关系。优于多次调neighbor_graph拼凑——一次到位且带递归深度控制。name用codeloom_list_symbols返回的完整符号名（C++类方法用ClassName::methodName）。direction=\"callers\"查谁调用了它，direction=\"callees\"查它调用了谁。max_depth控制递归深度。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"direction":{"type":"string","enum":["callers","callees"]},"max_depth":{"type":"integer","default":3}},"required":["repo","branch","direction"]}},
-        {"name":"codeloom_search","description":"【必须使用，替代grep/rg】精确BM25关键词搜索：比grep更快（预索引）、覆盖更全（含#include头文件和已索引文档）。搜索符号名、注释、文档内容和文件名，符号名匹配权重高于注释匹配。结果含节点专属增强信息：class/struct→members（字段名列表）+methods（方法名列表），enum→values（枚举值），function→parent_class（所属类），section→prev_section/next_section（前后章节），file→sections（顶层section列表）。query可以是符号名（AuthService/compaction）或中文关键词。kind可选按符号类型过滤。不涉及语义理解——如需语义搜索用codeloom_semantic_search。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用类型见 codeloom_schema"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
+        {"name":"codeloom_search","description":"【替代grep/rg】精确关键词匹配搜索。用BM25算法搜索符号名+注释+文档。\n  ✅ 用这个：你知道符号名/类名/函数名/变量名，或确切关键词，想精准定位代码位置。\n  ❌ 别用这个：你不知道具体名字，只知道功能描述——那种情况用 codeloom_fuzzy_search。\n  支持 kind 过滤。不涉及语义理解。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"kind":{"type":"string","description":"可选：按符号类型过滤。可用类型见 codeloom_schema"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
 
-                {"name":"codeloom_semantic_search","description":"语义向量搜索：用自然语言描述功能查找相关符号。适合「处理用户登录的函数」「内存分配的代码在哪」这类查询，不适合已知精确符号名的查找。只搜索符号不搜索文档/注释。无kind过滤。需要向量模型已加载。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
+                {"name":"codeloom_fuzzy_search","description":"【语义模糊搜索】用向量嵌入匹配符号名（不搜索注释/文档）。\n  ✅ 用这个：你不知道确切符号名，只知道功能描述。例如「排序算法」「处理用户登录」「解析JSON」。\n  ❌ 别用这个：你知道符号名或关键词——那种情况用 codeloom_search 更快更准。\n  只搜索符号名。不支持 kind 过滤。需要向量模型已加载。branch/repo（必填）","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"},"limit":{"type":"integer","default":10}},"required":["query","repo","branch"]}},
         {"name":"codeloom_inspect","description":"查看符号节点的结构化信息：定义、文档注释。class/struct返回bases+members+methods，enum返回values，section返回parent/children/chunks/siblings，chunk返回parent_section+前后chunk，其余类型返回关联边列表。name或id至少传一个。name=符号完整名称（C++类方法用ClassName::methodName格式）。branch/repo（必填）","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"符号节点ID（优先使用）"},"name":{"type":"string"},"repo":{"type":"string"},"branch":{"type":"string"}},"required":["repo","branch"]}},
 
         {"name":"codeloom_list_repos","description":"列出所有已索引的仓库名。在任何搜索/查询操作前必须先调用此工具获取可用的repo参数值。索引需通过 CLI 执行：codeloom index <path> --repo <name> --branch <branch>。无需任何参数。","inputSchema":{"type":"object","properties":{},"required":[]}},
@@ -168,14 +168,14 @@ fn handle_tool_call(id: serde_json::Value, name: &str, args: &serde_json::Value)
             if branch.is_empty() { return err_resp(id, "branch is required"); }
             bm25_precise_search(query, &repo.unwrap(), branch, limit, kind_filter)
         }
-        "codeloom_semantic_search" => {
+        "codeloom_fuzzy_search" => {
             let query = args["query"].as_str().unwrap_or("");
             let repo = validate_repo(args["repo"].as_str().unwrap_or(""));
             let branch = args["branch"].as_str().unwrap_or("");
             let limit = args["limit"].as_u64().unwrap_or(10) as usize;
             if let Err(e) = repo { return err_resp(id, &e); }
             if branch.is_empty() { return err_resp(id, "branch is required"); }
-            semantic_search(query, &repo.unwrap(), branch, limit)
+            fuzzy_search(query, &repo.unwrap(), branch, limit)
         }
         "codeloom_inspect" => {
             let branch = args["branch"].as_str().unwrap_or("");
@@ -582,44 +582,66 @@ fn bm25_precise_search(query: &str, repo: &str, branch: &str, limit: usize, kind
     }
 }
 
-fn semantic_search(query: &str, repo: &str, branch: &str, limit: usize) -> String {
-    let embedder = match crate::embedding::get_embedder() {
-        Ok(e) => e,
-        Err(e) => return serde_json::json!({"error": format!("Embedding model unavailable: {}", e), "query": query}).to_string(),
-    };
-    let query_emb = match embedder.embed(query) {
-        Ok(emb) => emb,
-        Err(e) => return serde_json::json!({"error": format!("Embedding failed: {}", e), "query": query}).to_string(),
-    };
-    let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return e };
-    match crate::query::search::vector_semantic_search(&conn, &query_emb, repo, branch, limit, false) {
-        Ok(results) => {
-            if results.is_empty() {
-                return serde_json::json!({"results":[],"query":query,"count":0}).to_string();
+fn fuzzy_search(query: &str, repo: &str, branch: &str, limit: usize) -> String {
+    let query = query.to_string();
+    let repo = repo.to_string();
+    let branch = branch.to_string();
+
+    // Spawn a dedicated OS thread to isolate from tokio runtime context.
+    // reqwest::blocking v0.12.28 has a #[cfg(debug_assertions)] guard in wait::enter()
+    // that builds & drops a temporary tokio runtime per request, which panics when
+    // called from within an existing #[tokio::main] runtime. Spawning a raw OS thread
+    // avoids this nesting entirely.
+    std::thread::spawn(move || {
+        let embedder = match crate::embedding::get_embedder() {
+            Ok(e) => e,
+            Err(e) => {
+                return serde_json::json!({"error": format!("Embedding model unavailable: {}", e), "query": query}).to_string();
             }
-            let items: Vec<serde_json::Value> = results.iter().map(|r| {
-                let mut obj = serde_json::json!({
-                    "id": r.id,
-                    "score": r.score,
-                    "name": r.name,
-                    "type": r.hit_type,
-                    "file": r.file_path,
-                });
-                if !r.kind.is_empty() { obj["kind"] = serde_json::Value::String(r.kind.clone()); }
-                if !r.signature.is_empty() { obj["signature"] = serde_json::Value::String(r.signature.clone()); }
-                if r.line_start > 0 { obj["line"] = serde_json::Value::Number(serde_json::Number::from(r.line_start)); }
-                if !r.snippet.is_empty() { obj["snippet"] = serde_json::Value::String(r.snippet.clone()); }
-                add_enrichment_fields(&mut obj, r);
-                obj
-            }).collect();
-            serde_json::json!({
-                "results": items,
-                "query": query,
-                "count": results.len()
-            }).to_string()
+        };
+        let query_emb = match embedder.embed(&query) {
+            Ok(emb) => emb,
+            Err(e) => {
+                return serde_json::json!({"error": format!("Embedding failed: {}", e), "query": query}).to_string();
+            }
+        };
+        let conn = match open_repo_db(&repo) {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
+        match crate::query::search::vector_semantic_search(&conn, &query_emb, &repo, &branch, limit, false) {
+            Ok(results) => {
+                if results.is_empty() {
+                    return serde_json::json!({"results":[],"query":query,"count":0}).to_string();
+                }
+                let items: Vec<serde_json::Value> = results.iter().map(|r| {
+                    let mut obj = serde_json::json!({
+                        "id": r.id,
+                        "score": r.score,
+                        "name": r.name,
+                        "type": r.hit_type,
+                        "file": r.file_path,
+                    });
+                    if !r.kind.is_empty() { obj["kind"] = serde_json::Value::String(r.kind.clone()); }
+                    if !r.signature.is_empty() { obj["signature"] = serde_json::Value::String(r.signature.clone()); }
+                    if r.line_start > 0 { obj["line"] = serde_json::Value::Number(serde_json::Number::from(r.line_start)); }
+                    if !r.snippet.is_empty() { obj["snippet"] = serde_json::Value::String(r.snippet.clone()); }
+                    add_enrichment_fields(&mut obj, r);
+                    obj
+                }).collect();
+                serde_json::json!({
+                    "results": items,
+                    "query": query,
+                    "count": results.len()
+                }).to_string()
+            }
+            Err(e) => serde_json::json!({"error": e.to_string(), "query": query}).to_string(),
         }
-        Err(e) => serde_json::json!({"error": e.to_string(), "query": query}).to_string(),
-    }
+    })
+    .join()
+    .unwrap_or_else(|_| {
+        serde_json::json!({"error": "semantic search thread panicked", "query": ""}).to_string()
+    })
 }
 
 // ── Schema Meta ─────────────────────────────────────────────────────────
@@ -900,7 +922,7 @@ mod tests {
 
 
     #[ignore = "API embedding not configured in CI"]
-    fn test_api_semantic_search_no_fallback() {
+    fn test_api_fuzzy_search_no_fallback() {
         // Embedding requires API config in config.yaml — skip in CI
     }
 
@@ -914,7 +936,7 @@ mod tests {
     }
 
 
-    fn test_hybrid_search_enhanced_output() {
+    fn test_search_tool_exists() {
         // Test that the search output template includes snippet/image info
         // by checking the format string patterns in the source
         let resp = tools_list(serde_json::Value::Number(1.into()));

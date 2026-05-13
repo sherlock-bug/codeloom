@@ -219,9 +219,8 @@ fn index_one(
             );
         }
     }
-    // Create file node — extract leading comment block as summary (not all symbol doc_comments)
-    let source = crate::util::read_file_smart(file_path)?;
-    let summary = extract_leading_comment(&source);
+    // Create file node — extract leading comment block as summary
+    let summary = crate::indexer::clang::collect_comments::collect_file_header(file_path);
     let fn_hash = crate::storage::dedup::hash_content(file_path);
     let branch_id = crate::storage::resolve_branch_id(conn, repo_name, branch)?;
     crate::storage::files::FileNode {
@@ -364,27 +363,4 @@ fn update_state(
     Ok(())
 }
 
-/// Extract leading consecutive comment lines from source code.
-/// Returns the comment block (joined with " | "), empty if no leading comments.
-fn extract_leading_comment(source: &str) -> String {
-    let mut lines = Vec::new();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if !lines.is_empty() {
-                lines.push(""); // preserve blank lines within comment block
-            }
-            continue;
-        }
-        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') || trimmed.starts_with('#') {
-            lines.push(trimmed);
-        } else {
-            break; // first non-comment, non-blank line → end of header comment
-        }
-    }
-    // Remove trailing blank lines
-    while lines.last().map_or(false, |l| l.is_empty()) {
-        lines.pop();
-    }
-    lines.join(" | ")
-}
+

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>CodeLoom UI · Glass</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f0c29;--bg2:#1a1740;--glass:rgba(255,255,255,.06);--glass-border:rgba(255,255,255,.1);--text:#eef0ff;--text2:rgba(255,255,255,.6);--text3:rgba(255,255,255,.35);--blue:#7c8cff;--green:#6fcf97;--orange:#f2c94c;--red:#eb5757;--purple:#bb6bd9;--font:system-ui,-apple-system,sans-serif}
+body{background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh}
+body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(ellipse at 30% 20%,rgba(124,140,255,.08),transparent 50%),radial-gradient(ellipse at 70% 80%,rgba(187,107,217,.06),transparent 50%);pointer-events:none}
+.app{display:flex;gap:12px;padding:12px;min-height:100vh;position:relative}
+.sidebar{width:200px;background:var(--glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:16px;padding:16px 8px;display:flex;flex-direction:column}
+.logo{display:flex;align-items:center;gap:10px;padding:4px 12px 20px;font-weight:700;font-size:15px;color:var(--text)}
+.logo-m{width:28px;height:28px;background:linear-gradient(135deg,var(--blue),var(--purple));border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:13px;box-shadow:0 4px 12px rgba(124,140,255,.3)}
+.nav{flex:1}
+.nav-tt{font-size:11px;color:var(--text3);padding:8px 12px 4px;font-weight:600;letter-spacing:1px;text-transform:uppercase}
+.nav-i{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;color:var(--text2);cursor:pointer;margin-bottom:2px;transition:.2s}
+.nav-i:hover{background:rgba(255,255,255,.08);color:var(--text)}
+.nav-i.a{background:rgba(124,140,255,.15);color:var(--blue);box-shadow:0 0 20px rgba(124,140,255,.05)}
+.nav-i .ic{font-size:15px;width:18px;text-align:center}
+.main{flex:1;display:flex;flex-direction:column;gap:12px}
+.top{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:16px}
+.sb{flex:1;max-width:400px;display:flex;align-items:center;background:rgba(255,255,255,.05);border:1px solid var(--glass-border);border-radius:10px;padding:0 14px;height:36px;transition:.2s}
+.sb:focus-within{border-color:var(--blue);background:rgba(124,140,255,.05)}
+.sb input{flex:1;border:none;background:none;color:var(--text);font-size:13px;outline:none}
+.sb input::placeholder{color:var(--text3)}
+.sb kbd{font-size:10px;padding:2px 6px;background:rgba(255,255,255,.06);border:1px solid var(--glass-border);border-radius:4px;color:var(--text3)}
+.cnt{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:12px;overflow-y:auto}
+.cnt-s{grid-column:1/-1}
+.glass{padding:20px;background:var(--glass);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:16px}
+h1{font-size:18px;font-weight:600;margin-bottom:4px;background:linear-gradient(135deg,var(--text),rgba(255,255,255,.7));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+h2{font-size:14px;font-weight:600;margin-bottom:12px;color:var(--text2)}
+.glass p{color:var(--text2);font-size:13px;margin-bottom:16px}
+.st{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.cd{padding:16px;background:rgba(255,255,255,.03);border:1px solid var(--glass-border);border-radius:12px}
+.cd-v{font-size:24px;font-weight:700;background:linear-gradient(135deg,var(--blue),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.cd-l{font-size:11px;color:var(--text2);margin-top:4px}
+.tb{overflow-x:auto;border:1px solid var(--glass-border);border-radius:12px;background:rgba(255,255,255,.02)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 14px;text-align:left;font-weight:600;color:var(--text2);border-bottom:1px solid var(--glass-border);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+td{padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.03);color:var(--text)}
+tr:hover td{background:rgba(255,255,255,.02)}
+.tg{display:inline-flex;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:500;gap:4px}
+.tg-g{background:rgba(111,207,151,.12);color:var(--green);border:1px solid rgba(111,207,151,.2)}
+.tg-o{background:rgba(242,201,76,.12);color:var(--orange);border:1px solid rgba(242,201,76,.2)}
+.tg-r{background:rgba(235,87,87,.12);color:var(--red);border:1px solid rgba(235,87,87,.2)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border-radius:10px;font-size:12px;font-weight:500;border:1px solid var(--glass-border);background:rgba(255,255,255,.04);color:var(--text);cursor:pointer;transition:.2s}
+.btn:hover{background:rgba(255,255,255,.1)}
+.btn-p{background:linear-gradient(135deg,var(--blue),var(--purple));border:none;color:#fff;box-shadow:0 4px 15px rgba(124,140,255,.2)}
+.btn-p:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(124,140,255,.3)}
+.btn-sm{padding:5px 12px;font-size:11px;border-radius:8px}
+.ri{padding:14px;background:rgba(255,255,255,.02);border:1px solid var(--glass-border);border-radius:12px;margin-bottom:8px;cursor:pointer;transition:.2s}
+.ri:hover{border-color:var(--blue);background:rgba(124,140,255,.04);transform:translateX(4px)}
+.ri-h{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.ri-n{font-weight:600;font-size:14px}
+.ri-l{font-size:12px;color:var(--text2)}
+.ri-s{font-size:11px;color:var(--text3);margin-left:auto}
+.ri-c{font-size:12px;color:var(--text2);background:rgba(0,0,0,.2);padding:8px 12px;border-radius:8px;margin-top:8px;font-family:'JetBrains Mono',monospace;white-space:pre;overflow-x:auto;border:1px solid var(--glass-border)}
+.ri-c em{color:var(--blue);font-style:normal}
+.sr{display:flex;gap:4px;background:rgba(255,255,255,.03);padding:3px;border-radius:8px;margin-bottom:16px;width:fit-content;border:1px solid var(--glass-border)}
+.sr-b{padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;color:var(--text2);border:none;background:none;font-weight:500;transition:.2s}
+.sr-b.a{background:linear-gradient(135deg,var(--blue),var(--purple));color:#fff;box-shadow:0 2px 10px rgba(124,140,255,.2)}
+.uml{display:flex;gap:16px;align-items:flex-start;justify-content:center;flex-wrap:wrap;padding:16px 0}
+.uml-c{padding:0;background:rgba(255,255,255,.03);border:1px solid var(--glass-border);border-radius:12px;width:200px;overflow:hidden}
+.uml-c.c{border-color:var(--blue);box-shadow:0 0 20px rgba(124,140,255,.15)}
+.uml-h{padding:10px 14px;background:linear-gradient(135deg,var(--blue),var(--purple));color:#fff;font-weight:600;font-size:13px;text-align:center}
+.uml-m{padding:8px 14px}
+.uml-m li{list-style:none;padding:4px 0;font-size:11px;color:var(--text2);font-family:'JetBrains Mono',monospace}
+.uml-arr{display:flex;flex-direction:column;align-items:center;padding:16px 4px;color:var(--text3);font-size:10px}
+.uml-arr .ln{width:2px;height:20px;background:var(--glass-border)}
+@keyframes f{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.f{animation:f .3s ease-out}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="sidebar">
+    <div class="logo"><div class="logo-m">C</div>CodeLoom</div>
+    <div class="nav">
+      <div class="nav-tt">导航</div>
+      <div class="nav-i a"><span class="ic">📊</span>仪表盘</div>
+      <div class="nav-i"><span class="ic">📦</span>仓库</div>
+      <div class="nav-i"><span class="ic">🔍</span>搜索</div>
+      <div class="nav-i"><span class="ic">🌐</span>图分析</div>
+      <div class="nav-tt">工具</div>
+      <div class="nav-i"><span class="ic">📄</span>文件</div>
+      <div class="nav-i"><span class="ic">📤</span>上传</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;padding:12px;border-top:1px solid var(--glass-border);font-size:11px;color:var(--text2);margin-top:auto"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px rgba(111,207,151,.5)"></span>运行中 · v0.9</div>
+  </div>
+  <div class="main">
+    <div class="top">
+      <span style="font-weight:600;font-size:13px">📊 仪表盘</span>
+      <div class="sb"><input placeholder="搜索符号、文件..."><kbd>⌘K</kbd></div>
+      <button class="btn btn-sm btn-p">⚡ 索引</button>
+    </div>
+    <div class="cnt">
+      <div class="glass cnt-s">
+        <h1>CodeLoom</h1>
+        <p>代码知识图谱 · 系统总览</p>
+        <div class="st">
+          <div class="cd"><div class="cd-v">8</div><div class="cd-l">仓库</div></div>
+          <div class="cd"><div class="cd-v">42</div><div class="cd-l">分支</div></div>
+          <div class="cd"><div class="cd-v">293K</div><div class="cd-l">符号</div></div>
+          <div class="cd"><div class="cd-v">386MB</div><div class="cd-l">存储</div></div>
+        </div>
+      </div>
+      <div class="glass cnt-s">
+        <h2>仓库列表</h2>
+        <div class="tb"><table><thead><tr><th>仓库</th><th>分支</th><th>符号</th><th>状态</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>codeloom</td><td>3</td><td>15,234</td><td><span class="tg tg-g">● 正常</span></td><td><button class="btn btn-sm btn-p">索引</button></td></tr>
+            <tr><td>leveldb</td><td>2</td><td>29,319</td><td><span class="tg tg-g">● 正常</span></td><td><button class="btn btn-sm btn-p">索引</button></td></tr>
+            <tr><td>spdlog</td><td>2</td><td>8,412</td><td><span class="tg tg-o">◐ 索引中</span></td><td><button class="btn btn-sm" disabled>...</button></td></tr>
+            <tr><td>hermes</td><td>1</td><td>—</td><td><span class="tg tg-r">● 失败</span></td><td><button class="btn btn-sm btn-p">重试</button></td></tr>
+          </tbody></table>
+        </div>
+      </div>
+      <div class="glass cnt-s">
+        <h2>继承树 · AuthService</h2>
+        <div class="uml">
+          <div class="uml-c">
+            <div class="uml-h" style="background:linear-gradient(135deg,#6fcf97,#27ae60)">BaseService</div>
+            <div class="uml-m"><li>+ init()</li><li>+ get_name()</li><li style="color:var(--orange)"># validate()</li></div>
+          </div>
+          <div class="uml-arr"><div class="ln"></div>▲<div style="margin-top:4px">extends</div></div>
+          <div class="uml-c c">
+            <div class="uml-h">AuthService</div>
+            <div class="uml-m"><li>+ login()</li><li>+ logout()</li><li style="color:var(--orange)">◆ override validate()</li></div>
+          </div>
+          <div class="uml-arr"><div class="ln"></div>▲<div style="margin-top:4px">extends</div></div>
+          <div class="uml-c">
+            <div class="uml-h" style="background:linear-gradient(135deg,#f2c94c,#f2994a)">OAuthService</div>
+            <div class="uml-m"><li>+ login_oauth()</li><li>+ refresh_token()</li></div>
+          </div>
+          <div class="uml-arr"><div class="ln"></div>▲</div>
+          <div class="uml-c">
+            <div class="uml-h" style="background:linear-gradient(135deg,#eb5757,#d63031)">LdapAuthService</div>
+            <div class="uml-m"><li>+ ldap_login()</li><li>+ sync_users()</li></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -94,9 +94,21 @@ fn search_hits(
     limit: usize, kind_filter: Option<&str>,
 ) -> anyhow::Result<Vec<SearchHit>> {
     let kind_val = kind_filter.unwrap_or("");
-    let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).unwrap_or(0);
+    eprintln!("[DEBUG] search_hits: fts5_query={}", fts5_query);
+    // Resolve branch_id for filtering. If the resolved ID doesn't match any data
+    // (common after re-indexing with different branch name), fall back to the
+    // actual branch_id used in the branches table.
+    let req_branch_id = crate::storage::resolve_branch_id(conn, repo, branch).unwrap_or(0);
+    let actual_branch_id: i64 = conn
+        .query_row(
+            "SELECT branch_id FROM branches WHERE repo=?1 AND branch_id>0 LIMIT 1",
+            rusqlite::params![repo],
+            |row| row.get(0),
+        )
+        .unwrap_or(req_branch_id);
+    let kind_val = kind_filter.unwrap_or("");
+    eprintln!("[DEBUG] search_hits: repo={} query_type=sym branch_id={} kind_val='{}'", repo, actual_branch_id, kind_val);
     let mut hits: Vec<SearchHit> = Vec::new();
-
     // ── Symbols ──────────────────────────────────────────────────────
     {
         let sql = "\
@@ -115,8 +127,23 @@ fn search_hits(
             LIMIT ?4";
 
         let mut stmt = conn.prepare(sql)?;
+        // Debug: run the query manually
+        {
+            let test_cnt: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM fts5_all f JOIN nodes n ON n.id=f.rowid JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND b.branch_id=?2 AND n.node_type='sym'",
+                rusqlite::params![repo, actual_branch_id],
+                |r| r.get(0),
+            ).unwrap_or(0);
+            // Also try the actual FTS5 query directly
+            let sample: Option<String> = conn.query_row(
+                "SELECT n.name FROM fts5_all f JOIN nodes n ON n.id=f.rowid JOIN branches b ON b.node_id=n.id WHERE fts5_all MATCH ?1 AND n.repo=?2 AND b.branch_id=?3 AND n.node_type='sym' ORDER BY bm25(fts5_all) LIMIT 1",
+                rusqlite::params![fts5_query, repo, actual_branch_id],
+                |r| r.get(0),
+            ).ok();
+            eprintln!("[DEBUG] sym query: repo={} branch_id={} matching_nodes={} fts5_first={:?}", repo, actual_branch_id, test_cnt, sample);
+        }
         let sym_hits: Vec<SearchHit> = stmt.query_map(
-            rusqlite::params![fts5_query, repo, branch_id, limit as i64, kind_val],
+            rusqlite::params![fts5_query, repo, actual_branch_id, limit as i64, kind_val],
             |r| {
                 let content: String = r.get(6)?;
                 let sig: String = r.get::<_, Option<String>>(7)?.unwrap_or_default();
@@ -130,10 +157,13 @@ fn search_hits(
                 })
             },
         )?.filter_map(|r| r.ok()).collect();
+        eprintln!("[DEBUG] sym_hits count={}", sym_hits.len());
+        if let Some(first) = sym_hits.first() { eprintln!("[DEBUG] sym_hits[0] name={} score={}", first.name, first.score); }
         hits.extend(sym_hits);
     }
 
     // ── Docs ─────────────────────────────────────────────────────────
+    if kind_val.is_empty() {
     {
         let sql = "\
             SELECT fts5_all.rowid, bm25(fts5_all) as score,
@@ -193,8 +223,9 @@ fn search_hits(
         )?.filter_map(|r| r.ok()).collect();
         hits.extend(file_hits);
     }
+    }
 
-    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    hits.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
     hits.truncate(limit);
     log_debug!("storage::fts", "search_hits: query={} repo={} branch={} limit={} kind={:?} hits={}", fts5_query, repo, branch, limit, kind_filter, hits.len());
     Ok(hits)

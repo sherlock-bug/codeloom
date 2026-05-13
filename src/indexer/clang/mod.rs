@@ -4,6 +4,7 @@ use crate::{log_info, log_warn, log_error, log_debug};
 
 pub mod compile_cmds;
 pub mod ast;
+pub mod collect_comments;
 
 use std::collections::{HashMap, HashSet};
 use std::process::{Command, Stdio};
@@ -83,13 +84,22 @@ pub fn index_clang(
                     std::path::Path::new(&repo_root).join(&file.path)
                         .to_string_lossy().to_string()
                 };
-                let extracted = ast::extract_symbols_and_edges(
+                let mut extracted = ast::extract_symbols_and_edges(
                     &ast, repo_name, &abs_path, &repo_root, &ignore_patterns
                 );
 
                 let mut name_to_id: HashMap<String, i64> = HashMap::new();
 
-                for sym in &extracted.symbols {
+                for sym in &mut extracted.symbols {
+                    // Collect comments from source file — fill doc_comment
+                    if sym.doc_comment.is_empty() && !sym.file_path.is_empty() && sym.line_start > 0 {
+                        sym.doc_comment =
+                            crate::indexer::clang::collect_comments::collect_comments_for_symbol(
+                                &sym.file_path,
+                                sym.line_start as u32,
+                                sym.line_end as u32,
+                            );
+                    }
                     let id = upsert_symbol(conn, sym, repo_name, branch_name)?;
                     let key = format!("{}::{}", sym.namespace.as_deref().unwrap_or(""), sym.name);
                     name_to_id.insert(key, id);

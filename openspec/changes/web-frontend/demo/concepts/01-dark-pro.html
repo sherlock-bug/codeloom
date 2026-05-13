@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>CodeLoom UI · Dark Pro</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;--text:#e6edf3;--text2:#8b949e;--text3:#484f58;--blue:#58a6ff;--green:#3fb950;--orange:#d29922;--red:#f85149;--purple:#bc8cff;--font:system-ui,-apple-system,sans-serif}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;display:flex;min-height:100vh}
+.sidebar{width:220px;background:var(--bg2);border-right:1px solid var(--border);padding:16px 0;display:flex;flex-direction:column}
+.logo{display:flex;align-items:center;gap:10px;padding:0 16px 20px;font-weight:700;font-size:16px}
+.logo-m{width:28px;height:28px;background:linear-gradient(135deg,var(--blue),var(--purple));border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:14px}
+.nav{padding:0 8px;flex:1}
+.nav-tt{font-size:11px;color:var(--text3);padding:8px 12px 4px;font-weight:600;letter-spacing:.5px}
+.nav-i{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;color:var(--text2);cursor:pointer;margin-bottom:2px;transition:.15s}
+.nav-i:hover{background:var(--bg3);color:var(--text)}
+.nav-i.a{background:rgba(88,166,255,.12);color:var(--blue)}
+.nav-i .ic{font-size:16px;width:20px;text-align:center}
+.nav-i .bd{margin-left:auto;background:var(--bg3);padding:1px 8px;border-radius:10px;font-size:11px;color:var(--text2)}
+.main{flex:1;display:flex;flex-direction:column}
+.top{display:flex;align-items:center;gap:16px;padding:0 24px;height:52px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.sb{flex:1;max-width:420px;display:flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:0 12px;height:32px}
+.sb:focus-within{border-color:var(--blue)}
+.sb input{flex:1;border:none;background:none;color:var(--text);font-size:13px;outline:none}
+.sb input::placeholder{color:var(--text3)}
+.sb kbd{font-size:10px;padding:1px 5px;border:1px solid var(--border);border-radius:3px;color:var(--text3)}
+.cnt{padding:24px;flex:1;overflow-y:auto}
+h1{font-size:20px;font-weight:600;margin-bottom:4px}
+h2{font-size:16px;font-weight:600;margin-bottom:12px}
+.pg{p{color:var(--text2);margin-bottom:16px}}
+.st{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}
+.cd{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px}
+.cd-v{font-size:28px;font-weight:700;color:var(--blue)}
+.cd-l{font-size:12px;color:var(--text2);margin-top:2px}
+.tb{overflow-x:auto;border:1px solid var(--border);border-radius:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:var(--bg3);padding:8px 12px;text-align:left;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border)}
+td{padding:8px 12px;border-bottom:1px solid var(--bg3);color:var(--text)}
+tr:hover td{background:rgba(255,255,255,.02)}
+.tg{display:inline-flex;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:500;gap:4px}
+.tg-g{background:rgba(63,185,80,.15);color:var(--green)}
+.tg-o{background:rgba(210,153,34,.15);color:var(--orange)}
+.tg-r{background:rgba(248,81,73,.15);color:var(--red)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;font-size:13px;font-weight:500;border:1px solid var(--border);background:var(--bg3);color:var(--text);cursor:pointer;transition:.15s}
+.btn:hover{background:var(--border)}
+.btn-p{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn-p:hover{background:#4c94e0}
+.btn-sm{padding:4px 10px;font-size:12px}
+.sr{display:flex;gap:4px;background:var(--bg3);padding:3px;border-radius:6px;margin-bottom:16px;width:fit-content}
+.sr-b{padding:5px 12px;border-radius:4px;font-size:12px;cursor:pointer;color:var(--text2);border:none;background:none;font-weight:500;transition:.15s}
+.sr-b.a{background:var(--blue);color:#fff}
+.ri{padding:12px;border:1px solid var(--border);border-radius:6px;margin-bottom:8px;cursor:pointer;transition:.15s}
+.ri:hover{border-color:var(--blue);background:rgba(88,166,255,.04)}
+.ri-h{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.ri-n{font-weight:600;font-size:14px}
+.ri-l{font-size:12px;color:var(--text2)}
+.ri-s{font-size:11px;color:var(--text3);margin-left:auto}
+.ri-c{font-size:12px;color:var(--text2);background:var(--bg);padding:6px 8px;border-radius:4px;margin-top:6px;font-family:'JetBrains Mono',monospace;white-space:pre;overflow-x:auto}
+.ri-c em{color:var(--blue);font-style:normal}
+.vp{background:var(--bg2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.vt{display:flex;align-items:center;gap:8px;padding:12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.vc{min-height:320px;display:flex;align-items:center;justify-content:center;padding:24px;overflow-x:auto}
+.vs{display:flex;gap:6px;border-bottom:1px solid var(--border);padding:0 12px}
+.vs-b{padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;transition:.15s}
+.vs-b:hover{color:var(--text)}
+.vs-b.a{color:var(--blue);border-bottom-color:var(--blue)}
+.vtc{display:none}
+.vtc.a{display:block}
+.tn{display:flex;flex-direction:column;align-items:center}
+.tn-b{padding:8px 16px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;font-size:13px;font-weight:500;text-align:center;min-width:100px}
+.tn-b.c{border-color:var(--blue);background:rgba(88,166,255,.1)}
+.tn-k{font-size:10px;color:var(--text3);font-weight:400}
+.tn-c{display:flex;gap:16px;margin-top:16px;position:relative}
+.tn-c::before{content:'';position:absolute;top:-8px;left:50%;width:2px;height:8px;background:var(--border)}
+.tn-ch{display:flex;flex-direction:column;align-items:center;position:relative}
+.tn-ch::before{content:'';position:absolute;top:-8px;left:50%;width:2px;height:8px;background:var(--border)}
+.fl{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.fl-t{width:240px;background:var(--bg2);border-right:1px solid var(--border);padding:8px;overflow-y:auto;min-height:360px}
+.fl-i{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text2)}
+.fl-i:hover{background:var(--bg3);color:var(--text)}
+.fl-i.a{background:rgba(88,166,255,.08);color:var(--blue)}
+.fl-p{flex:1;overflow:hidden}
+.fl-ph{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.fl-c{padding:16px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6;color:var(--text);background:var(--bg);min-height:360px;overflow-x:auto}
+.ln{display:flex;padding:0 8px}
+.ln-n{width:36px;text-align:right;color:var(--text3);padding-right:12px;user-select:none;flex-shrink:0}
+.ln-h{background:rgba(88,166,255,.06);border-left:2px solid var(--blue)}
+@keyframes f{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.f{animation:f .2s ease-out}
+</style>
+</head>
+<body>
+<div class="sidebar">
+  <div class="logo"><div class="logo-m">C</div>CodeLoom</div>
+  <div class="nav">
+    <div class="nav-tt">导航</div>
+    <div class="nav-i a"><span class="ic">📊</span>仪表盘<span class="bd">3</span></div>
+    <div class="nav-i"><span class="ic">📦</span>仓库管理</div>
+    <div class="nav-i"><span class="ic">📂</span>代码组</div>
+    <div class="nav-i"><span class="ic">🔍</span>搜索</div>
+    <div class="nav-i"><span class="ic">📄</span>文件浏览</div>
+    <div class="nav-tt">分析</div>
+    <div class="nav-i"><span class="ic">🌐</span>图分析</div>
+    <div class="nav-i"><span class="ic">📤</span>上传解析</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--border);font-size:12px;color:var(--text2)"><span style="width:8px;height:8px;border-radius:50%;background:var(--green)"></span>服务运行中 · v0.9</div>
+</div>
+<div class="main">
+  <div class="top">
+    <span style="font-weight:600;font-size:14px">仪表盘</span>
+    <div class="sb"><input placeholder="搜索符号、文件... (Ctrl+K)"><kbd>⌘K</kbd></div>
+    <button class="btn btn-sm btn-p">⚡ 全量索引</button>
+    <button class="btn btn-sm">⚙️</button>
+  </div>
+  <div class="cnt">
+    <div class="pg"><h1>仪表盘</h1><p>CodeLoom 系统概览与最近活动</p></div>
+    <div class="st">
+      <div class="cd"><div class="cd-v">8</div><div class="cd-l">已索引仓库</div></div>
+      <div class="cd"><div class="cd-v">42</div><div class="cd-l">总分支数</div></div>
+      <div class="cd"><div class="cd-v">293K</div><div class="cd-l">总符号数</div></div>
+      <div class="cd"><div class="cd-v">386MB</div><div class="cd-l">数据库大小</div></div>
+    </div>
+    <h2>仓库健康状态</h2>
+    <div class="tb">
+      <table><thead><tr><th>仓库名</th><th>分支</th><th>符号数</th><th>最后索引</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr><td><a href="#" style="color:var(--blue)">codeloom</a></td><td>3</td><td>15,234</td><td>2 分钟前</td><td><span class="tg tg-g">● 正常</span></td><td><button class="btn btn-sm btn-p">索引</button><button class="btn btn-sm" style="margin-left:4px">详情</button></td></tr>
+        <tr><td><a href="#" style="color:var(--blue)">leveldb</a></td><td>2</td><td>29,319</td><td>15 分钟前</td><td><span class="tg tg-g">● 正常</span></td><td><button class="btn btn-sm btn-p">索引</button></td></tr>
+        <tr><td><a href="#" style="color:var(--blue)">spdlog</a></td><td>2</td><td>8,412</td><td>进行中</td><td><span class="tg tg-o">◐ 索引中</span></td><td><button class="btn btn-sm" disabled>索引</button></td></tr>
+        <tr><td><a href="#" style="color:var(--blue)">hermes</a></td><td>1</td><td>0</td><td>1 小时前</td><td><span class="tg tg-r">● 失败</span></td><td><button class="btn btn-sm btn-p">重试</button></td></tr>
+      </tbody></table>
+    </div>
+    <h2 style="margin-top:24px">调用链分析</h2>
+    <div class="vp">
+      <div class="vs">
+        <div class="vs-b a" onclick="document.querySelectorAll('.vs-b').forEach(e=>e.classList.remove('a'));this.classList.add('a');document.querySelectorAll('.vtc').forEach(e=>e.classList.remove('a'));document.getElementById('ct1').classList.add('a')">📊 调用链</div>
+        <div class="vs-b" onclick="document.querySelectorAll('.vs-b').forEach(e=>e.classList.remove('a'));this.classList.add('a');document.querySelectorAll('.vtc').forEach(e=>e.classList.remove('a'));document.getElementById('ct2').classList.add('a')">🏛️ UML 类图</div>
+      </div>
+      <div class="vtc a" id="ct1">
+        <div class="vt">
+          <input placeholder="函数名..." value="AuthService::login" style="padding:5px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;width:200px;outline:none">
+          <select style="padding:5px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px"><option>callers</option><option selected>callees</option></select>
+          <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:4px">深度:<input type="range" min="1" max="10" value="3" style="width:80px"></label>
+          <button class="btn btn-sm btn-p">分析</button>
+        </div>
+        <div class="vc">
+          <div class="tn">
+            <div class="tn-b c">AuthService::login<div class="tn-k">method · service.rs:120</div></div>
+            <div class="tn-c">
+              <div class="tn-ch"><div class="tn-b">find_by_username<div class="tn-k">method</div></div><div class="tn-c"><div class="tn-ch"><div class="tn-b" style="font-size:12px;padding:6px 12px">db.query</div></div><div class="tn-ch"><div class="tn-b" style="font-size:12px;padding:6px 12px">hash_password</div></div></div></div>
+              <div class="tn-ch"><div class="tn-b">verify_password<div class="tn-k">method</div></div><div class="tn-c"><div class="tn-ch"><div class="tn-b" style="font-size:12px;padding:6px 12px">bcrypt::verify</div></div></div></div>
+              <div class="tn-ch"><div class="tn-b">create_session<div class="tn-k">method</div></div><div class="tn-c"><div class="tn-ch"><div class="tn-b" style="font-size:12px;padding:6px 12px">Session::new</div></div><div class="tn-ch"><div class="tn-b" style="font-size:12px;padding:6px 12px">cache.set</div></div></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

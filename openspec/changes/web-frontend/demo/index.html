@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>CodeLoom Web</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============ Reset & Variables ============ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg-primary:#0d1117; --bg-secondary:#161b22; --bg-tertiary:#21262d;
+  --border:#30363d; --border-light:#21262d;
+  --text-primary:#e6edf3; --text-secondary:#8b949e; --text-muted:#484f58;
+  --accent-blue:#58a6ff; --accent-green:#3fb950; --accent-orange:#d29922;
+  --accent-red:#f85149; --accent-purple:#bc8cff;
+  --sidebar-w:240px; --header-h:48px; --radius:8px; --radius-sm:4px;
+  --shadow:0 1px 3px rgba(0,0,0,.3);
+  font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif;
+  font-size:14px;color:var(--text-primary);background:var(--bg-primary);
+}
+body{display:flex;min-height:100vh;overflow-x:hidden}
+a{color:var(--accent-blue);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ============ Sidebar ============ */
+.sidebar{
+  width:var(--sidebar-w);min-height:100vh;background:var(--bg-secondary);
+  border-right:1px solid var(--border);display:flex;flex-direction:column;
+  position:fixed;top:0;left:0;z-index:100;transition:width .2s;
+}
+.sidebar-logo{
+  height:var(--header-w,48px);padding:12px 16px;display:flex;
+  align-items:center;gap:10px;border-bottom:1px solid var(--border);
+  font-weight:700;font-size:15px;color:var(--text-primary);
+}
+.logo-icon{width:24px;height:24px;background:linear-gradient(135deg,var(--accent-blue),var(--accent-purple));border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:13px;color:#fff;font-weight:700}
+.sidebar-nav{flex:1;padding:8px;overflow-y:auto}
+.nav-item{
+  display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:6px;
+  cursor:pointer;color:var(--text-secondary);font-size:14px;font-weight:500;
+  transition:all .15s;margin-bottom:2px;
+}
+.nav-item:hover{background:var(--bg-tertiary);color:var(--text-primary)}
+.nav-item.active{background:rgba(88,166,255,.12);color:var(--accent-blue)}
+.nav-item .nav-icon{font-size:18px;width:22px;text-align:center}
+.nav-item .nav-badge{margin-left:auto;background:var(--bg-tertiary);padding:1px 8px;border-radius:10px;font-size:11px;color:var(--text-secondary)}
+.sidebar-section{font-size:11px;color:var(--text-muted);padding:12px 12px 4px;font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+.sidebar-footer{padding:12px;border-top:1px solid var(--border)}
+.server-status{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:6px;font-size:12px;color:var(--text-secondary)}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--accent-green);box-shadow:0 0 6px rgba(63,185,80,.4)}
+
+/* ============ Main Area ============ */
+.main{flex:1;margin-left:var(--sidebar-w);min-height:100vh}
+.topbar{
+  height:var(--header-w,48px);padding:0 20px;display:flex;align-items:center;
+  gap:16px;border-bottom:1px solid var(--border);background:var(--bg-secondary);
+  position:sticky;top:0;z-index:50;
+}
+.search-bar{
+  flex:1;max-width:480px;display:flex;align-items:center;
+  background:var(--bg-primary);border:1px solid var(--border);
+  border-radius:6px;padding:0 12px;height:32px;
+}
+.search-bar:focus-within{border-color:var(--accent-blue)}
+.search-bar input{
+  flex:1;border:none;background:none;color:var(--text-primary);
+  font-size:13px;outline:none;height:100%;
+}
+.search-bar input::placeholder{color:var(--text-muted)}
+.search-bar .kbd{
+  font-size:10px;padding:1px 5px;border:1px solid var(--border);
+  border-radius:3px;color:var(--text-muted);
+}
+.topbar-actions{display:flex;align-items:center;gap:12px}
+.page-title{font-size:14px;font-weight:600;color:var(--text-secondary)}
+
+/* ============ Content ============ */
+.content{padding:24px}
+.page{display:none}
+.page.active{display:block}
+.page-header{margin-bottom:20px}
+.page-header h1{font-size:20px;font-weight:600;margin-bottom:4px}
+.page-header p{font-size:13px;color:var(--text-secondary)}
+.page-header .page-actions{display:flex;gap:8px;margin-top:12px}
+
+/* ============ Cards ============ */
+.card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.card-title{font-size:14px;font-weight:600}
+.card-value{font-size:28px;font-weight:700;color:var(--accent-blue)}
+.card-label{font-size:12px;color:var(--text-secondary);margin-top:2px}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:24px}
+
+/* ============ Buttons ============ */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;padding:6px 14px;
+  border-radius:6px;font-size:13px;font-weight:500;border:1px solid var(--border);
+  background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;
+  transition:all .15s;white-space:nowrap;
+}
+.btn:hover{background:var(--border);border-color:var(--text-muted)}
+.btn-primary{background:var(--accent-blue);border-color:var(--accent-blue);color:#fff}
+.btn-primary:hover{background:#4c94e0}
+.btn-green{background:var(--accent-green);border-color:var(--accent-green);color:#fff}
+.btn-sm{padding:4px 10px;font-size:12px}
+.btn-icon{padding:4px 8px;font-size:16px}
+
+/* ============ Table ============ */
+.table-wrap{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:var(--bg-tertiary);padding:8px 12px;text-align:left;font-weight:600;color:var(--text-secondary);border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid var(--border-light);color:var(--text-primary)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,.03)}
+.tag{display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:500;gap:4px}
+.tag-blue{background:rgba(88,166,255,.15);color:var(--accent-blue)}
+.tag-green{background:rgba(63,185,80,.15);color:var(--accent-green)}
+.tag-orange{background:rgba(210,153,34,.15);color:var(--accent-orange)}
+.tag-red{background:rgba(248,81,73,.15);color:var(--accent-red)}
+.tag-purple{background:rgba(188,140,255,.15);color:var(--accent-purple)}
+.tag-gray{background:var(--bg-tertiary);color:var(--text-secondary)}
+
+/* ============ Tabs ============ */
+.tabs{display:flex;border-bottom:1px solid var(--border);margin-bottom:16px;overflow-x:auto}
+.tab{padding:8px 16px;font-size:13px;font-weight:500;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
+.tab:hover{color:var(--text-primary)}
+.tab.active{color:var(--accent-blue);border-bottom-color:var(--accent-blue)}
+.tab-content{display:none}
+.tab-content.active{display:block}
+
+/* ============ Search Results ============ */
+.search-mode{display:flex;gap:4px;background:var(--bg-tertiary);padding:3px;border-radius:6px;margin-bottom:16px;width:fit-content}
+.mode-btn{padding:5px 12px;border-radius:4px;font-size:12px;cursor:pointer;color:var(--text-secondary);border:none;background:none;font-weight:500;transition:all .15s}
+.mode-btn.active{background:var(--accent-blue);color:#fff}
+.result-item{padding:12px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:8px;cursor:pointer;transition:all .15s}
+.result-item:hover{border-color:var(--accent-blue);background:rgba(88,166,255,.04)}
+.result-item .ri-header{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.result-item .ri-name{font-weight:600;font-size:14px}
+.result-item .ri-kind{font-size:11px}
+.result-item .ri-location{font-size:12px;color:var(--text-secondary)}
+.result-item .ri-score{font-size:11px;color:var(--text-muted);margin-left:auto}
+.result-item .ri-snippet{font-size:12px;color:var(--text-secondary);background:var(--bg-primary);padding:6px 8px;border-radius:4px;margin-top:6px;overflow-x:auto;font-family:'JetBrains Mono','Fira Code',monospace;white-space:pre}
+.result-item .ri-snippet em{color:var(--accent-blue);font-style:normal}
+.filters-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.filter-select{padding:5px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:12px;outline:none}
+.filter-select:focus{border-color:var(--accent-blue)}
+
+/* ============ Graph Viz ============ */
+.viz-panel{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.viz-toolbar{display:flex;align-items:center;gap:8px;padding:12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.viz-canvas{min-height:360px;position:relative;display:flex;align-items:center;justify-content:center;padding:24px}
+.viz-placeholder{text-align:center;color:var(--text-muted)}
+.viz-placeholder .icon{font-size:48px;margin-bottom:8px}
+.viz-placeholder p{font-size:13px}
+.viz-tree{display:flex;flex-direction:column;align-items:center;width:100%}
+.tree-node{display:flex;flex-direction:column;align-items:center}
+.tree-node-box{padding:8px 16px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;font-size:13px;font-weight:500;text-align:center;min-width:100px}
+.tree-node-box.current{border-color:var(--accent-blue);background:rgba(88,166,255,.1)}
+.tree-node-box .tn-kind{font-size:10px;color:var(--text-muted);font-weight:400}
+.tree-children{display:flex;gap:16px;margin-top:16px;position:relative}
+.tree-children::before{content:'';position:absolute;top:-8px;left:50%;width:2px;height:8px;background:var(--border);transform:translateX(-50%)}
+.tree-child{display:flex;flex-direction:column;align-items:center;position:relative}
+.tree-child::before{content:'';position:absolute;top:-8px;left:50%;width:2px;height:8px;background:var(--border)}
+
+.viz-link{width:100%;display:flex;align-items:center;justify-content:center;gap:0;padding:12px 0}
+.link-arrow{color:var(--text-muted);font-size:20px;margin:0 4px}
+.link-node{padding:8px 16px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:6px;font-size:13px;text-align:center;min-width:80px}
+.link-node .ln-kind{font-size:10px;color:var(--text-muted);font-weight:400}
+.link-node.fn{border-color:var(--accent-blue)}
+
+/* ============ UML Class Diagram ============ */
+.uml-grid{display:flex;gap:24px;justify-content:center;align-items:flex-start;flex-wrap:wrap}
+.uml-class{background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;width:220px;overflow:hidden}
+.uml-class.current{border-color:var(--accent-blue);box-shadow:0 0 12px rgba(88,166,255,.2)}
+.uml-class-name{padding:10px 14px;background:var(--accent-blue);color:#fff;font-weight:600;font-size:13px;text-align:center;border-bottom:1px solid rgba(255,255,255,.1)}
+.uml-class-methods{padding:8px 14px}
+.uml-class-methods ul{list-style:none;font-size:12px;color:var(--text-secondary)}
+.uml-class-methods li{padding:3px 0;font-family:'JetBrains Mono',monospace;font-size:11px}
+.uml-arrow{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:8px 4px;min-width:40px;color:var(--text-muted);font-size:11px;text-align:center}
+.uml-arrow .arrow-line{width:2px;height:16px;background:var(--text-muted)}
+
+/* ============ File Browser ============ */
+.file-browser{display:flex;gap:0;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.file-tree{width:260px;min-height:400px;background:var(--bg-secondary);border-right:1px solid var(--border);padding:8px;overflow-y:auto}
+.file-item{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-secondary)}
+.file-item:hover{background:var(--bg-tertiary);color:var(--text-primary)}
+.file-item.active{background:rgba(88,166,255,.08);color:var(--accent-blue)}
+.file-item .fi-icon{font-size:14px;width:18px;text-align:center}
+.file-item .fi-name{flex:1}
+.file-preview{flex:1;padding:0;overflow:hidden}
+.file-preview-header{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--bg-secondary)}
+.file-preview-header .fph-path{font-size:12px;color:var(--text-secondary)}
+.file-preview-code{padding:16px;overflow-x:auto;font-family:'JetBrains Mono','Fira Code',monospace;font-size:12px;line-height:1.6;color:var(--text-primary);background:var(--bg-primary);min-height:360px}
+.file-preview-code .code-line{display:flex;padding:0 8px}
+.file-preview-code .line-num{width:40px;text-align:right;color:var(--text-muted);padding-right:16px;user-select:none;flex-shrink:0}
+.file-preview-code .line-highlight{background:rgba(88,166,255,.06);border-left:2px solid var(--accent-blue)}
+
+/* ============ Upload ============ */
+.upload-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:48px;text-align:center;cursor:pointer;transition:all .2s;background:var(--bg-secondary)}
+.upload-zone:hover{border-color:var(--accent-blue);background:rgba(88,166,255,.04)}
+.upload-zone .uz-icon{font-size:40px;margin-bottom:8px}
+.upload-zone .uz-text{font-size:14px;color:var(--text-secondary)}
+.upload-zone .uz-hint{font-size:12px;color:var(--text-muted);margin-top:4px}
+.upload-progress{margin-top:16px}
+.progress-bar{height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden;margin-bottom:8px}
+.progress-fill{height:100%;background:var(--accent-blue);border-radius:3px;transition:width .3s;width:0%}
+.progress-info{display:flex;justify-content:space-between;font-size:12px;color:var(--text-secondary)}
+
+/* ============ Group Management ============ */
+.group-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.group-card .gc-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.group-card .gc-name{font-weight:600;font-size:14px}
+.group-card .gc-desc{font-size:12px;color:var(--text-secondary);margin-bottom:12px}
+.group-card .gc-repos{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.batch-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+/* ============ Dashboard ============ */
+.timeline{padding:8px 0}
+.timeline-item{display:flex;gap:12px;padding:8px 0;position:relative}
+.timeline-item::before{content:'';position:absolute;left:6px;top:28px;width:2px;height:calc(100% - 16px);background:var(--border)}
+.timeline-item:last-child::before{display:none}
+.timeline-dot{width:14px;height:14px;border-radius:50%;background:var(--bg-tertiary);border:2px solid var(--accent-blue);flex-shrink:0;margin-top:4px}
+.timeline-content{flex:1}
+.timeline-content .tl-title{font-size:13px;font-weight:500}
+.timeline-content .tl-time{font-size:11px;color:var(--text-muted)}
+
+/* ============ Responsive ============ */
+@media(max-width:1024px){
+  .sidebar{width:56px}
+  .sidebar .nav-item span:not(.nav-icon),.sidebar .sidebar-section,.sidebar .sidebar-logo span,.sidebar .server-status span{display:none}
+  .sidebar-logo{padding:12px;justify-content:center}
+  .sidebar-footer{padding:8px;display:flex;justify-content:center}
+  .main{margin-left:56px}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+  .file-browser{flex-direction:column}
+  .file-tree{width:100%;min-height:auto;max-height:200px;border-right:none;border-bottom:1px solid var(--border)}
+}
+
+/* ============ Animations ============ */
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.fade-in{animation:fadeIn .2s ease-out}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.loading-pulse{animation:pulse 1.5s ease-in-out infinite}
+</style>
+</head>
+<body>
+
+<!-- ============================== SIDEBAR ============================== -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-icon">C</div>
+    <span>CodeLoom</span>
+  </div>
+  <nav class="sidebar-nav">
+    <div class="sidebar-section">导航</div>
+    <div class="nav-item active" data-page="dashboard">
+      <span class="nav-icon">🏠</span><span>仪表盘</span>
+      <span class="nav-badge">3</span>
+    </div>
+    <div class="nav-item" data-page="repos">
+      <span class="nav-icon">📦</span><span>仓库管理</span>
+    </div>
+    <div class="nav-item" data-page="groups">
+      <span class="nav-icon">📂</span><span>代码组</span>
+    </div>
+    <div class="nav-item" data-page="search">
+      <span class="nav-icon">🔍</span><span>搜索</span>
+    </div>
+    <div class="nav-item" data-page="files">
+      <span class="nav-icon">📄</span><span>文件浏览</span>
+    </div>
+    <div class="sidebar-section">分析</div>
+    <div class="nav-item" data-page="graph">
+      <span class="nav-icon">🌐</span><span>图分析</span>
+    </div>
+    <div class="nav-item" data-page="upload">
+      <span class="nav-icon">📤</span><span>上传解析</span>
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="server-status">
+      <span class="status-dot"></span>
+      <span>服务运行中 · v0.9</span>
+    </div>
+  </div>
+</aside>
+
+<!-- ============================== MAIN ============================== -->
+<div class="main">
+  <!-- Top Bar -->
+  <header class="topbar">
+    <span class="page-title" id="pageTitle">仪表盘</span>
+    <div class="search-bar">
+      <input type="text" placeholder="搜索符号、文件... (Ctrl+K)" id="globalSearch">
+      <span class="kbd">⌘K</span>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn btn-sm" onclick="handleIndex()">⚡ 全量索引</button>
+      <button class="btn btn-sm">⚙️</button>
+    </div>
+  </header>
+
+  <!-- Content -->
+  <div class="content">
+
+    <!-- ===================== DASHBOARD ===================== -->
+    <div class="page active fade-in" id="page-dashboard">
+      <div class="page-header">
+        <h1>仪表盘</h1>
+        <p>CodeLoom 系统概览与最近活动</p>
+      </div>
+      <div class="stats-grid">
+        <div class="card"><div class="card-value">8</div><div class="card-label">已索引仓库</div></div>
+        <div class="card"><div class="card-value">42</div><div class="card-label">总分支数</div></div>
+        <div class="card"><div class="card-value">293,187</div><div class="card-label">总符号数</div></div>
+        <div class="card"><div class="card-value">386</div><div class="card-label">数据库大小 (MB)</div></div>
+        <div class="card"><div class="card-value">★★★</div><div class="card-label">最后索引评分</div></div>
+        <div class="card"><div class="card-value">12ms</div><div class="card-label">搜索平均延迟</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">最近索引活动</span><span class="tag tag-blue">实时</span></div>
+        <div class="timeline">
+          <div class="timeline-item">
+            <div class="timeline-dot" style="border-color:var(--accent-green)"></div>
+            <div class="timeline-content">
+              <div class="tl-title">✅ codeloom (master) — 索引完成</div>
+              <div class="tl-time">2 分钟前 · 15,234 符号 · 238ms</div>
+            </div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-dot" style="border-color:var(--accent-green)"></div>
+            <div class="timeline-content">
+              <div class="tl-title">✅ leveldb (master) — 增量索引</div>
+              <div class="tl-time">15 分钟前 · +42 符号 · 67ms</div>
+            </div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-dot" style="border-color:var(--accent-orange)"></div>
+            <div class="timeline-content">
+              <div class="tl-title">⏳ spdlog (develop) — 正在索引...</div>
+              <div class="tl-time">进行中 · ETA 30s</div>
+            </div>
+          </div>
+          <div class="timeline-item">
+            <div class="timeline-dot" style="border-color:var(--accent-red)"></div>
+            <div class="timeline-content">
+              <div class="tl-title">❌ hermes (master) — 索引失败</div>
+              <div class="tl-time">1 小时前 · compile_commands.json 未找到</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">仓库健康状态</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>仓库名</th><th>分支</th><th>符号数</th><th>最后索引</th><th>状态</th></tr></thead>
+            <tbody>
+              <tr><td>codeloom</td><td>3</td><td>15,234</td><td>2 分钟前</td><td><span class="tag tag-green">● 正常</span></td></tr>
+              <tr><td>leveldb</td><td>2</td><td>29,319</td><td>15 分钟前</td><td><span class="tag tag-green">● 正常</span></td></tr>
+              <tr><td>spdlog</td><td>2</td><td>8,412</td><td>进行中</td><td><span class="tag tag-orange">◐ 索引中</span></td></tr>
+              <tr><td>hermes</td><td>1</td><td>0</td><td>1 小时前</td><td><span class="tag tag-red">● 失败</span></td></tr>
+              <tr><td>fmtlib</td><td>3</td><td>12,883</td><td>3 小时前</td><td><span class="tag tag-green">● 正常</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== REPOS ===================== -->
+    <div class="page fade-in" id="page-repos">
+      <div class="page-header">
+        <h1>仓库管理</h1>
+        <p>管理已索引的代码仓库和分支</p>
+        <div class="page-actions">
+          <button class="btn btn-primary" onclick="alert('添加仓库对话框')">+ 添加仓库</button>
+          <button class="btn" onclick="alert('全量重新索引所有仓库')">🔄 全量重索引</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>仓库名</th><th>路径</th><th>分支数</th><th>符号数</th><th>最后索引</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><a href="#">codeloom</a></td>
+              <td style="font-size:12px;color:var(--text-muted)">/mnt/d/RagMcpHermes/codeloom</td>
+              <td>3</td>
+              <td>15,234</td>
+              <td>2 分钟前</td>
+              <td><span class="tag tag-green">● 正常</span></td>
+              <td><div style="display:flex;gap:4px"><button class="btn btn-sm btn-primary" onclick="handleIndex()">索引</button><button class="btn btn-sm">详情</button><button class="btn btn-sm" style="color:var(--accent-red)">删除</button></div></td>
+            </tr>
+            <tr>
+              <td><a href="#">leveldb</a></td>
+              <td style="font-size:12px;color:var(--text-muted)">/mnt/d/RagMcpHermes/leveldb</td>
+              <td>2</td>
+              <td>29,319</td>
+              <td>15 分钟前</td>
+              <td><span class="tag tag-green">● 正常</span></td>
+              <td><div style="display:flex;gap:4px"><button class="btn btn-sm btn-primary">索引</button><button class="btn btn-sm">详情</button><button class="btn btn-sm" style="color:var(--accent-red)">删除</button></div></td>
+            </tr>
+            <tr>
+              <td><a href="#">spdlog</a></td>
+              <td style="font-size:12px;color:var(--text-muted)">/mnt/d/RagMcpHermes/spdlog</td>
+              <td>2</td>
+              <td>8,412</td>
+              <td>进行中</td>
+              <td><span class="tag tag-orange">◐ 索引中</span></td>
+              <td><div style="display:flex;gap:4px"><button class="btn btn-sm" disabled>索引</button><button class="btn btn-sm">详情</button></div></td>
+            </tr>
+            <tr>
+              <td><a href="#">hermes</a></td>
+              <td style="font-size:12px;color:var(--text-muted)">/mnt/d/RagMcpHermes/hermes</td>
+              <td>1</td>
+              <td>0</td>
+              <td>1 小时前</td>
+              <td><span class="tag tag-red">● 失败</span></td>
+              <td><div style="display:flex;gap:4px"><button class="btn btn-sm btn-primary">重试</button><button class="btn btn-sm" style="color:var(--accent-red)">删除</button></div></td>
+            </tr>
+            <tr>
+              <td><a href="#">fmtlib</a></td>
+              <td style="font-size:12px;color:var(--text-muted)">/mnt/d/RagMcpHermes/fmtlib</td>
+              <td>3</td>
+              <td>12,883</td>
+              <td>3 小时前</td>
+              <td><span class="tag tag-green">● 正常</span></td>
+              <td><div style="display:flex;gap:4px"><button class="btn btn-sm btn-primary">索引</button><button class="btn btn-sm">详情</button></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- Branch expansion demo -->
+      <div style="margin-top:12px">
+        <div class="card" style="border-left:3px solid var(--accent-blue)">
+          <div class="card-header"><span class="card-title">📂 codeloom — 分支详情</span><button class="btn btn-sm">收起</button></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>分支名</th><th>符号数</th><th>最后索引</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr><td>master</td><td>12,883</td><td>2 分钟前</td><td><span class="tag tag-green">● 正常</span></td><td><button class="btn btn-sm">索引</button></td></tr>
+                <tr><td>develop</td><td>2,351</td><td>1 小时前</td><td><span class="tag tag-green">● 正常</span></td><td><button class="btn btn-sm">索引</button></td></tr>
+                <tr><td>feature/web-frontend</td><td>0</td><td>—</td><td><span class="tag tag-gray">○ 未索引</span></td><td><button class="btn btn-sm btn-primary">索引</button></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== GROUPS ===================== -->
+    <div class="page fade-in" id="page-groups">
+      <div class="page-header">
+        <h1>代码组</h1>
+        <p>将仓库分组，批量执行拉代码、索引、切分支等操作</p>
+        <div class="page-actions"><button class="btn btn-primary">+ 新建代码组</button></div>
+      </div>
+      <div class="group-card">
+        <div class="gc-header">
+          <span class="gc-name">📦 核心库组</span>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-sm tag-green" style="background:rgba(63,185,50,.15);border-color:var(--accent-green)"
+              onclick="alert('批量操作已启动')">▶ 执行批量操作</button>
+            <button class="btn btn-sm">编辑</button>
+          </div>
+        </div>
+        <div class="gc-desc">核心基础库，需要保持同步更新</div>
+        <div class="gc-repos">
+          <span class="tag tag-blue">codeloom</span>
+          <span class="tag tag-blue">leveldb</span>
+          <span class="tag tag-blue">spdlog</span>
+          <span class="tag tag-blue">fmtlib</span>
+        </div>
+        <div class="batch-actions">
+          <button class="btn btn-sm" onclick="alert('git pull 执行中')">🔄 拉取 (Pull)</button>
+          <button class="btn btn-sm btn-primary" onclick="handleIndex()">⚡ 索引 (Index)</button>
+          <button class="btn btn-sm" onclick="alert('切换到 master 分支')">🌿 切分支 → master</button>
+          <button class="btn btn-sm tag-green" style="background:rgba(63,185,50,.15);border-color:var(--accent-green)"
+            onclick="alert('Pull + Index 执行中')">▶ 拉取 + 索引</button>
+        </div>
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-light)">
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">执行进度</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+              <span class="tag tag-green">✅</span> codeloom
+              <span style="flex:1"></span>
+              <span style="color:var(--accent-green)">Pull OK · Index OK</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+              <span class="tag tag-orange">◐</span> leveldb
+              <span style="flex:1"></span>
+              <span style="color:var(--accent-orange)">正在索引... 72%</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+              <span class="tag tag-gray">○</span> spdlog
+              <span style="flex:1"></span>
+              <span style="color:var(--text-muted)">等待中</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+              <span class="tag tag-gray">○</span> fmtlib
+              <span style="flex:1"></span>
+              <span style="color:var(--text-muted)">等待中</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="group-card">
+        <div class="gc-header">
+          <span class="gc-name">📦 客户项目组</span>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-sm btn-primary">▶ 执行批量操作</button>
+            <button class="btn btn-sm">编辑</button>
+          </div>
+        </div>
+        <div class="gc-desc">客户 A 的私有项目</div>
+        <div class="gc-repos">
+          <span class="tag tag-purple">client-project-a</span>
+          <span class="tag tag-purple">client-project-b</span>
+        </div>
+        <div class="batch-actions">
+          <button class="btn btn-sm">🔄 拉取 (Pull)</button>
+          <button class="btn btn-sm btn-primary">⚡ 索引 (Index)</button>
+          <button class="btn btn-sm">🌿 切分支 → develop</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== SEARCH ===================== -->
+    <div class="page fade-in" id="page-search">
+      <div class="page-header">
+        <h1>搜索</h1>
+        <p>精确关键词搜索与语义模糊搜索</p>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <div class="search-bar" style="max-width:100%;flex:1">
+          <input type="text" placeholder="输入符号名、注释内容或自然语言描述..." id="searchInput" value="AuthService">
+          <span class="kbd">Enter</span>
+        </div>
+        <button class="btn btn-primary" onclick="search()">搜索</button>
+      </div>
+      <div class="search-mode">
+        <button class="mode-btn active" onclick="switchMode(this,'exact')">🎯 精确搜索 (BM25)</button>
+        <button class="mode-btn" onclick="switchMode(this,'fuzzy')">🌀 模糊搜索 (语义向量)</button>
+      </div>
+      <div class="filters-bar">
+        <select class="filter-select"><option>所有仓库</option><option>codeloom</option><option>leveldb</option><option>spdlog</option></select>
+        <select class="filter-select"><option>所有分支</option><option>master</option><option>develop</option></select>
+        <select class="filter-select"><option>所有类型</option><option>class</option><option>function</option><option>method</option><option>struct</option><option>enum</option></select>
+      </div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">找到 12 个结果 (0.042s)</div>
+      <div class="result-item" onclick="goToFile()">
+        <div class="ri-header">
+          <span class="ri-name">AuthService</span>
+          <span class="tag tag-blue">class</span>
+          <span class="ri-location">src/auth/mod.rs · 第 42 行</span>
+          <span class="ri-score">score: 0.92</span>
+        </div>
+        <div class="ri-snippet"><em>pub struct AuthService</em> {<br>    username: String,<br>    password: String,<br>    role: UserRole,<br>}</div>
+      </div>
+      <div class="result-item" onclick="goToFile()">
+        <div class="ri-header">
+          <span class="ri-name">AuthService::login</span>
+          <span class="tag tag-green">method</span>
+          <span class="ri-location">src/auth/service.rs · 第 120 行</span>
+          <span class="ri-score">score: 0.85</span>
+        </div>
+        <div class="ri-snippet">pub fn <em>login</em>(&self, username: &str, password: &str) -> Result&lt;Session, AuthError&gt; {<br>    // 验证用户凭据<br>    let user = self.find_by_username(username)?;</div>
+      </div>
+      <div class="result-item" onclick="goToFile()">
+        <div class="ri-header">
+          <span class="ri-name">AuthService::validate_token</span>
+          <span class="tag tag-green">method</span>
+          <span class="ri-location">src/auth/service.rs · 第 156 行</span>
+          <span class="ri-score">score: 0.78</span>
+        </div>
+        <div class="ri-snippet">pub fn <em>validate_token</em>(&self, token: &str) -> Result&lt;Claims, AuthError&gt; {<br>    // 验证 JWT token</div>
+      </div>
+      <div class="result-item" onclick="goToFile()">
+        <div class="ri-header">
+          <span class="ri-name">IAuthService</span>
+          <span class="tag tag-purple">interface</span>
+          <span class="ri-location">src/auth/mod.rs · 第 10 行</span>
+          <span class="ri-score">score: 0.71</span>
+        </div>
+        <div class="ri-snippet">trait <em>IAuthService</em> {<br>    fn login(&self, username: &str, password: &str) -> Result&lt;Session&gt;;<br>    fn logout(&self, session_id: &str) -> Result&lt;()&gt;;<br>}</div>
+      </div>
+      <div style="text-align:center;margin:16px 0"><button class="btn">加载更多结果 →</button></div>
+    </div>
+
+    <!-- ===================== FILES ===================== -->
+    <div class="page fade-in" id="page-files">
+      <div class="page-header">
+        <h1>文件浏览</h1>
+        <p>浏览已索引仓库的源文件与符号</p>
+        <div class="page-actions">
+          <select class="filter-select"><option>codeloom</option><option>leveldb</option></select>
+          <select class="filter-select"><option>master</option><option>develop</option></select>
+        </div>
+      </div>
+      <div class="file-browser">
+        <div class="file-tree">
+          <div class="file-item" onclick="openDir()"><span class="fi-icon">📁</span><span class="fi-name">src</span></div>
+          <div class="file-item" style="padding-left:24px" onclick="openDir()"><span class="fi-icon">📁</span><span class="fi-name">cli</span></div>
+          <div class="file-item" style="padding-left:24px" onclick="openDir()"><span class="fi-icon">📁</span><span class="fi-name">indexer</span></div>
+          <div class="file-item" style="padding-left:24px" onclick="openDir()"><span class="fi-icon">📁</span><span class="fi-name">query</span></div>
+          <div class="file-item" style="padding-left:24px"><span class="fi-icon">📄</span><span class="fi-name">mod.rs</span></div>
+          <div class="file-item active" style="padding-left:24px"><span class="fi-icon">📄</span><span class="fi-name">call_graph.rs</span></div>
+          <div class="file-item" style="padding-left:24px"><span class="fi-icon">📄</span><span class="fi-name">inheritance.rs</span></div>
+          <div class="file-item" style="padding-left:24px"><span class="fi-icon">📁</span><span class="fi-name">mcp</span></div>
+          <div class="file-item" style="padding-left:24px"><span class="fi-icon">📄</span><span class="fi-name">main.rs</span></div>
+          <div class="file-item" style="padding-left:12px"><span class="fi-icon">📁</span><span class="fi-name">docs</span></div>
+          <div class="file-item" style="padding-left:12px"><span class="fi-icon">📄</span><span class="fi-name">Cargo.toml</span></div>
+        </div>
+        <div class="file-preview">
+          <div class="file-preview-header">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="fph-path">src/query/call_graph.rs</span>
+              <span class="tag tag-blue">129 行</span>
+              <span class="tag tag-green">12 符号</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <select class="filter-select" style="padding:2px 8px;font-size:11px">
+                <option>master</option><option>develop</option>
+              </select>
+              <button class="btn btn-sm">🔗 切换分支</button>
+            </div>
+          </div>
+          <div class="file-preview-code">
+            <div class="code-line"><span class="line-num">1</span>use std::collections::HashMap;</div>
+            <div class="code-line"><span class="line-num">2</span>use crate::storage::Database;</div>
+            <div class="code-line"><span class="line-num">3</span></div>
+            <div class="code-line"><span class="line-num">4</span>/// 获取调用图（调用者或被调用者）</div>
+            <div class="code-line"><span class="line-num">5</span>pub fn get_call_graph(</div>
+            <div class="code-line"><span class="line-num">6</span>    db: &Database,</div>
+            <div class="code-line"><span class="line-num">7</span>    name: &str,</div>
+            <div class="code-line"><span class="line-num">8</span>    direction: &str,</div>
+            <div class="code-line"><span class="line-num">9</span>    max_depth: u32,</div>
+            <div class="code-line"><span class="line-num">10</span>) -> Result&lt;Vec&lt;CallGraphNode&gt;, Error&gt; {</div>
+            <div class="code-line line-highlight"><span class="line-num">11</span>    let symbol = db.find_symbol(name)?;</div>
+            <div class="code-line"><span class="line-num">12</span>    let edges = db.get_edges(symbol.id, direction, max_depth)?;</div>
+            <div class="code-line"><span class="line-num">13</span>    Ok(build_tree(symbol, edges))</div>
+            <div class="code-line"><span class="line-num">14</span>}</div>
+            <div class="code-line"><span class="line-num">15</span></div>
+            <div class="code-line"><span class="line-num">16</span>fn build_tree(</div>
+            <div class="code-line"><span class="line-num">17</span>    root: Symbol,</div>
+            <div class="code-line"><span class="line-num">18</span>    edges: Vec&lt;Edge&gt;,</div>
+            <div class="code-line"><span class="line-num">19</span>) -> Vec&lt;CallGraphNode&gt; {</div>
+            <div class="code-line"><span class="line-num">20</span>    // ...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== GRAPH ===================== -->
+    <div class="page fade-in" id="page-graph">
+      <div class="page-header">
+        <h1>图分析</h1>
+        <p>代码知识图谱可视化分析</p>
+      </div>
+      <div class="tabs">
+        <div class="tab active" onclick="switchGraphTab(this,'callgraph')">📊 调用链分析</div>
+        <div class="tab" onclick="switchGraphTab(this,'inheritance')">🏛️ 继承树 / UML 类图</div>
+        <div class="tab" onclick="switchGraphTab(this,'path')">🔗 调用路径分析</div>
+      </div>
+      <!-- Call Graph -->
+      <div class="tab-content active" id="tab-callgraph">
+        <div class="viz-panel">
+          <div class="viz-toolbar">
+            <input type="text" class="filter-select" placeholder="函数名..." value="AuthService::login" style="padding:5px 10px;width:220px">
+            <select class="filter-select">
+              <option>callers（调用者）</option>
+              <option selected>callees（被调用者）</option>
+            </select>
+            <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:4px">深度: <input type="range" min="1" max="10" value="3" style="width:80px"> 3</label>
+            <select class="filter-select"><option>codeloom</option></select>
+            <select class="filter-select"><option>master</option></select>
+            <button class="btn btn-sm btn-primary" onclick="search()">分析</button>
+          </div>
+          <div class="viz-canvas">
+            <div class="viz-tree">
+              <div class="tree-node">
+                <div class="tree-node-box current">
+                  AuthService::login<div class="tn-kind">method · src/auth/service.rs:120</div>
+                </div>
+                <div class="tree-children">
+                  <div class="tree-child">
+                    <div class="tree-node-box">find_by_username<div class="tn-kind">method</div></div>
+                    <div class="tree-children">
+                      <div class="tree-child"><div class="tree-node-box" style="font-size:12px">db.query<br><span class="tn-kind">fn</span></div></div>
+                      <div class="tree-child"><div class="tree-node-box" style="font-size:12px">hash_password<br><span class="tn-kind">fn</span></div></div>
+                    </div>
+                  </div>
+                  <div class="tree-child">
+                    <div class="tree-node-box">verify_password<div class="tn-kind">method</div></div>
+                    <div class="tree-children">
+                      <div class="tree-child"><div class="tree-node-box" style="font-size:12px">bcrypt::verify<br><span class="tn-kind">fn</span></div></div>
+                    </div>
+                  </div>
+                  <div class="tree-child">
+                    <div class="tree-node-box">create_session<div class="tn-kind">method</div></div>
+                    <div class="tree-children">
+                      <div class="tree-child"><div class="tree-node-box" style="font-size:12px">Session::new<br><span class="tn-kind">fn</span></div></div>
+                      <div class="tree-child"><div class="tree-node-box" style="font-size:12px">cache.set<br><span class="tn-kind">fn</span></div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Inheritance -->
+      <div class="tab-content" id="tab-inheritance">
+        <div class="viz-panel">
+          <div class="viz-toolbar">
+            <input type="text" class="filter-select" placeholder="类名..." value="AuthService" style="padding:5px 10px;width:220px">
+            <select class="filter-select">
+              <option>down（子类）</option>
+              <option>up（父类）</option>
+              <option selected>both（双向）</option>
+            </select>
+            <label style="font-size:12px;color:var(--text-secondary)">深度: <input type="range" min="1" max="10" value="3" style="width:80px"> 3</label>
+            <button class="btn btn-sm btn-primary">分析</button>
+          </div>
+          <div class="viz-canvas">
+            <div class="uml-grid">
+              <!-- Base class -->
+              <div class="uml-class">
+                <div class="uml-class-name" style="background:var(--accent-purple)">BaseService</div>
+                <div class="uml-class-methods">
+                  <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">+ 方法</div>
+                  <ul>
+                    <li>+ init(config: Config)</li>
+                    <li>+ get_name() → String</li>
+                    <li style="color:var(--accent-orange)"># validate()</li>
+                  </ul>
+                </div>
+              </div>
+              <!-- Arrow -->
+              <div class="uml-arrow">
+                <div class="arrow-line"></div>
+                <div style="font-size:18px">▲</div>
+                <div style="font-size:10px">extends</div>
+              </div>
+              <!-- Current class -->
+              <div class="uml-class current">
+                <div class="uml-class-name">AuthService</div>
+                <div class="uml-class-methods">
+                  <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">+ 方法</div>
+                  <ul>
+                    <li>+ login()</li>
+                    <li>+ logout()</li>
+                    <li>+ validate_token()</li>
+                    <li style="color:var(--accent-green)">✓ register()</li>
+                    <li style="color:var(--accent-orange)">◆ override validate()</li>
+                  </ul>
+                </div>
+              </div>
+              <!-- Arrow -->
+              <div class="uml-arrow">
+                <div class="arrow-line"></div>
+                <div style="font-size:18px">▲</div>
+                <div style="font-size:10px">extends</div>
+              </div>
+              <!-- Derived class -->
+              <div class="uml-class">
+                <div class="uml-class-name" style="background:var(--accent-green)">OAuthService</div>
+                <div class="uml-class-methods">
+                  <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">+ 方法</div>
+                  <ul>
+                    <li>+ login_oauth()</li>
+                    <li>+ refresh_token()</li>
+                  </ul>
+                </div>
+              </div>
+              <!-- Another derived -->
+              <div class="uml-class">
+                <div class="uml-class-name" style="background:var(--accent-orange)">LdapAuthService</div>
+                <div class="uml-class-methods">
+                  <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">+ 方法</div>
+                  <ul>
+                    <li>+ ldap_login()</li>
+                    <li>+ sync_users()</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Path Analysis -->
+      <div class="tab-content" id="tab-path">
+        <div class="viz-panel">
+          <div class="viz-toolbar">
+            <input type="text" class="filter-select" placeholder="起点符号..." value="login_handler" style="padding:5px 10px;width:180px">
+            <span style="color:var(--text-muted)">→</span>
+            <input type="text" class="filter-select" placeholder="终点符号..." value="db.query" style="padding:5px 10px;width:180px">
+            <select class="filter-select">
+              <option>shortest（最短路径）</option>
+              <option>all（所有路径）</option>
+            </select>
+            <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:4px">
+              <input type="checkbox" checked> calls
+              <input type="checkbox" checked> call_override
+              <input type="checkbox"> inherits
+            </label>
+            <button class="btn btn-sm btn-primary">分析</button>
+          </div>
+          <div class="viz-canvas">
+            <div style="width:100%">
+              <!-- Path chain visualization -->
+              <div class="viz-link">
+                <div class="link-node fn">login_handler<div class="ln-kind">fn · main.rs:45</div></div>
+                <span class="link-arrow">→</span>
+                <div class="link-node fn">route_request<div class="ln-kind">fn · router.rs:32</div></div>
+                <span class="link-arrow">→</span>
+                <div class="link-node fn">AuthService::login<div class="ln-kind">method · service.rs:120</div></div>
+                <span class="link-arrow">→</span>
+                <div class="link-node fn">find_by_username<div class="ln-kind">fn · repo.rs:88</div></div>
+                <span class="link-arrow">→</span>
+                <div class="link-node fn" style="border-color:var(--accent-orange)">db.query<div class="ln-kind">fn · database.rs:210</div></div>
+              </div>
+              <div style="text-align:center;font-size:11px;color:var(--text-muted);margin-top:8px">
+                路径: login_handler → route_request → AuthService::login → find_by_username → db.query · 4 跳 · 0.3ms
+              </div>
+              <!-- Second path -->
+              <div style="margin-top:24px">
+                <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">路径 2 / 3</div>
+                <div class="viz-link">
+                  <div class="link-node fn">login_handler</div>
+                  <span class="link-arrow">→</span>
+                  <div class="link-node fn">AuthService::login</div>
+                  <span class="link-arrow">→</span>
+                  <div class="link-node fn">verify_password</div>
+                  <span class="link-arrow">→</span>
+                  <div class="link-node fn" style="border-color:var(--accent-orange)">db.query</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== UPLOAD ===================== -->
+    <div class="page fade-in" id="page-upload">
+      <div class="page-header">
+        <h1>上传解析</h1>
+        <p>上传源码或文档文件，自动索引到 CodeLoom 数据库</p>
+      </div>
+      <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
+        <div class="uz-icon">📤</div>
+        <div class="uz-text">拖拽文件到此处，或点击上传</div>
+        <div class="uz-hint">支持 .c/.cpp/.h/.hpp/.rs/.py/.java/.md/.pdf/.docx/.xlsx</div>
+        <input type="file" id="fileInput" style="display:none" multiple>
+      </div>
+      <div class="upload-progress" id="uploadProgress" style="display:none">
+        <!-- Files being processed -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">解析进度</span></div>
+          <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>main.cpp</span>
+              <span style="color:var(--accent-blue)">解析中...</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" style="width:65%"></div></div>
+          </div>
+          <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>config.yaml</span>
+              <span style="color:var(--accent-green)">完成</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" style="width:100%;background:var(--accent-green)"></div></div>
+          </div>
+          <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+              <span>requirements.txt</span>
+              <span style="color:var(--accent-orange)">排队中</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">解析结果</span></div>
+          <div style="font-size:13px;color:var(--text-secondary)">
+            <div>✅ main.cpp — 42 符号 · 3 边 · 0.8s</div>
+            <div>✅ config.yaml — 15 配置项 · 0.2s</div>
+            <div style="margin-top:8px"><a href="#" onclick="alert('跳转到搜索结果')">查看所有新符号 →</a></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ============ Page Routing ============
+const pages = {
+  'dashboard': { title: '仪表盘' }, 'repos': { title: '仓库管理' },
+  'groups': { title: '代码组' }, 'search': { title: '搜索' },
+  'files': { title: '文件浏览' }, 'graph': { title: '图分析' },
+  'upload': { title: '上传解析' }
+};
+
+document.querySelectorAll('.nav-item').forEach(el => {
+  el.addEventListener('click', function() {
+    const page = this.dataset.page;
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    this.classList.add('active');
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + page).classList.add('active');
+    document.getElementById('pageTitle').textContent = pages[page].title;
+    window.location.hash = '#' + page;
+    updateDemoSidebar(page);
+  });
+});
+
+// Handle hash on load
+function routeFromHash() {
+  const hash = window.location.hash.replace('#', '');
+  if (hash && pages[hash]) {
+    document.querySelector(`.nav-item[data-page="${hash}"]`)?.click();
+  }
+}
+window.addEventListener('load', routeFromHash);
+window.addEventListener('hashchange', routeFromHash);
+
+// ============ Search Mode Switch ============
+function switchMode(el, mode) {
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+}
+
+// ============ Graph Tabs ============
+function switchGraphTab(el, tabId) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + tabId).classList.add('active');
+}
+
+// ============ Mock Actions ============
+function search() { alert('执行搜索...'); }
+function handleIndex() { alert('启动索引任务...\n\n这是演示原型，实际执行需要后端对接。'); }
+function goToFile() { alert('跳转到文件浏览页面，定位到对应行'); }
+function openDir() { /* tree expand - demo only */ }
+function updateDemoSidebar(page) { /* placeholder */ }
+
+// Ctrl+K search focus
+document.addEventListener('keydown', function(e) {
+  if ((e.metaKey || e.ctlKey) && e.key === 'k') {
+    e.preventDefault();
+    document.getElementById('globalSearch')?.focus();
+  }
+});
+
+// ============ Upload Demo ============
+document.getElementById('fileInput')?.addEventListener('change', function() {
+  document.getElementById('uploadProgress').style.display = 'block';
+});
+
+// Drag drop demo
+document.querySelector('.upload-zone')?.addEventListener('dragover', function(e) {
+  e.preventDefault();
+  this.style.borderColor = 'var(--accent-blue)';
+});
+document.querySelector('.upload-zone')?.addEventListener('dragleave', function() {
+  this.style.borderColor = '';
+});
+document.querySelector('.upload-zone')?.addEventListener('drop', function(e) {
+  e.preventDefault();
+  this.style.borderColor = '';
+  document.getElementById('uploadProgress').style.display = 'block';
+});
+</script>
+</body>
+</html>

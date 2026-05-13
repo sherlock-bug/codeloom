@@ -1,36 +1,36 @@
 # CodeLoom CLI 端到端手工测试用例
 
 > **版本**: codeloom 1.0.0
-> **二进制**: `/mnt/d/RagMcpHermes/codeloom/target/release/codeloom`
-> **测试仓库**: leveldb (C++，~130文件，已索引)、spdlog、flatbuffers
-> **向量存储**: FLOAT32 → **INT8**（4× 压缩）。新索引自动用 INT8 表；旧 FLOAT 表不受影响，但索引新仓库时噪声标定会报 type mismatch 警告（无关紧要，不影响索引功能）
-> **测试前准备**: 每次执行前清理上一次残留的测试仓库，确保干净的 INT8 环境
-> **Writer**: Manual QA
-> **Updated**: 2026-05-13 (INT8 迁移：FLOAT32→INT8，更新预期值和清理步骤)
+> **二进制**: `/mnt/d/RagMcpHermes/codeloom/target/debug/codeloom`
+> **测试仓库**: leveldb（唯一基准，~133 C++ 文件，真实项目）
+> **leveldb 路径**: `/mnt/d/code/leveldb`
+> **分支**: `master`
+> **测试前准备**: 见下方「测试编排」脚本，自动完成 leveldb 全量清理+索引
 
 ---
 
-## 测试前准备
+## 测试编排
 
-> **⚠️ INT8 迁移注意**：旧 FLOAT 仓库（如 leveldb）与新 INT8 代码兼容性良好——BM25 搜索、overview、inspect 等不受影响。唯一副作用：索引新仓库时噪声标定会报 `expected float32 but int8` 警告（因为探针用 INT8 格式查旧 FLOAT 表），不影响任何功能，可安全忽略。
-> 如需完全消除该警告，可删旧库重建：`rm -f ~/.codeloom/leveldb.rag.db*` 后重新索引。
+所有 CLI 测试基于 leveldb。每次执行前必须运行此编排：
 
 ```bash
-# 0. 清理上轮测试残留
-for r in clang-test clang-test-e2e edge-test int8-test bad-repo spdlog flatbuffers; do
-  cl clean --repo "$r" 2>/dev/null; done
+# 别名
+alias cl=/mnt/d/RagMcpHermes/codeloom/target/debug/codeloom
 
-# 1. 设置别名，统一使用
-alias cl=/mnt/d/RagMcpHermes/codeloom/target/release/codeloom
+# 1. 清理 leveldb 旧数据，全新开始
+rm -f ~/.codeloom/leveldb.rag.db
+cl clean --repo leveldb 2>/dev/null
 
-# 验证二进制可用
-cl --version
-# 预期: codeloom 1.0.0
+# 2. 全量索引 leveldb（所有后续测试的基础）
+cl index /mnt/d/code/leveldb --repo leveldb --branch master
 
-# 确保 leveldb 已索引（测试基座）
+# 3. 验证索引成功
 cl status --repo leveldb
-# 预期: 符号数 > 0，DB size 合理
+# 预期: Symbols > 3000 (实测 3359), Edges > 6000 (实测 6487, 解析率 97%)
+#       Docs = 63, FTS5 > 3500, DB size ~14MB
 ```
+
+编排只用 leveldb，不涉及其他仓库。所有测试用例默认 --repo leveldb --branch master。
 
 ---
 
@@ -38,53 +38,43 @@ cl status --repo leveldb
 
 ---
 
-### CLI-1 全量索引新仓库（fixtures/clang_test）
+### CLI-1 全量索引验证
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | 全量索引 — 对 tests/fixtures/clang_test 新仓库做首次全量索引，验证 INT8 向量表创建 |
-| **前置条件** | clang_test 未在 codeloom 中索引过（可用 `cl clean --repo clang-test` 确保干净） |
-| **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test --branch main` |
-| **预期结果** | 索引完成，输出包含符号数 > 0，无 error 日志；返回时间 < 30s。噪声标定可能报 `expected float32 but int8` 警告（这是旧 FLOAT 仓库残留，无害） |
-| **验证方法** | ① `cl status --repo clang-test` 输出 Symbols > 0, Edges > 0, DB size > 0<br>② 确认向量表类型为 INT8：`python3 -c "import sqlite3; c=sqlite3.connect('~/.codeloom/clang-test.rag.db'); print(c.execute(\"SELECT sql FROM sqlite_master WHERE name LIKE 'symbol_name_vec_clang%'\").fetchone()[0][:80])"` 应输出 `INT8`
+| **名称** | 全量索引 — 对 leveldb 做首次全量索引，验证完整的索引管线（Clang C++ 解析、符号提取、边提取、FTS5、向量化、噪声标定） |
+| **前置条件** | 无（编排脚本已清理旧库） |
+| **步骤** | ① 执行「测试编排」中的索引命令<br>② 索引完成后验证 |
+| **预期结果** | 索引完成，输出包含符号数 > 3000、边数 > 6000，无 error 日志 |
+| **验证方法** | ① `cl status --repo leveldb` 输出 Symbols > 3000, Edges > 6000, DB size ~14MB<br>② 确认 FTS5 entries > 3500<br>③ 确认向量化完成（symbols indexed > 3000） |
 
-### CLI-2 增量索引（已索引仓库重复索引）
-
-| 字段 | 内容 |
-|------|------|
-| **名称** | 增量索引 — 对已索引仓库重新执行 index，验证 delta 更新而非全量 |
-| **前置条件** | clang-test 已索引（CLI-1 后） |
-| **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test --branch main` |
-| **预期结果** | 索引快速完成（增量扫描，时间 < 全量 1/3），不报重复键错误 |
-| **验证方法** | 第二次执行应更快返回；status 符号数不变或合理增加 |
-
-### CLI-3 Parent 继承索引
+### CLI-2 增量索引（重复索引验证去重）
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | Parent继承索引 — 使用 `--parent` 指定上游分支继承符号 |
-| **前置条件** | clang-test 已索引到 main 分支 |
-| **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/branch_filter --repo clang-test --branch feature-x --parent main` |
-| **预期结果** | 索引成功，feature-x 分支继承 main 的符号 |
-| **验证方法** | `cl status --repo clang-test` 显示符号数 > 0（feature-x 继承自 main） |
+| **名称** | 增量索引 — 对已索引的 leveldb 重新执行 index，验证 upsert 逻辑正确（不重复插入符号） |
+| **前置条件** | leveldb 已索引（CLI-1 后） |
+| **步骤** | ① `cl index /mnt/d/code/leveldb --repo leveldb --branch master` |
+| **预期结果** | 索引快速完成，符号数不变或仅合理增加（如文档分块稍有不同），不报重复键错误 |
+| **验证方法** | 第二次索引后 `cl status --repo leveldb` 的 Symbols 数相比 CLI-1 变化 < 5% |
 
-### CLI-4 非 Git 目录索引
+### CLI-3 非 Git 无编译命令索引
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | 非 Git 目录索引 — 对纯文件目录（不含 .git）执行 index |
-| **前置条件** | 夹具目录可用 |
-| **步骤** | ① `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/edge_types --repo edge-test --branch main` |
-| **预期结果** | 索引成功，输出符号数 >= 5（enum Status + 成员 + class AuthService + 字段 + 全局变量），会自动创建 INT8 向量表 |
-| **验证方法** | `cl status --repo edge-test` 显示 Symbols > 0，`cl semantic "认证" --repo edge-test --branch main --limit 3` 返回 AuthService 排名第一 |
+| **名称** | 边界索引 — 对无 `compile_commands.json` 的纯 `.h` 目录索引，验证优雅降级 |
+| **前置条件** | leveldb include/ 目录存在 |
+| **步骤** | ① `cl index /mnt/d/code/leveldb/include --repo leveldb-headers --branch master`<br>② `cl status --repo leveldb-headers` |
+| **预期结果** | 索引正常完成（头文件无 .cpp TU，Clang 回退到单文件模式），符号数可能为 0 或少量 |
+| **验证方法** | ① 退出码 0，输出包含 "Done" 且无 panic<br>② 完成后 `cl clean --repo leveldb-headers` 清理 |
 
-### CLI-5 索引缺参数/错误路径
+### CLI-4 索引缺参数/错误路径
 
 | 字段 | 内容 |
 |------|------|
 | **名称** | 索引边界 — 缺 path、不存在的路径 |
-| **步骤** | ① `cl index`（无参数，无默认仓库）<br>② `cl index /nonexistent/path --repo bad-repo --branch main` |
-| **预期结果** | ① 报错提示需要 path 或当前目录无可索引内容<br>② 优雅处理：输出 "Done: 0 files, 0 symbols"，exit 0 |
+| **步骤** | ① `cl index`（无参数）<br>② `cl index /nonexistent/path --repo bad-repo --branch master` |
+| **预期结果** | ① 报错提示需要 path<br>② 优雅处理：输出 "Done: 0 files, 0 symbols"，exit 0 |
 | **验证方法** | ① 命令返回非零退出码，stderr 包含明确错误信息<br>② 命令退出码 0，输出提示无文件可索引 |
 
 ---
@@ -100,7 +90,7 @@ cl status --repo leveldb
 | **名称** | status — 查看 leveldb 索引状态 |
 | **前置条件** | leveldb 已索引 |
 | **步骤** | `cl status --repo leveldb` |
-| **预期结果** | 输出包含：Symbols: 3364, Edges: 3177, Docs: 63, Vectors, FTS5, DB size: 36.0 MB（注：BUG-08 修复后 edge 格式从 `contains:Name` 改为 `contains`，边缘数从 5177 降至 3177，解析率提升至 97%） |
+| **预期结果** | 输出包含：Symbols: 3359, Edges: 6487, Docs: 63, Vectors, FTS5, DB size: 13.7 MB（解析率 97%） |
 | **验证方法** | 所有核心指标（Symbols/Edges/Docs/FTS5/DB size）均显示且值 > 0 |
 
 ### CLI-7 BM25 关键词搜索
@@ -109,7 +99,7 @@ cl status --repo leveldb
 |------|------|
 | **名称** | search — BM25 精确关键词搜索 |
 | **前置条件** | leveldb 已索引 |
-| **步骤** | `cl search "compaction" --repo leveldb --branch main1 --limit 5` |
+| **步骤** | `cl search "compaction" --repo leveldb --branch master --limit 5` |
 | **预期结果** | 返回 5 条结果，包含 Compaction 类、CompactionState 等与 compaction 相关的符号 |
 | **验证方法** | 结果列表每项包含 `[类型] 符号名 @ 文件路径`，数量 <= limit |
 
@@ -119,7 +109,7 @@ cl status --repo leveldb
 |------|------|
 | **名称** | search — 使用 `--kind` 按符号类型过滤 |
 | **前置条件** | leveldb 已索引 |
-| **步骤** | `cl search "DB" --repo leveldb --branch main1 --kind method --limit 3` |
+| **步骤** | `cl search "DB" --repo leveldb --branch master --kind method --limit 3` |
 | **预期结果** | 仅返回 method 类型的 DB::Open、DB::Get 等方法符号，不含 class 类型 |
 | **验证方法** | 所有结果行首均为 `[method]` |
 
@@ -129,7 +119,7 @@ cl status --repo leveldb
 |------|------|
 | **名称** | semantic — 自然语言语义搜索（INT8 量化，4× 压缩） |
 | **前置条件** | leveldb 已索引，向量模型已加载 |
-| **步骤** | `cl semantic "键值对写入操作" --repo leveldb --branch main1 --limit 5` |
+| **步骤** | `cl semantic "键值对写入操作" --repo leveldb --branch master --limit 5` |
 | **预期结果** | 返回与写入操作相关的符号，如 DB::Put、WriteBatch::Put、DBImpl::Write 等。相似度分数因 INT8 量化可能有 ±0.02 的精度损失，但对排序无影响 |
 | **验证方法** | 结果按语义相关性排序，top-3 应包含 Put/Write 相关符号 |
 
@@ -139,8 +129,8 @@ cl status --repo leveldb
 |------|------|
 | **名称** | overview — 查看仓库符号分布全景 |
 | **前置条件** | leveldb 已索引 |
-| **步骤** | `cl overview --repo leveldb --branch main1` |
-| **预期结果** | 输出带框线标题，列出所有符号类型的数量及百分比，如 method: 1324 (39.4%)、function: 730 (21.7%) 等 |
+| **步骤** | `cl overview --repo leveldb --branch master` |
+| **预期结果** | 输出带框线标题，列出所有符号类型的数量及百分比，如 method: 1324 (39.4%)、function: 848 (25.2%) 等 |
 | **验证方法** | 12 种符号类型全部列出，百分比之和约为 100% |
 
 ### CLI-11 List-Symbols 模糊搜索
@@ -149,7 +139,7 @@ cl status --repo leveldb
 |------|------|
 | **名称** | list-symbols — LIKE 模式匹配搜索符号名 |
 | **前置条件** | leveldb 已索引 |
-| **步骤** | `cl list-symbols "DB::" --repo leveldb --branch main1 --limit 8` |
+| **步骤** | `cl list-symbols "DB::" --repo leveldb --branch master --limit 8` |
 | **预期结果** | 返回 DB::Open、DB::Get、DB::Put、DB::Delete 等以 DB:: 开头的方法 |
 | **验证方法** | 所有结果符号名均以 "DB::" 开头，数量 <= 8 |
 
@@ -159,7 +149,7 @@ cl status --repo leveldb
 |------|------|
 | **名称** | list-symbols — 模式无匹配时的行为 |
 | **前置条件** | leveldb 已索引 |
-| **步骤** | `cl list-symbols "ZZZNotExistZZZ" --repo leveldb --branch main1 --limit 5` |
+| **步骤** | `cl list-symbols "ZZZNotExistZZZ" --repo leveldb --branch master --limit 5` |
 | **预期结果** | 输出空结果提示（如 "No symbols found" 或空列表），不报错 |
 | **验证方法** | 退出码 0，无 panic 或 crash |
 
@@ -169,7 +159,7 @@ cl status --repo leveldb
 |------|------|
 | **名称** | inspect — 查看符号节点的完整定义和关联边 |
 | **前置条件** | leveldb 已索引 |
-| **步骤** | `cl inspect "Compaction" --repo leveldb --branch main1` |
+| **步骤** | `cl inspect "Compaction" --repo leveldb --branch master` |
 | **预期结果** | 框线格式输出：Kind、Language、Namespace、File 路径、Documentation、Edges 列表 |
 | **验证方法** | 输出以 ╔══/║/╚══ 框线装饰，包含至少 Kind 和 File 字段 |
 
@@ -179,7 +169,7 @@ cl status --repo leveldb
 |------|------|
 | **名称** | call-graph — 查看函数调用了谁（callees 方向） |
 | **前置条件** | leveldb 已索引 |
-| **步骤** | `cl call-graph "DB::Get" --repo leveldb --branch main1 --direction callees --max-depth 3` |
+| **步骤** | `cl call-graph "DB::Get" --repo leveldb --branch master --direction callees --max-depth 3` |
 | **预期结果** | 树状结构输出 DB::Get 内部调用的函数链 |
 | **验证方法** | 输出包含 "Call graph for 'DB::Get'" 标题，展示递归调用链 |
 
@@ -189,7 +179,7 @@ cl status --repo leveldb
 |------|------|
 | **名称** | call-graph — 查看谁调用了该函数（callers 方向） |
 | **前置条件** | leveldb 已索引 |
-| **步骤** | `cl call-graph "DB::Open" --repo leveldb --branch main1 --direction callers --max-depth 2` |
+| **步骤** | `cl call-graph "DB::Open" --repo leveldb --branch master --direction callers --max-depth 2` |
 | **预期结果** | 树状结构展示调用 DB::Open 的上级函数 |
 | **验证方法** | direction 切换后输出与 callees 方向不同 |
 
@@ -199,7 +189,7 @@ cl status --repo leveldb
 |------|------|
 | **名称** | search/semantic — 无匹配关键词/不存在的仓库 |
 | **前置条件** | 任意已索引仓库 |
-| **步骤** | ① `cl search "ZZZZNoMatchZZZZ" --repo leveldb --branch main1`<br>② `cl search "compaction" --repo nonexistent-repo --branch main` |
+| **步骤** | ① `cl search "ZZZZNoMatchZZZZ" --repo leveldb --branch master`<br>② `cl search "compaction" --repo nonexistent-repo --branch main` |
 | **预期结果** | ① 返回空结果("(no results)")，exit 0<br>② 优雅提示："Repo 'nonexistent-repo' not found."，exit 0 |
 | **验证方法** | ① 退出码 0，输出 "(no results)" 或 "(none)"<br>② 退出码 0，输出仓库不存在提示 |
 
@@ -214,7 +204,7 @@ cl status --repo leveldb
 | 字段 | 内容 |
 |------|------|
 | **名称** | list-repos — 列出所有已索引仓库 |
-| **前置条件** | leveldb 已索引；若 spdlog 也已索引则更好 |
+| **前置条件** | leveldb 已索引 |
 | **步骤** | `cl list-repos` |
 | **预期结果** | 输出 "Indexed repos:" 标题，每个仓库一行（含大小），如 `leveldb  35.6 MB` |
 | **验证方法** | 包含至少一个仓库名（如 leveldb），总大小合理 |
@@ -224,10 +214,10 @@ cl status --repo leveldb
 | 字段 | 内容 |
 |------|------|
 | **名称** | list-branches — 列出指定仓库的所有已索引分支 |
-| **前置条件** | leveldb 已索引（至少 2 个分支：__builtin__ 和 main1） |
+| **前置条件** | leveldb 已索引（至少 2 个分支：`__builtin__` 和 `master`） |
 | **步骤** | `cl list-branches --repo leveldb` |
-| **预期结果** | 列出所有分支名及符号数，如 `__builtin__  141 symbols`、`main1  3359 symbols` |
-| **验证方法** | 至少包含 main1 分支，符号数与 status 一致 |
+| **预期结果** | 列出所有分支名及符号数，如 `__builtin__  141 symbols`、`master  N symbols` |
+| **验证方法** | 至少包含 master 分支，符号数与 status 一致 |
 
 
 ### CLI-21 Clean — 删除仓库
@@ -235,19 +225,19 @@ cl status --repo leveldb
 | 字段 | 内容 |
 |------|------|
 | **名称** | clean — 删除指定仓库的全部数据 |
-| **前置条件** | edge-test 已索引（CLI-4） |
-| **步骤** | ① `cl clean --repo edge-test`<br>② `cl status --repo edge-test` |
+| **前置条件** | leveldb-headers 已索引（CLI-3） |
+| **步骤** | ① `cl clean --repo leveldb-headers`<br>② `cl status --repo leveldb-headers` |
 | **预期结果** | ① 清理成功提示<br>② status 报错：仓库不存在（因其数据已删除） |
-| **验证方法** | 清理后 `cl list-repos` 中不再有 edge-test |
+| **验证方法** | 清理后 `cl list-repos` 中不再有 leveldb-headers |
 
 ### CLI-22 Clean — 删除分支
 
 | 字段 | 内容 |
 |------|------|
 | **名称** | clean — 删除指定仓库的特定分支 |
-| **前置条件** | leveldb 有 main1 分支（`__builtin__` 为 auto-generated，不可手动删除） |
+| **前置条件** | leveldb 有 master 分支（`__builtin__` 为 auto-generated，不可手动删除） |
 | **步骤** | ① 创建一个测试分支：`cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/branch_filter --repo leveldb --branch test-clean-branch`<br>② `cl clean --repo leveldb --branch test-clean-branch`<br>③ `cl list-branches --repo leveldb` |
-| **预期结果** | ① 索引成功<br>② 清理成功提示<br>③ main1 分支仍在，test-clean-branch 分支消失 |
+| **预期结果** | ① 索引成功<br>② 清理成功提示<br>③ master 分支仍在，test-clean-branch 分支消失 |
 | **验证方法** | list-branches 输出不再包含 test-clean-branch |
 
 ### CLI-23 Clean — 清空全部（确认提示）
@@ -262,7 +252,7 @@ cl status --repo leveldb
 
 ⚠️ **注意**：此测试会破坏所有索引数据。执行后务必重新索引：
 ```bash
-cl index /mnt/d/code/leveldb --repo leveldb --branch main1
+cl index /mnt/d/code/leveldb --repo leveldb --branch master
 ```
 
 ### CLI-24 Check 环境检查
@@ -325,44 +315,46 @@ cl index /mnt/d/code/leveldb --repo leveldb --branch main1
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | 端到端 — 用 tests/fixtures/clang_test 新仓库执行完整流程 |
-| **前置条件** | clang_test 未索引（如已存在先 `cl clean --repo clang-test-e2e`） |
+| **名称** | 端到端 — 用 leveldb 完整走一遍核心管线 |
+| **前置条件** | 执行「测试编排」，leveldb 已索引 |
 
 **步骤与预期结果：**
 
 | # | 命令 | 预期结果 |
 |---|------|---------|
-| ① | `cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test-e2e --branch main` | 索引成功，符号数 > 0；确认向量表为 INT8（参考 CLI-1 验证方法） |
-| ② | `cl status --repo clang-test-e2e` | 显示 Symbols、Edges、FTS5、DB size 均 > 0 |
-| ③ | `cl list-symbols "sample" --repo clang-test-e2e --branch main --limit 5` | 返回符号名包含 "sample" 的结果 |
-| ④ | `cl overview --repo clang-test-e2e --branch main` | 输出符号按类型分布百分比 |
-| ⑤ | `cl list-repos` | 包含 clang-test-e2e |
-| ⑥ | 清理：`cl clean --repo clang-test-e2e` | 清理成功 |
+| ① | `cl status --repo leveldb` | Symbols > 6000, Edges > 6000, Docs = 63 |
+| ② | `cl search "compaction" --repo leveldb --branch master --limit 5` | 返回 Compaction 类、CompactionState 等 |
+| ③ | `cl list-symbols "DB::" --repo leveldb --branch master --limit 8` | 返回 DB::Open、DB::Get、DB::Put 等 |
+| ④ | `cl overview --repo leveldb --branch master` | 12 种符号类型分布，百分比之和 ≈ 100% |
+| ⑤ | `cl inspect "Version" --repo leveldb --branch master` | 框线格式输出，含 Kind、File、Edges |
+| ⑥ | `cl call-graph "DB::Get" --repo leveldb --branch master --direction callees` | 树状展示 DB::Get 内部调用链 |
 
-**验证方法**：
+**验证方法：**
 - 步骤①-⑥全部成功，无 panic 或 crash
-- 清理后 `cl list-repos` 不再包含 clang-test-e2e
+- 步骤②的搜索结果应包含 `[class] Compaction` 或 `[method] CompactionState::NewBoundary`
+- 步骤③的所有结果均以 `DB::` 开头
+- 步骤⑥输出包含 "Call graph for 'DB::Get'" 标题
 
 ---
 
-### CLI-30 跨仓库对比搜索
+### CLI-30 leveldb 多分支搜索对比
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | 端到端 — 同关键词在不同仓库搜索对比 |
-| **前置条件** | leveldb 和 clang-test（CLI-1 后）均已索引 |
+| **名称** | 多分支 — leveldb master 分支不同维度搜索对比 |
+| **前置条件** | leveldb 已索引 |
 
 **步骤与预期结果：**
 
 | # | 命令 | 预期结果 |
 |---|------|---------|
-| ① | `cl list-repos` | 同时包含 leveldb 和 clang-test |
-| ② | `cl search "write" --repo leveldb --branch main1 --limit 5` | 返回 Write、WriteBatch、DB::Put 等 |
-| ③ | `cl search "sample" --repo clang-test --branch main --limit 5` | 返回 clang_test 的 sample 相关符号 |
+| ① | `cl search "write" --repo leveldb --branch master --limit 5 --kind method` | 返回 Write、WriteBatch::Put 等 method |
+| ② | `cl search "write" --repo leveldb --branch master --limit 5 --kind class` | 返回 WriteBatch 等 class 类型，与①不同 |
+| ③ | `cl semantic "键值对存储" --repo leveldb --branch master --limit 5` | 返回 DB::Put、WriteBatch、DBImpl::Write 等 |
 
-**验证方法**：
-- ②和③结果不同，体现仓库特异性
-- spdlog 的 search 结果应包含 logger/sink 相关符号
+**验证方法：**
+- ①和②结果不同，体现 kind 过滤效果
+- ③的语义搜索结果与关键词搜索结果有差异，体现向量搜索的优势
 
 ---
 
@@ -370,31 +362,26 @@ cl index /mnt/d/code/leveldb --repo leveldb --branch main1
 
 | 字段 | 内容 |
 |------|------|
-| **名称** | include — 验证 `#include` 边正确关联到 file node ID |
-| **前置条件** | 已完成 CLI-29（clang-test-e2e 已索引含 include 边的新版本） |
+| **名称** | include — 验证 leveldb 索引中 `#include` 边的正确性 |
+| **前置条件** | leveldb 已索引 |
 
 **步骤与预期结果：**
 
 | # | 命令 | 预期结果 |
 |---|------|---------|
-| ① | 手动清旧库：`rm -f ~/.codeloom/*.rag.db`<br>先过一遍包含 include 边的索引（⚠️ 得用支持 BUG-04 修复的二进制）：`cl index /mnt/d/RagMcpHermes/codeloom/tests/fixtures/clang_test --repo clang-test-e2e --branch main` | 索引成功，输出 `Includes: N edges` 且 N > 0 |
-| ② | `cl search "#include" --repo clang-test-e2e --branch main --limit 5` | 正常返回，不 panic |
-| ③ | 直接查 edges 表：<br>`sqlite3 ~/.codeloom/clang-test-e2e.rag.db "SELECT COUNT(*) FROM edges WHERE edge_type LIKE 'includes:%' AND source_id > 0"` | 返回的边数 > 0，且 > 0 的 source_id 占大多数 |
+| ① | `cl status --repo leveldb` | 输出中包含 `Includes: N edges` 且 N > 0 |
 
-**验证方法**：
-- edges 表中 `source_id > 0` 的 include 边数量 > 0
-- 没有任何 include 边的 `source_id = 0`
+**验证方法：**
+- status 输出显示 `Includes: 778 edges`（leveldb 的 #include 关系数量）
+- 确保所有 #include 边正常入库，无 panic
 
 ---
 
 ## 附录：清理脚本
 
 ```bash
-# 清理本次测试创建的所有临时索引
-cl clean --repo clang-test
-cl clean --repo clang-test-e2e
-cl clean --repo edge-test
-cl clean --repo spdlog
+# 清理本次测试创建的临时索引
+cl clean --repo leveldb-headers
 ```
 
 ## 测试记录表 (INT8 迁移验证 — 2026-05-13)

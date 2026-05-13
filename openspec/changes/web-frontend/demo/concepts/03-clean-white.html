@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>CodeLoom UI · Clean White</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#f8f9fc;--bg2:#ffffff;--bg3:#f0f2f5;--border:#e4e7ed;--text:#1a1a2e;--text2:#6b7280;--text3:#9ca3af;--blue:#4f6ef7;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--purple:#8b5cf6;--font:system-ui,-apple-system,sans-serif}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh}
+.app{display:flex;min-height:100vh}
+.sidebar{width:230px;background:var(--bg2);border-right:1px solid var(--border);padding:20px 0;display:flex;flex-direction:column}
+.logo{display:flex;align-items:center;gap:10px;padding:0 20px 24px;font-weight:700;font-size:16px;color:var(--text)}
+.logo-m{width:30px;height:30px;background:linear-gradient(135deg,var(--blue),var(--purple));border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:15px}
+.nav{flex:1;padding:0 10px}
+.nav-tt{font-size:11px;color:var(--text3);padding:8px 10px 6px;font-weight:600;letter-spacing:.8px;text-transform:uppercase}
+.nav-i{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:var(--text2);cursor:pointer;margin-bottom:2px;transition:.15s}
+.nav-i:hover{background:var(--bg3);color:var(--text)}
+.nav-i.a{background:var(--blue);color:#fff;box-shadow:0 4px 12px rgba(79,110,247,.25)}
+.nav-i .ic{font-size:16px;width:20px;text-align:center}
+.main{flex:1;display:flex;flex-direction:column}
+.top{display:flex;align-items:center;gap:16px;padding:0 28px;height:56px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.sb{flex:1;max-width:440px;display:flex;align-items:center;background:var(--bg3);border-radius:8px;padding:0 14px;height:36px;transition:.2s}
+.sb:focus-within{background:var(--bg2);box-shadow:0 0 0 2px var(--blue),inset 0 0 0 1px var(--blue)}
+.sb input{flex:1;border:none;background:none;color:var(--text);font-size:13px;outline:none}
+.sb input::placeholder{color:var(--text3)}
+.sb kbd{font-size:10px;padding:2px 6px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text3)}
+.cnt{padding:28px;flex:1;overflow-y:auto;max-width:1100px}
+h1{font-size:22px;font-weight:700;color:var(--text);margin-bottom:4px}
+h2{font-size:15px;font-weight:600;color:var(--text);margin-bottom:14px}
+.pg{color:var(--text2);margin-bottom:20px;font-size:14px;line-height:1.5}
+.st{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:28px}
+.cd{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,.04);transition:.2s}
+.cd:hover{box-shadow:0 4px 12px rgba(0,0,0,.06);transform:translateY(-2px)}
+.cd-v{font-size:26px;font-weight:700;color:var(--blue)}
+.cd-l{font-size:12px;color:var(--text2);margin-top:4px}
+.cd .cd-sub{font-size:11px;color:var(--text3);margin-top:2px}
+.tb{overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--bg2);box-shadow:0 1px 3px rgba(0,0,0,.04)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 14px;text-align:left;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border);background:var(--bg3);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+td{padding:10px 14px;border-bottom:1px solid var(--bg3);color:var(--text)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(79,110,247,.02)}
+.tg{display:inline-flex;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:500;gap:4px}
+.tg-g{background:#ecfdf5;color:#059669}
+.tg-o{background:#fffbeb;color:#d97706}
+.tg-r{background:#fef2f2;color:#dc2626}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:500;border:1px solid var(--border);background:var(--bg2);color:var(--text);cursor:pointer;transition:.15s;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.btn:hover{background:var(--bg3);border-color:var(--text3)}
+.btn-p{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 2px 8px rgba(79,110,247,.25)}
+.btn-p:hover{background:#3d5bd9}
+.btn-sm{padding:5px 12px;font-size:11px}
+.section-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+.section-card h2{margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid var(--bg3)}
+.sr{display:flex;gap:4px;background:var(--bg3);padding:3px;border-radius:8px;margin-bottom:16px;width:fit-content}
+.sr-b{padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;color:var(--text2);border:none;background:none;font-weight:500;transition:.15s}
+.sr-b.a{background:var(--bg2);color:var(--blue);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.ri{padding:14px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;cursor:pointer;transition:.15s;background:var(--bg2)}
+.ri:hover{border-color:var(--blue);box-shadow:0 2px 8px rgba(79,110,247,.08)}
+.ri-h{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.ri-n{font-weight:600;font-size:14px;color:var(--text)}
+.ri-l{font-size:12px;color:var(--text2)}
+.ri-s{font-size:11px;color:var(--text3);margin-left:auto}
+.ri-c{font-size:12px;color:var(--text2);background:var(--bg);padding:8px 12px;border-radius:6px;margin-top:8px;font-family:'JetBrains Mono',monospace;white-space:pre;overflow-x:auto;border:1px solid var(--bg3)}
+.ri-c em{color:var(--blue);font-style:normal;font-weight:600}
+.vs{display:flex;gap:0;border-bottom:2px solid var(--bg3);margin-bottom:16px}
+.vs-b{padding:10px 20px;font-size:13px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;margin-bottom:-2px;transition:.15s;font-weight:500}
+.vs-b:hover{color:var(--text)}
+.vs-b.a{color:var(--blue);border-bottom-color:var(--blue)}
+.vtc{display:none}
+.vtc.a{display:block}
+.viz-path{display:flex;align-items:center;justify-content:center;gap:0;flex-wrap:wrap;padding:16px 0}
+.viz-path .pn{padding:8px 16px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;font-size:13px;text-align:center;min-width:70px}
+.viz-path .pn .pnk{font-size:10px;color:var(--text3);font-weight:400}
+.viz-path .pn.s{border-color:var(--blue);background:rgba(79,110,247,.06);font-weight:600}
+.viz-path .pn.e{border-color:var(--orange);background:rgba(245,158,11,.06)}
+.viz-path .ar{color:var(--text3);font-size:18px;margin:0 6px}
+@media(max-width:900px){.st{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="sidebar">
+    <div class="logo"><div class="logo-m">C</div>CodeLoom</div>
+    <div class="nav">
+      <div class="nav-tt">导航</div>
+      <div class="nav-i a"><span class="ic">📊</span>仪表盘</div>
+      <div class="nav-i"><span class="ic">📦</span>仓库管理</div>
+      <div class="nav-i"><span class="ic">📂</span>代码组</div>
+      <div class="nav-i"><span class="ic">🔍</span>搜索</div>
+      <div class="nav-i"><span class="ic">📄</span>文件浏览</div>
+      <div class="nav-tt">分析</div>
+      <div class="nav-i"><span class="ic">🌐</span>图分析</div>
+      <div class="nav-i"><span class="ic">📤</span>上传解析</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;padding:12px 20px;border-top:1px solid var(--border);font-size:12px;color:var(--text2);margin-top:auto"><span style="width:7px;height:7px;border-radius:50%;background:var(--green)"></span>Running · v0.9</div>
+  </div>
+  <div class="main">
+    <div class="top">
+      <span style="font-weight:600;font-size:13px;color:var(--text2)">仪表盘</span>
+      <div class="sb"><input placeholder="Search symbols, files..."><kbd>⌘K</kbd></div>
+      <button class="btn btn-sm btn-p">⚡ Reindex</button>
+      <button class="btn btn-sm">⚙️</button>
+    </div>
+    <div class="cnt">
+      <h1>仪表盘</h1>
+      <p class="pg">CodeLoom 已索引 <strong style="color:var(--blue)">8</strong> 个仓库，共 <strong style="color:var(--blue)">293,187</strong> 个符号</p>
+      <div class="st">
+        <div class="cd"><div class="cd-v">8</div><div class="cd-l">已索引仓库</div><div class="cd-sub">+2 本周</div></div>
+        <div class="cd"><div class="cd-v" style="color:var(--green)">42</div><div class="cd-l">总分支数</div></div>
+        <div class="cd"><div class="cd-v">293K</div><div class="cd-l">总符号数</div><div class="cd-sub">↑ 12% 较昨日</div></div>
+        <div class="cd"><div class="cd-v" style="color:var(--purple)">386MB</div><div class="cd-l">数据库大小</div></div>
+      </div>
+      <div class="section-card">
+        <h2>📦 仓库列表</h2>
+        <div class="tb"><table><thead><tr><th>仓库名</th><th>分支</th><th>符号数</th><th>最后索引</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+          <tbody>
+            <tr><td style="font-weight:600">codeloom</td><td>3</td><td>15,234</td><td>2 分钟前</td><td><span class="tg tg-g">● Healthy</span></td><td style="text-align:right"><button class="btn btn-sm btn-p">Index</button><button class="btn btn-sm" style="margin-left:4px">Details</button></td></tr>
+            <tr><td style="font-weight:600">leveldb</td><td>2</td><td>29,319</td><td>15 分钟前</td><td><span class="tg tg-g">● Healthy</span></td><td style="text-align:right"><button class="btn btn-sm btn-p">Index</button></td></tr>
+            <tr><td style="font-weight:600">spdlog</td><td>2</td><td>8,412</td><td>进行中</td><td><span class="tg tg-o">◐ Indexing</span></td><td style="text-align:right"><button class="btn btn-sm" disabled>Index</button></td></tr>
+            <tr><td style="font-weight:600">hermes</td><td>1</td><td>0</td><td>1 小时前</td><td><span class="tg tg-r">● Failed</span></td><td style="text-align:right"><button class="btn btn-sm btn-p">Retry</button></td></tr>
+          </tbody></table>
+        </div>
+      </div>
+      <div class="section-card">
+        <h2>🔍 搜索示例</h2>
+        <div class="sr"><button class="sr-b a">🎯 精确搜索 (BM25)</button><button class="sr-b">🌀 模糊搜索 (Semantic)</button></div>
+        <div class="ri"><div class="ri-h"><span class="ri-n">AuthService</span><span class="tg" style="background:#eef2ff;color:var(--blue)">class</span><span class="ri-l">src/auth/mod.rs · 第 42 行</span><span class="ri-s">score: 0.92</span></div><div class="ri-c"><em>pub struct AuthService</em> {<br>    username: String,<br>    password: String,<br>}</div></div>
+        <div class="ri"><div class="ri-h"><span class="ri-n">AuthService::login</span><span class="tg" style="background:#ecfdf5;color:#059669">method</span><span class="ri-l">src/auth/service.rs · 第 120 行</span><span class="ri-s">score: 0.85</span></div><div class="ri-c">pub fn <em>login</em>(&self, username: &str, password: &str) -> Result&lt;Session&gt; {</div></div>
+      </div>
+      <div class="section-card">
+        <h2>🌐 调用路径分析</h2>
+        <div class="vs">
+          <div class="vs-b a" onclick="document.querySelectorAll('.vs-b').forEach(e=>e.classList.remove('a'));this.classList.add('a');document.querySelectorAll('.vtc').forEach(e=>e.classList.remove('a'));document.getElementById('pt1').classList.add('a')">调用链</div>
+          <div class="vs-b" onclick="document.querySelectorAll('.vs-b').forEach(e=>e.classList.remove('a'));this.classList.add('a');document.querySelectorAll('.vtc').forEach(e=>e.classList.remove('a'));document.getElementById('pt2').classList.add('a')">UML 类图</div>
+        </div>
+        <div class="vtc a" id="pt1">
+          <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+            <input placeholder="起点" value="login_handler" style="padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;width:140px">
+            <span style="color:var(--text3);display:flex;align-items:center">→</span>
+            <input placeholder="终点" value="db.query" style="padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;width:140px">
+            <button class="btn btn-sm btn-p">分析</button>
+          </div>
+          <div class="viz-path">
+            <div class="pn s">login_handler<div class="pnk">fn</div></div><span class="ar">→</span>
+            <div class="pn">route_request<div class="pnk">fn</div></div><span class="ar">→</span>
+            <div class="pn">AuthService::login<div class="pnk">method</div></div><span class="ar">→</span>
+            <div class="pn">find_by_username<div class="pnk">fn</div></div><span class="ar">→</span>
+            <div class="pn e">db.query<div class="pnk">fn</div></div>
+          </div>
+          <div style="font-size:12px;color:var(--text2);text-align:center">路径: login_handler → ... → db.query · 4 跳</div>
+        </div>
+        <div class="vtc" id="pt2">
+          <div style="font-size:13px;color:var(--text2);padding:12px 0;display:flex;gap:24px;justify-content:center">
+            <div><strong style="color:var(--text)">BaseService</strong> ← <strong style="color:var(--blue)">AuthService</strong> → <strong style="color:var(--green)">OAuthService</strong>, <strong style="color:var(--orange)">LdapAuthService</strong></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
