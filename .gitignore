@@ -24,3 +24,4 @@ Thumbs.db
 
 # Release artifacts
 /codeloom-v*.zip
+codeloom.db
