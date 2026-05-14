@@ -356,16 +356,43 @@ for _, values in cfg_fw.items():
 check("BaseConfig forward 含 LogLevel (field_type)",
       "LogLevel" in cfg_names, True)
 
+# M6: 自由函数 initialize_logging 的体调用边（验证函数体解析）
+fn_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "initialize_logging", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+fn_fw = fn_nb.get("forward", {})
+fn_calls = set(fn_fw.get("calls", []))
+check("initialize_logging 有 calls 边（函数体解析）",
+      "g_default_logger" in fn_calls, True)
+fn_uses = set(fn_fw.get("uses", []))
+check("initialize_logging 有 uses 边（全局变量引用）",
+      "g_default_logger" in fn_uses, True)
+
+# M7: 全局变量 g_default_logger 的反向邻居（谁引用了它）
+g_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "g_default_logger", "repo": REPO, "branch": BRANCH,
+    "direction": "reverse"})
+g_back = g_nb.get("backward", {})
+g_callers = set(g_back.get("calls", []))
+check("g_default_logger 反向有 calls 边",
+      "initialize_logging" in g_callers, True)
+check("g_default_logger 反向 calls 包含 cleanup_logging",
+      "cleanup_logging" in g_callers, True)
+
 # ================================================================
 # 工具 9: codeloom_call_graph — 调用图（文本格式）
 # 规格: call-graph-module/spec.md (文本格式) + enhanced-call-graph/spec.md (终端增强)
 # ================================================================
 print("\n═══ 9. codeloom_call_graph ═══")
 
-# 文本格式
-cg_text = run_cli(["call-graph", "HybridLogger::log", "--repo", REPO,
-                   "--direction", "callees", "--max-depth", "2"])
-check("call-graph HybridLogger::log callees 有输出", len(cg_text) > 0, True)
+# 文本格式 — 验证函数体调用关系已正确提取
+cg_text = run_cli(["call-graph", "initialize_logging", "--repo", REPO,
+                   "--branch", BRANCH, "--direction", "callees", "--max-depth", "2"])
+check("call-graph initialize_logging callees 有输出", len(cg_text) > 0, True)
+check("call-graph 含 LogLevel::LOG_INFO（枚举引用）",
+      "LogLevel::LOG_INFO" in cg_text, True)
+check("call-graph 含 g_default_logger（全局变量引用）",
+      "g_default_logger" in cg_text, True)
 
 # ================================================================
 # 工具 10: codeloom_impact_analysis — 影响分析
@@ -386,14 +413,16 @@ check("impact_analysis 含 affected 字段", has_key(impact, "affected"), True)
 # ================================================================
 print("\n═══ 11. codeloom_path_analysis ═══")
 
-# 无路径时返回空（path-analysis: '{"paths": [], "total_found": 0}'）
+# 现在 calls 边已从函数体正确提取，可做实际路径断言
 path = run_mcp("codeloom_path_analysis", {
-    "source": "Logger", "target": "MAX_BUFFER",
-    "repo": REPO, "branch": BRANCH, "mode": "shortest"
+    "source": "initialize_logging", "target": "g_default_logger",
+    "repo": REPO, "branch": BRANCH, "mode": "shortest", "max_paths": 3
 })
-check("path_analysis 含 paths 字段", "paths" in path or has_key(path, "_raw_text"), True,
-      lambda a, _: True)  # 仅检查不崩溃
-# 由于 calls 边可能未索引，路径分析结果不确定，只检查格式
+check("path initialize_logging→g_default_logger 有路径",
+      path.get("total_found", 0) > 0, True)
+edgs = path.get("paths", [{}])[0].get("edges", [])
+check("path edges 含 calls 边（函数体解析）",
+      any("calls:" in str(e) for e in edgs), True)
 
 # ================================================================
 # 工具 12: codeloom_semantic_search — 语义搜索
