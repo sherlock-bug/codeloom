@@ -199,9 +199,14 @@ impl ExtractCtx {
                                     // First name is the class
                                     if let Some(len_end) = inner.find(|c: char| !c.is_ascii_digit()) {
                                         if let Ok(len) = inner[..len_end].parse::<usize>() {
-                                            let class_name = &inner[len_end..len_end + len];
-                                            if len_end + len < inner.len() && inner[len_end + len..].starts_with(|c: char| c.is_ascii_digit()) {
-                                                format!("{}::{}", class_name, n)
+                                            // Bounds check: mangled name length may exceed remaining chars
+                                            if len_end + len <= inner.len() {
+                                                let class_name = &inner[len_end..len_end + len];
+                                                if len_end + len < inner.len() && inner[len_end + len..].starts_with(|c: char| c.is_ascii_digit()) {
+                                                    format!("{}::{}", class_name, n)
+                                                } else {
+                                                    n.to_string()
+                                                }
                                             } else {
                                                 n.to_string()
                                             }
