@@ -336,13 +336,12 @@ check("Logger backward 含 ConsoleLogger", "ConsoleLogger" in all_backward_names
 check("Logger backward 不含 Logger 自身（非自环）",
       "Logger" not in all_backward_names, True)
 
-# M2: 枚举值 LOG_INFO 的反向邻居（谁使用了它）
+# M2: 枚举值 LogLevel::LOG_INFO 的反向邻居（谁使用了它）
 enum_nb = run_mcp("codeloom_neighbor_graph", {
-    "symbol": "LOG_INFO", "repo": REPO, "branch": BRANCH,
+    "symbol": "LogLevel::LOG_INFO", "repo": REPO, "branch": BRANCH,
     "direction": "reverse"})
 check("LOG_INFO backward 有数据",
-      len(enum_nb.get("backward", {})) > 0, True,
-      lambda a, _: len(enum_nb.get("backward", {})) > 0)
+      len(enum_nb.get("backward", {})) > 0, True)
 
 # M5: BaseConfig 的字段类型邻居（field_type → LogLevel）
 cfg_nb = run_mcp("codeloom_neighbor_graph", {

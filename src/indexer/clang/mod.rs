@@ -331,10 +331,11 @@ fn parse_file(file: &str, extra_args: &[String], project_root: &str) -> anyhow::
     clang_args.push('\'');
 
     let pipeline = format!(
-        "clang {} 2>/dev/null | python3 '{}' '{}'",
+        "clang {} 2>/dev/null | python3 '{}' '{}' '{}'",
         clang_args,
         filter_script.display(),
-        project_root
+        project_root,
+        file
     );
 
     let output = Command::new("sh")

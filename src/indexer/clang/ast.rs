@@ -218,6 +218,16 @@ impl ExtractCtx {
             }
 
             "CXXRecordDecl" | "ClassTemplateDecl" => {
+                // Skip forward declarations — only process real definitions
+                if !node.get("completeDefinition").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    // Still process inner children so namespaces etc. don't lose context
+                    if let Some(inner) = node.get("inner").and_then(|v| v.as_array()) {
+                        for child in inner {
+                            self.extract_node(child, &ns, parent_class);
+                        }
+                    }
+                    return;
+                }
                 if let Some(n) = name {
                     let tag = node.get("tagUsed").and_then(|v| v.as_str()).unwrap_or("class");
                     let k = if tag == "struct" { "struct" } else { "class" };
@@ -801,7 +811,17 @@ fn extract_call_targets<F: FnMut(String)>(node: &serde_json::Value, mut cb: F) {
         if kind == "DeclRefExpr" {
             if let Some(ref_decl) = n.get("referencedDecl") {
                 if let Some(ref_name) = ref_decl.get("name").and_then(|v| v.as_str()) {
-                    cb(ref_name.to_string());
+                    // Enum constant names need qualification: qualType::name
+                    // e.g. LOG_INFO → LogLevel::LOG_INFO to match DB storage.
+                    if ref_decl.get("kind").and_then(|v| v.as_str()) == Some("EnumConstantDecl") {
+                        if let Some(qtype) = n.get("type").and_then(|v| v.get("qualType")).and_then(|v| v.as_str()) {
+                            cb(format!("{}::{}", qtype, ref_name));
+                        } else {
+                            cb(ref_name.to_string());
+                        }
+                    } else {
+                        cb(ref_name.to_string());
+                    }
                 }
             }
         }
@@ -851,3 +871,84 @@ fn is_body_kind(kind: &str) -> bool {
     )
 }
 
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_forward_declaration_skipped() {
+        let ast = json!({
+            "kind": "TranslationUnitDecl",
+            "inner": [{
+                "kind": "CXXRecordDecl",
+                "name": "Foo",
+                "tagUsed": "class",
+                "loc": { "file": "/test/foo.h", "line": 2, "col": 1 },
+                "range": { "begin": { "offset": 0 }, "end": { "offset": 50 } }
+            }]
+        });
+        let result = extract_symbols_and_edges(&ast, "test-repo", "/test/foo.h", "/test", &[]);
+        let class_syms: Vec<_> = result.symbols.iter().filter(|s| s.kind == "class").collect();
+        assert_eq!(class_syms.len(), 0,
+            "Forward decl without completeDefinition should not produce a class symbol");
+    }
+
+    #[test]
+    fn test_class_definition_produces_symbol() {
+        let ast = json!({
+            "kind": "TranslationUnitDecl",
+            "inner": [{
+                "kind": "CXXRecordDecl",
+                "name": "Bar",
+                "tagUsed": "class",
+                "completeDefinition": true,
+                "loc": { "file": "/test/bar.h", "line": 5, "col": 1 },
+                "range": { "begin": { "offset": 0 }, "end": { "offset": 100 } }
+            }]
+        });
+        let result = extract_symbols_and_edges(&ast, "test-repo", "/test/bar.h", "/test", &[]);
+        let class_syms: Vec<_> = result.symbols.iter().filter(|s| s.kind == "class").collect();
+        assert_eq!(class_syms.len(), 1);
+        assert_eq!(class_syms[0].name, "Bar");
+    }
+
+    #[test]
+    fn test_forward_declaration_in_namespace_skipped() {
+        let ns_inner = json!([
+            {
+                "kind": "CXXRecordDecl",
+                "name": "MyClass",
+                "tagUsed": "class",
+                "loc": { "file": "/test/header.h", "line": 3, "col": 1 },
+                "range": { "begin": { "offset": 0 }, "end": { "offset": 10 } }
+            },
+            {
+                "kind": "CXXRecordDecl",
+                "name": "MyClass",
+                "tagUsed": "class",
+                "completeDefinition": true,
+                "loc": { "file": "/test/header.h", "line": 8, "col": 1 },
+                "range": { "begin": { "offset": 0 }, "end": { "offset": 100 } }
+            }
+        ]);
+        let ast = json!({
+            "kind": "TranslationUnitDecl",
+            "inner": [{
+                "kind": "NamespaceDecl",
+                "name": "myns",
+                "loc": { "file": "/test/header.h", "line": 2, "col": 1 },
+                "range": { "begin": { "offset": 0 }, "end": { "offset": 200 } },
+                "inner": ns_inner
+            }]
+        });
+        let result = extract_symbols_and_edges(&ast, "test-repo", "/test/test.cc", "/test", &[]);
+        let class_syms: Vec<_> = result.symbols.iter().filter(|s| s.kind == "class").collect();
+        assert_eq!(class_syms.len(), 1,
+            "Forward decl + definition in namespace should produce only one class symbol");
+        assert_eq!(class_syms[0].name, "MyClass");
+        assert_eq!(class_syms[0].file_path, "/test/header.h");
+    }
+}
