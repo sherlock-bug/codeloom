@@ -193,7 +193,40 @@ fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str, branch_name: &str)
 
     match existing {
         None => {
-            sym.insert(conn, branch_name)
+            // Cross-file merge: look for any symbol with same identity
+            // (name, ns, kind, signature) in a different file path.
+            // This handles .h declaration + .cc definition merge regardless
+            // of which arrives first — the later one converges to the earlier one.
+            // Only update is_definition if new is definition and existing isn't.
+            let cross: Option<(i64, bool)> = conn
+                .query_row(
+                    "SELECT id, COALESCE(json_extract(attrs, '$.is_definition'), 0) \
+                     FROM nodes \
+                     WHERE name=?1 \
+                       AND COALESCE(json_extract(attrs, '$.namespace'),'')=?2 \
+                       AND kind=?3 \
+                       AND COALESCE(json_extract(attrs, '$.signature'),'')=COALESCE(?4,'') \
+                       AND file_path!=?5 \
+                       AND file_path!='' \
+                       AND repo=?6 \
+                       AND node_type='sym' \
+                     LIMIT 1",
+                    rusqlite::params![sym.name, ns, sym.kind, sym.signature, sym.file_path, repo],
+                    |row| Ok((row.get(0)?, row.get::<_, i32>(1)? != 0)),
+                )
+                .ok();
+            if let Some((id, existing_is_def)) = cross {
+                // Converge to existing symbol
+                if sym.is_definition && !existing_is_def {
+                    conn.execute(
+                        "UPDATE nodes SET attrs = json_set(attrs, '$.is_definition', 1) WHERE id=?1 AND node_type='sym'",
+                        rusqlite::params![id],
+                    )?;
+                }
+                Ok(id)
+            } else {
+                sym.insert(conn, branch_name)
+            }
         }
         Some((id, true, _)) if !sym.is_external => {
             // External stub upgraded by real project implementation

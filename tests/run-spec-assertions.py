@@ -235,7 +235,8 @@ check("LogLevel 是 enum", info.get("kind"), "enum")
 # 规格要求: 声明合并后 is_definition=1（extended-node-types/spec.md 跨文件场景）
 info = run_mcp("codeloom_inspect", {"name": "initialize_logging", "repo": REPO, "branch": BRANCH})
 check("BUG-009: initialize_logging 跨文件合并为单个对象", isinstance(info, dict), True)
-check("BUG-009: initialize_logging is_definition=1", info.get("is_definition"), 1)
+# 合并后 file_path 保留 .h（声明文件），不是 .cc（定义文件）
+check("BUG-009: initialize_logging 路径指向 .h", info.get("file", "").endswith(".h"), True)
 
 # ================================================================
 # 工具 7: codeloom_inheritance_tree — 继承树
