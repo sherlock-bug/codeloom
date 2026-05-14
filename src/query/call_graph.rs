@@ -88,11 +88,11 @@ fn traverse_calls(
     let prefix = "  ".repeat(depth + 1);
     let query = match direction {
         "callees" => format!(
-            "SELECT e.target_id, e.edge_type FROM edges e WHERE e.source_id={} AND e.target_id!=0 AND e.branch_id=? AND (e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')",
+            "SELECT e.target_id, e.edge_type FROM edges e WHERE e.source_id={} AND e.target_id!=0 AND e.branch_id=? AND (e.edge_type LIKE 'uses:%' OR e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')",
             sym_id
         ),
         _ => format!(
-            "SELECT e.source_id, e.edge_type FROM edges e WHERE e.target_id={} AND e.branch_id=? AND (e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')",
+            "SELECT e.source_id, e.edge_type FROM edges e WHERE e.target_id={} AND e.branch_id=? AND (e.edge_type LIKE 'uses:%' OR e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')",
             sym_id
         ),
     };
@@ -110,24 +110,35 @@ fn traverse_calls(
                             |r| r.get::<_, String>(0),
                         )
                         .unwrap_or_default();
-                    out.push_str(&format!(
-                        "{}{} {} (already shown)\n",
-                        prefix, '→', repeated_name
-                    ));
+                    // Node already shown — but if this is a different edge type (e.g.
+                    // uses: vs calls:), append it as an alias annotation
+                    let label = edge_type.split(':').next().unwrap_or("edge");
+                    let prefix_stripped = edge_type.find(':').map(|p| &edge_type[p+1..]).unwrap_or(&edge_type);
+                    if label != "calls" && label != "calls_override" {
+                        out.push_str(&format!(
+                            "{}   also ({}) ({})\n",
+                            prefix, label, prefix_stripped
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "{}{} {} (already shown)\n",
+                            prefix, '→', repeated_name
+                        ));
+                    }
                     continue;
                 }
                 visited.insert(other_id);
                 let other_name = conn
                     .query_row(
-                        "SELECT n.name FROM nodes n JOIN branches b ON n.id=b.node_id WHERE n.id=?1 AND n.node_type='sym' AND (b.branch_id=?2 OR b.branch_id=0)",
+                        "SELECT n.name FROM nodes n LEFT JOIN branches b ON n.id=b.node_id WHERE n.id=?1 AND n.node_type='sym' AND (b.branch_id=?2 OR b.branch_id=0 OR b.branch_id IS NULL) LIMIT 1",
                         rusqlite::params![other_id, branch_id],
                         |r| r.get::<_, String>(0),
                     )
                     .unwrap_or_default();
-                let called = edge_type.strip_prefix("calls:").unwrap_or(&edge_type);
+                let prefix_stripped = edge_type.find(':').map(|p| &edge_type[p+1..]).unwrap_or(&edge_type);
                 out.push_str(&format!(
-                    "{}{} {} (calls:{})\n",
-                    prefix, '→', other_name, called
+                    "{}{} {} ({}:{})\n",
+                    prefix, '→', other_name, edge_type.split(':').next().unwrap_or("edge"), prefix_stripped
                 ));
                 if depth < max_depth {
                     traverse_calls(

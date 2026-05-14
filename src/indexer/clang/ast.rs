@@ -919,18 +919,17 @@ fn strip_template_args(name: &str) -> &str {
 fn extract_call_targets<F: FnMut(String)>(node: &serde_json::Value, mut cb: F) {
     fn walk(n: &serde_json::Value, cb: &mut dyn FnMut(String)) {
         let kind = n.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        // Direct calls: DeclRefExpr in free function calls
+        // Direct function calls: DeclRefExpr targeting FunctionDecl → 'calls:' edges.
+        // Enum/variable references (EnumConstantDecl/VarDecl) are handled by
+        // extract_variable_uses → 'uses:' edges, NOT here. This avoids duplicate
+        // (calls: + uses:) edges for the same reference.
         if kind == "DeclRefExpr" {
             if let Some(ref_decl) = n.get("referencedDecl") {
                 if let Some(ref_name) = ref_decl.get("name").and_then(|v| v.as_str()) {
-                    // Enum constant names need qualification: qualType::name
-                    if ref_decl.get("kind").and_then(|v| v.as_str()) == Some("EnumConstantDecl") {
-                        if let Some(qtype) = n.get("type").and_then(|v| v.get("qualType")).and_then(|v| v.as_str()) {
-                            cb(format!("{}::{}", qtype, ref_name));
-                        } else {
-                            cb(ref_name.to_string());
-                        }
-                    } else {
+                    let ref_kind = ref_decl.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                    // Only emit 'calls:' for function/method references.
+                    // Enum values, globals, static vars → 'uses:' only.
+                    if ref_kind == "FunctionDecl" || ref_kind == "CXXMethodDecl" {
                         cb(ref_name.to_string());
                     }
                 }

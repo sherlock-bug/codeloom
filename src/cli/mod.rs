@@ -779,27 +779,48 @@ fn traverse_calls_cli(conn: &rusqlite::Connection, sym_id: i64, direction: &str,
     if depth > max_depth { return; }
     let prefix = "  ".repeat(depth + 1);
     let query = match direction {
-        "callees" => format!("SELECT e.target_id, e.edge_type FROM edges e WHERE e.source_id={} AND e.target_id!=0 AND e.edge_type LIKE 'calls:%'", sym_id),
-        _ => format!("SELECT e.source_id, e.edge_type FROM edges e WHERE e.target_id={} AND e.edge_type LIKE 'calls:%'", sym_id),
+        "callees" => format!("SELECT e.target_id, e.edge_type FROM edges e WHERE e.source_id={} AND e.target_id!=0 AND (e.edge_type LIKE 'uses:%' OR e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')", sym_id),
+        _ => format!("SELECT e.source_id, e.edge_type FROM edges e WHERE e.target_id={} AND (e.edge_type LIKE 'uses:%' OR e.edge_type LIKE 'calls:%' OR e.edge_type LIKE 'calls_override:%')", sym_id),
     };
     if let Ok(mut stmt) = conn.prepare(&query) {
         if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?))) {
             for row in rows.flatten() {
                 let (other_id, edge_type) = row;
                 if visited.contains(&other_id) {
-                    let repeated = conn.query_row("SELECT name FROM nodes WHERE id=?1 AND node_type='sym'", rusqlite::params![other_id], |r| r.get::<_,String>(0)).unwrap_or_default();
-                    println!("{}{} {} (already shown)", prefix, '→', repeated);
+                    // Node already shown — but if this is a different edge type,
+                    // show as alias annotation
+                    let label = edge_type.split(':').next().unwrap_or("edge");
+                    let stripped = edge_type.find(':').map(|p| &edge_type[p+1..]).unwrap_or(&edge_type);
+                    if label != "calls" && label != "calls_override" {
+                        println!("{}   also ({}) ({})", prefix, label, stripped);
+                    } else {
+                        let repeated = conn.query_row("SELECT name FROM nodes WHERE id=?1 AND node_type='sym'", rusqlite::params![other_id], |r| r.get::<_,String>(0)).unwrap_or_default();
+                        println!("{}{} {} (already shown)", prefix, '→', repeated);
+                    }
                     continue;
                 }
                 visited.insert(other_id);
                 let other_name = conn.query_row(
-                    "SELECT n.name FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.id=?1 AND n.node_type='sym' AND b.branch_name=?2",
+                    "SELECT n.name FROM nodes n LEFT JOIN branches b ON b.node_id=n.id WHERE n.id=?1 AND n.node_type='sym' AND (b.branch_name=?2 OR b.branch_name IS NULL) LIMIT 1",
                     rusqlite::params![other_id, branch], |r| r.get::<_,String>(0)
                 ).unwrap_or_default();
-                let called = edge_type.strip_prefix("calls:").unwrap_or(&edge_type);
-                println!("{}{} {} (calls:{})", prefix, '→', other_name, called);
+                let label = edge_type.split(':').next().unwrap_or("edge");
+                let stripped = edge_type.find(':').map(|p| &edge_type[p+1..]).unwrap_or(&edge_type);
+                println!("{}{} {} ({}:{})", prefix, '→', other_name, label, stripped);
                 if depth < max_depth {
                     traverse_calls_cli(conn, other_id, direction, max_depth, depth + 1, visited, branch);
+                } else {
+                    // Terminal node — show terminal dependencies
+                    let (uses, refs, literals) = crate::query::graph::get_terminal_deps(conn, other_id);
+                    if !uses.is_empty() {
+                        println!("{}   uses: {}", prefix, uses.join(", "));
+                    }
+                    if !refs.is_empty() {
+                        println!("{}   references: {}", prefix, refs.join(", "));
+                    }
+                    if !literals.is_empty() {
+                        println!("{}   string_literals: {}", prefix, literals.join(", "));
+                    }
                 }
             }
         }

@@ -198,9 +198,18 @@ fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str, branch_name: &str)
             // This handles .h declaration + .cc definition merge regardless
             // of which arrives first — the later one converges to the earlier one.
             // Only update is_definition if new is definition and existing isn't.
-            let cross: Option<(i64, bool)> = conn
+            // Cross-file merge is designed for .h declaration + .cc definition pattern.
+            // It should NOT merge independent symbols in different source files
+            // (e.g. static functions in separate translation units).
+            // Gate on: either the new or existing file is a header (.h/.hpp/.hh).
+            let is_header = |path: &str| {
+                let p = path.trim();
+                p.ends_with(".h") || p.ends_with(".hpp") || p.ends_with(".hh") || p.ends_with(".hxx")
+            };
+            let new_is_header = is_header(sym.file_path.as_str());
+            let cross: Option<(i64, bool, String)> = conn
                 .query_row(
-                    "SELECT id, COALESCE(json_extract(attrs, '$.is_definition'), 0) \
+                    "SELECT id, COALESCE(json_extract(attrs, '$.is_definition'), 0), file_path \
                      FROM nodes \
                      WHERE name=?1 \
                        AND COALESCE(json_extract(attrs, '$.namespace'),'')=?2 \
@@ -212,18 +221,27 @@ fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str, branch_name: &str)
                        AND node_type='sym' \
                      LIMIT 1",
                     rusqlite::params![sym.name, ns, sym.kind, sym.signature, sym.file_path, repo],
-                    |row| Ok((row.get(0)?, row.get::<_, i32>(1)? != 0)),
+                    |row| Ok((row.get(0)?, row.get::<_, i32>(1)? != 0, row.get::<_, String>(2)?)),
                 )
                 .ok();
-            if let Some((id, existing_is_def)) = cross {
-                // Converge to existing symbol
-                if sym.is_definition && !existing_is_def {
-                    conn.execute(
-                        "UPDATE nodes SET attrs = json_set(attrs, '$.is_definition', 1) WHERE id=?1 AND node_type='sym'",
-                        rusqlite::params![id],
-                    )?;
+            if let Some((id, existing_is_def, existing_path)) = cross {
+                // Only merge if this is a header-source pair.
+                // Header (.h) + source (.cc) is the declaration-definition pattern.
+                // Source + source is likely independent symbols (e.g. static funcs
+                // in different translation units) and should NOT merge.
+                if !new_is_header && !is_header(&existing_path) {
+                    // Both are source files — treat as independent symbols
+                    sym.insert(conn, branch_name)
+                } else {
+                    // Converge to existing symbol
+                    if sym.is_definition && !existing_is_def {
+                        conn.execute(
+                            "UPDATE nodes SET attrs = json_set(attrs, '$.is_definition', 1) WHERE id=?1 AND node_type='sym'",
+                            rusqlite::params![id],
+                        )?;
+                    }
+                    Ok(id)
                 }
-                Ok(id)
             } else {
                 sym.insert(conn, branch_name)
             }
