@@ -20,6 +20,7 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
             content TEXT NOT NULL DEFAULT '',
             file_path TEXT NOT NULL DEFAULT '',
             line_start INTEGER DEFAULT 0,
+                    line_end INTEGER DEFAULT 0,
             content_hash TEXT DEFAULT '',
             branch_id INTEGER NOT NULL DEFAULT 0,
             kind TEXT DEFAULT '',
@@ -90,6 +91,6 @@ pub fn run(conn: &Connection) -> anyhow::Result<()> {
 
         CREATE VIRTUAL TABLE IF NOT EXISTS fts5_all USING fts5(name, content);
     ")?;
-    log_info!("storage::schema", "schema run: all tables created/verified");
+log_info!("storage::schema", "schema run: all tables created/verified");
     Ok(())
 }
