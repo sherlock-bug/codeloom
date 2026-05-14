@@ -89,6 +89,11 @@ CodeLoom SHALL 从 Clang AST 中提取 15 种符号节点类型，包括函数�
 - THEN api 的 access="public"，m_data 的 access="private"
 
 #### Scenario: 声明合并后 is_definition
-- GIVEN 头文件中 `int add(int,int);` 声明和源文件中 `int add(int,int){...}` 定义
+- GIVEN 头文件中 `int add(int,int);` 声明和源文件中 `int add(int,int){...}` 定义（同一文件）
 - WHEN 先解析声明创建 is_definition=0，后解析定义匹配到同一符号
 - THEN 更新 is_definition=1，位置更新到定义处，注释拼接
+
+#### Scenario: 跨文件声明定义合并
+- GIVEN 头文件中有声明，源文件中有定义，两文件路径不同
+- WHEN 先索引头文件创建 is_definition=0 节点，后索引源文件发现定义
+- THEN 定义合并到已有声明节点（不创建新节点），更新 is_definition=1，file_path/行号保留声明文件
