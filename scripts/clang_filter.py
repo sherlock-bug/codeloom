@@ -22,8 +22,7 @@ BODY_KINDS = frozenset({
     "ImplicitCastExpr", "CXXStaticCastExpr", "CXXDynamicCastExpr",
     "CXXReinterpretCastExpr", "CXXConstCastExpr", "CStyleCastExpr",
     "CXXFunctionalCastExpr", "ParenExpr",
-    "MemberExpr", "CXXDependentScopeMemberExpr",
-    "UnresolvedLookupExpr", "CXXThisExpr", "CXXNullPtrLiteralExpr",
+    "UnresolvedLookupExpr", "CXXNullPtrLiteralExpr",
     "IntegerLiteral", "FloatingLiteral", "CharacterLiteral", "StringLiteral",
     "ArraySubscriptExpr", "InitListExpr", "CXXConstructExpr",
     "MaterializeTemporaryExpr", "CXXBindTemporaryExpr",
@@ -48,7 +47,7 @@ def get_node_file(node):
     return ""
 
 
-def is_system(node, project_root):
+def is_system(node, project_root, fallback_file=None):
     """Check if node belongs to system headers (not under project_root)."""
     # Nodes with previousDecl linking to a project declaration are project nodes
     if isinstance(node.get("previousDecl"), str) and node["previousDecl"]:
@@ -57,13 +56,26 @@ def is_system(node, project_root):
     file = get_node_file(node)
     if not file:
         # No file path at all. Check if node has any location info (line/col).
-        # If it has line/col but no file, Clang omitted the file field
-        # and the node belongs to the project — don't strip it.
         loc = node.get("loc", {})
-        if isinstance(loc, dict) and loc.get("line"):
-            return False  # has line info → project node with missing file
-        # No location info at all → treat as system (compiler builtin)
+        if isinstance(loc, dict):
+            if loc.get("line"):
+                return False
+        # Use fallback_file from parent context
+        if fallback_file:
+            abs_fb = os.path.abspath(fallback_file)
+            if abs_fb.startswith(project_root):
+                return False
+            return not fallback_file.startswith(project_root)
+        # Check range.begin for line info
+        rng = node.get("range", {})
+        rbegin = rng.get("begin", {}) if isinstance(rng, dict) else {}
+        if isinstance(rbegin, dict) and rbegin.get("line"):
+            return False
         return True
+    # Resolve relative paths to match absolute project_root
+    abs_file = os.path.abspath(file)
+    if abs_file.startswith(project_root):
+        return False
     return not file.startswith(project_root)
 
 
@@ -79,7 +91,7 @@ def filter_node(node, project_root, fallback_file=None):
     kind = node.get("kind", "")
 
     # Strip system nodes for non-body nodes
-    if kind not in BODY_KINDS and is_system(node, project_root):
+    if kind not in BODY_KINDS and is_system(node, project_root, fallback_file):
         return None
 
     # Determine file for propagation: prefer own file, then fallback
@@ -122,6 +134,11 @@ def filter_node(node, project_root, fallback_file=None):
         result = {"kind": kind}
         if inner:
             result["inner"] = inner
+        # Keep type and path info for call target extraction
+        if "type" in node:
+            result["type"] = node["type"]
+        if "path" in node:
+            result["path"] = node["path"]
         return result
 
     return filtered

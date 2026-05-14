@@ -67,6 +67,8 @@ pub fn extract_symbols_and_edges(
         current_class: String::new(),
         current_access: String::new(),
         cur_file: file_path.to_string(),
+        class_bases: HashMap::new(),
+        class_virtual_methods: HashMap::new(),
         seen_strings: HashMap::new(),
         seen_symbols: Vec::new(),
     };
@@ -99,6 +101,10 @@ struct ExtractCtx {
     current_access: String,
     /// Current file context — tracks Clang's loc.file changes across includes
     cur_file: String,
+    /// Inheritance map: class_name → [base_class_names]
+    class_bases: HashMap<String, Vec<String>>,
+    /// Virtual methods: class_name → [method_names]
+    class_virtual_methods: HashMap<String, Vec<String>>,
     seen_strings: HashMap<String, bool>,
     seen_symbols: Vec<(String, String, String)>, // (name, ns, kind) for dedup
 }
@@ -160,14 +166,57 @@ impl ExtractCtx {
                     let sig = build_signature(node);
                     let is_def = has_body(node);
                     let access = self.current_access.clone();
-                    let is_virtual = node.get("isVirtual").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let is_virtual = node.get("virtual")
+                        .or_else(|| node.get("isVirtual"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    // Record virtual methods for override detection
+                    if is_virtual && kind == "CXXMethodDecl" {
+                        if let Some(pc) = parent_class {
+                            self.class_virtual_methods
+                                .entry(pc.to_string())
+                                .or_default()
+                                .push(n.to_string());
+                        }
+                    }
 
                     let k = if kind == "CXXMethodDecl" { "method" } else { "function" };
                     let qname = if k == "method" {
                         if let Some(p) = parent_class {
                             format!("{}::{}", p, n)
                         } else {
-                            n.to_string()
+                            // .cc definition: parent_class is None because the method
+                            // isn't nested inside a CXXRecordDecl in the AST tree.
+                            // Try to extract class name from mangledName (Itanium ABI).
+                            // Format: _ZN<len><class><len><method>E...
+                            let mangled = node.get("mangledName").and_then(|v| v.as_str()).unwrap_or("");
+                            if mangled.starts_with("_ZN") {
+                                let rest = &mangled[3..]; // skip _ZN
+                                if let Some(e_pos) = rest.find('E') {
+                                    let inner = &rest[..e_pos]; // everything before E
+                                    // Parse: <len><name><len><name>...
+                                    // First name is the class
+                                    if let Some(len_end) = inner.find(|c: char| !c.is_ascii_digit()) {
+                                        if let Ok(len) = inner[..len_end].parse::<usize>() {
+                                            let class_name = &inner[len_end..len_end + len];
+                                            if len_end + len < inner.len() && inner[len_end + len..].starts_with(|c: char| c.is_ascii_digit()) {
+                                                format!("{}::{}", class_name, n)
+                                            } else {
+                                                n.to_string()
+                                            }
+                                        } else {
+                                            n.to_string()
+                                        }
+                                    } else {
+                                        n.to_string()
+                                    }
+                                } else {
+                                    n.to_string()
+                                }
+                            } else {
+                                n.to_string()
+                            }
                         }
                     } else {
                         n.to_string()
@@ -203,15 +252,33 @@ impl ExtractCtx {
                         self.extract_variable_uses(node, &qname, &ns);
                     }
 
-                    // overrides edge
-                    if is_virtual || node.get("isOverride").is_some() {
-                        if let Some(parent_method) = find_override_target(node) {
-                            let pm = parent_method.clone();
-                            self.result.edges.push(Edge {
-                                source_name: qname.clone(), source_ns: ns.clone(),
-                                target_name: parent_method,
-                                edge_type: "overrides".to_string(),
-                            });
+                    // overrides edge (structural detection via inheritance chain)
+                    // Clang 19 JSON AST dump does NOT include isOverride/overridden fields.
+                    // We detect overrides by walking the class inheritance chain.
+                    if let Some(pc) = parent_class {
+                        let method_name = n.to_string();
+                        let mut visited = vec![pc.to_string()];
+                        let mut work: Vec<String> = self.class_bases
+                            .get(pc)
+                            .cloned()
+                            .unwrap_or_default();
+                        while let Some(base) = work.pop() {
+                            if visited.contains(&base) { continue; }
+                            visited.push(base.clone());
+                            if let Some(vmethods) = self.class_virtual_methods.get(&base) {
+                                if vmethods.contains(&method_name) {
+                                    self.result.edges.push(Edge {
+                                        source_name: qname.clone(), source_ns: ns.clone(),
+                                        target_name: format!("{}::{}", base, method_name),
+                                        edge_type: "overrides".to_string(),
+                                    });
+                                }
+                            } else {
+                            }
+                            // Walk transitive bases
+                            if let Some(grand_bases) = self.class_bases.get(&base) {
+                                work.extend(grand_bases.iter().cloned());
+                            }
                         }
                     }
                 }
@@ -252,14 +319,16 @@ impl ExtractCtx {
                         &self.repo, n, "", &ns, k, &sym.file_path));
                     self.add_symbol(sym, n, "", &ns, k);
 
-                    // inherits edges
+                    // inherits edges + class_bases recording for override detection
                     if let Some(bases) = node.get("bases").and_then(|v| v.as_array()) {
+                        let mut base_names = Vec::new();
                         for base in bases {
                             if let Some(base_type) = base.get("type")
                                 .and_then(|v| v.get("qualType"))
                                 .and_then(|v| v.as_str())
                             {
                                 let base_name = strip_cv_ref(base_type);
+                                base_names.push(base_name.to_string());
                                 self.result.edges.push(Edge {
                                     source_name: n.to_string(), source_ns: ns.clone(),
                                     target_name: base_name.to_string(),
@@ -267,6 +336,7 @@ impl ExtractCtx {
                                 });
                             }
                         }
+                        self.class_bases.insert(n.to_string(), base_names);
                     }
 
                     // Process members to extract contains edges + method symbols
@@ -843,13 +913,8 @@ fn strip_template_args(name: &str) -> &str {
     }
 }
 
-fn find_override_target(node: &serde_json::Value) -> Option<String> {
-    // Look for the base method in referenced declaration
-    node.get("referencedDecl")
-        .and_then(|v| v.get("name"))
-        .and_then(|v| v.as_str())
-        .map(String::from)
-}
+
+
 
 fn extract_call_targets<F: FnMut(String)>(node: &serde_json::Value, mut cb: F) {
     fn walk(n: &serde_json::Value, cb: &mut dyn FnMut(String)) {
@@ -872,11 +937,41 @@ fn extract_call_targets<F: FnMut(String)>(node: &serde_json::Value, mut cb: F) {
             }
         }
         // Member function calls: MemberExpr in CXXMemberCallExpr
-        // Clang puts the called method's info in MemberExpr.referencedDecl
+        // Clang puts the called method in MemberExpr.name.
+        // The actual class being called is resolved from ImplicitCastExpr:
+        //   - Direct base calls (FileLogger::log): cast.path[0].name = "FileLogger"
+        //   - Virtual calls (logger->log): cast.type.qualType = "Logger *"
+        // In both cases, the call target is ClassName::methodName.
         if kind == "MemberExpr" {
-            if let Some(ref_decl) = n.get("referencedDecl") {
-                if let Some(ref_name) = ref_decl.get("name").and_then(|v| v.as_str()) {
-                    cb(ref_name.to_string());
+            if let Some(method_name) = n.get("name").and_then(|v| v.as_str()) {
+                // Try to find the class name from the ImplicitCastExpr path or type
+                let class_name = n.get("inner").and_then(|v| v.as_array())
+                    .and_then(|inner| inner.first())
+                    .and_then(|cast| {
+                        if cast.get("kind").and_then(|v| v.as_str()) == Some("ImplicitCastExpr") {
+                            // First try path[0].name (direct base calls like FileLogger::log)
+                            if let Some(path) = cast.get("path").and_then(|v| v.as_array()) {
+                                if let Some(p0) = path.first() {
+                                    if let Some(pn) = p0.get("name").and_then(|v| v.as_str()) {
+                                        return Some(pn.to_string());
+                                    }
+                                }
+                            }
+                            // Fallback: type.qualType (virtual calls, logger->log style)
+                            if let Some(qt) = cast.get("type").and_then(|v| v.get("qualType")).and_then(|v| v.as_str()) {
+                                // Extract class name from "Logger *" → "Logger"
+                                let stripped = qt.trim_end_matches(" *").trim_end_matches(" &").trim();
+                                if !stripped.is_empty() && stripped != "<bound member function type>" {
+                                    return Some(stripped.to_string());
+                                }
+                            }
+                        }
+                        None::<String>
+                    });
+                if let Some(cls) = class_name {
+                    cb(format!("{}::{}", cls, method_name));
+                } else {
+                    cb(method_name.to_string());
                 }
             }
         }
@@ -916,8 +1011,8 @@ fn is_body_kind(kind: &str) -> bool {
         | "BinaryOperator" | "UnaryOperator" | "ConditionalOperator"
         | "ImplicitCastExpr" | "CXXStaticCastExpr" | "CXXDynamicCastExpr"
         | "CXXReinterpretCastExpr" | "CXXConstCastExpr" | "CStyleCastExpr"
-        | "DeclRefExpr" | "MemberExpr" | "CXXDependentScopeMemberExpr"
-        | "UnresolvedLookupExpr" | "CXXThisExpr" | "CXXNullPtrLiteralExpr"
+        | "DeclRefExpr"
+        | "UnresolvedLookupExpr" | "CXXNullPtrLiteralExpr"
         | "IntegerLiteral" | "FloatingLiteral" | "CharacterLiteral"
         | "ArraySubscriptExpr" | "InitListExpr" | "CXXConstructExpr"
         | "MaterializeTemporaryExpr" | "CXXBindTemporaryExpr"
