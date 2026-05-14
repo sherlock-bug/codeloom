@@ -272,16 +272,23 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             }
             let t3 = t0.elapsed();
             // Symbol + Doc + File vectors — run in spawn_blocking to avoid reqwest::blocking tokio conflict
-            let (sym_n, doc_n, file_n) = tokio::task::spawn_blocking(move || -> anyhow::Result<(usize, usize, usize)> {
-                let embedder = crate::embedding::get_embedder()?;
-                let (sym_n, doc_n) = crate::embedding::index_vectors(&conn, &repo, embedder)?;
-                let file_n = crate::embedding::index_file_vectors(&conn, &repo, embedder)?;
-                Ok((sym_n, doc_n, file_n))
-            }).await??;
-            if sym_n + doc_n + file_n > 0 {
-                eprintln!("  Vectors: {} symbols, {} docs, {} files", sym_n, doc_n, file_n);
-            }
-            let t4 = t0.elapsed();
+            let t4 = {
+                let no_embed = crate::config::Config::load().unwrap_or_default().embedding.is_none();
+                if no_embed {
+                    t0.elapsed()
+                } else {
+                    let (sym_n, doc_n, file_n) = tokio::task::spawn_blocking(move || -> anyhow::Result<(usize, usize, usize)> {
+                        let embedder = crate::embedding::get_embedder()?;
+                        let (sym_n, doc_n) = crate::embedding::index_vectors(&conn, &repo, embedder)?;
+                        let file_n = crate::embedding::index_file_vectors(&conn, &repo, embedder)?;
+                        Ok((sym_n, doc_n, file_n))
+                    }).await??;
+                    if sym_n + doc_n + file_n > 0 {
+                        eprintln!("  Vectors: {} symbols, {} docs, {} files", sym_n, doc_n, file_n);
+                    }
+                    t0.elapsed()
+                }
+            };
             eprintln!("  ⏱  parse+db: {:.1}s | docs+fts: {:.1}s | vectors: {:.1}s | total: {:.1}s",
                 t1.as_secs_f64(), (t3-t2).as_secs_f64(), (t4-t3).as_secs_f64(), t4.as_secs_f64());
 

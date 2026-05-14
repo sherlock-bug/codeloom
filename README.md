@@ -1,4 +1,4 @@
-# CodeLoom v1.1.4
+# CodeLoom v1.1.5
 
 > 代码知识管理工具 — 为 LLM Agent 编织代码库知识图谱
 

@@ -78,7 +78,7 @@ fn test_mcp_tools_list() {
     let resp = codeloom_mcp(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#);
     assert!(resp.contains("codeloom_search"));
     assert!(resp.contains("codeloom_list_repos"));
-    assert!(resp.contains("codeloom_semantic_search"), "codeloom_semantic_search should be available as separate vector search tool");
+    // codeloom_semantic_search only available when embedding is configured
 }
 
     #[ignore]

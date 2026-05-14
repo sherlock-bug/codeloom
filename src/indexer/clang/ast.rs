@@ -629,42 +629,8 @@ impl ExtractCtx {
                             });
                         }
 
-                        // template_use edges: extract method/field children of the specialization
-                        if let Some(inner) = node.get("inner").and_then(|v| v.as_array()) {
-                            for child in inner {
-                                let ck = child.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                                let cn = child.get("name").and_then(|v| v.as_str());
-                                if let Some(mname) = cn {
-                                    match ck {
-                                        "CXXMethodDecl" | "FieldDecl" => {
-                                            let qualified_name = format!("{}::{}", instance_name, mname);
-                                            let h = hash_content(&qualified_name, ck, &self.file, ls);
-                                            let msym = Symbol {
-                                                id: None, repo: self.repo.clone(), name: qualified_name.clone(),
-                                                kind: if ck == "CXXMethodDecl" { "method".to_string() } else { "field".to_string() },
-                                                content_hash: h, file_path: String::new(),
-                                                line_start: ls, line_end: le, language: Some("cpp".to_string()),
-                                                signature: None, parent_class: Some(instance_name.clone()),
-                                                namespace: if ns.is_empty() { None } else { Some(ns.clone()) },
-                                                doc_comment: String::new(),
-                                                is_external: false,
-                                                ..Default::default()
-                                            };
-                                            self.add_symbol(msym, &qualified_name, "", &ns, ck);
-
-                                            // template_use: from "DataStore<int>::store" → "DataStore::store"
-                                            let base_member = format!("{}::{}", tname, mname);
-                                            self.result.edges.push(Edge {
-                                                source_name: qualified_name, source_ns: ns.clone(),
-                                                target_name: base_member,
-                                                edge_type: format!("template_use:{}", mname),
-                                            });
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
+                        // template instances only store type parameters — no member/method extraction
+                        // (those are available from the base template via inheritance_tree)
                     }
                 }
             }

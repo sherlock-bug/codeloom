@@ -140,6 +140,7 @@ fn full_scan(
     let total = files.len();
     result.files_changed = total;
     result.files_scanned = total;
+    conn.execute("BEGIN TRANSACTION", [])?;
     for (i, fp) in files.iter().enumerate() {
         if total > 20 && (i % 20 == 0 || i == total - 1) {
             eprintln!("  [{:>3}/{}] parsing + vectorizing...", i + 1, total);
@@ -149,6 +150,7 @@ fn full_scan(
             Err(e) => eprintln!("Warning: {}: {}", fp, e),
         }
     }
+    conn.execute("COMMIT", [])?;
     let branch_id = crate::storage::resolve_branch_id(conn, repo_name, branch)?;
     conn.execute(
         "INSERT OR IGNORE INTO branches (node_id,repo,branch_id,branch_name,override_def,override_hash) SELECT id,repo,?1,?2,NULL,NULL FROM nodes WHERE repo=?3 AND node_type='sym'",
@@ -171,6 +173,8 @@ fn index_one(
 
     // Route C++ files to Clang parser (with compile_commands from env var)
     if lang == "cpp" {
+        // Each .cc file is its own translation unit with unique function bodies/static fns.
+        // Even though headers are shared, .cc-level symbols must be extracted individually.
         let fi = FileInfo {
             path: file_path.to_string(),
             language: "cpp",
