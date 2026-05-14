@@ -579,9 +579,30 @@ impl ExtractCtx {
                     if primary.starts_with("std::") {
                         // STL template instance — skip
                     } else {
-                        let hash = hash_content(n, "template_instance", &self.file, ls);
+                        // Build full instance name with template args (e.g., "DataStore<int>")
+                        let template_args: Vec<String> = node.get("inner")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter().filter_map(|child| {
+                                    if child.get("kind").and_then(|v| v.as_str()) == Some("TemplateArgument") {
+                                        child.get("type")
+                                            .and_then(|t| t.get("qualType"))
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string())
+                                    } else {
+                                        None
+                                    }
+                                }).collect()
+                            }).unwrap_or_default();
+                        let instance_name = if template_args.is_empty() {
+                            n.to_string()
+                        } else {
+                            format!("{}<{}>", n, template_args.join(","))
+                        };
+
+                        let hash = hash_content(&instance_name, "template_instance", &self.file, ls);
                         let sym = Symbol {
-                            id: None, repo: self.repo.clone(), name: n.to_string(),
+                            id: None, repo: self.repo.clone(), name: instance_name.clone(),
                             kind: "template_instance".to_string(),
                             content_hash: hash, file_path: String::new(),  // template instance: no single definition file
                             line_start: ls, line_end: le, language: Some("cpp".to_string()),
@@ -591,16 +612,53 @@ impl ExtractCtx {
                             is_external: false,  // template instances are project symbols
                     ..Default::default()
                         };
-                        self.add_symbol(sym, n, "", &ns, "template_instance");
+                        self.add_symbol(sym, &instance_name, "", &ns, "template_instance");
 
-                        // instantiates edge
-                        let tname = strip_template_args(n);
+                        // instantiates edge: from "DataStore<int>" → "DataStore"
+                        let tname = strip_template_args(&instance_name);
                         if !tname.is_empty() {
                             self.result.edges.push(Edge {
-                                source_name: n.to_string(), source_ns: ns.clone(),
+                                source_name: instance_name.clone(), source_ns: ns.clone(),
                                 target_name: tname.to_string(),
                                 edge_type: format!("instantiates:{}", tname),
                             });
+                        }
+
+                        // template_use edges: extract method/field children of the specialization
+                        if let Some(inner) = node.get("inner").and_then(|v| v.as_array()) {
+                            for child in inner {
+                                let ck = child.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                                let cn = child.get("name").and_then(|v| v.as_str());
+                                if let Some(mname) = cn {
+                                    match ck {
+                                        "CXXMethodDecl" | "FieldDecl" => {
+                                            let qualified_name = format!("{}::{}", instance_name, mname);
+                                            let h = hash_content(&qualified_name, ck, &self.file, ls);
+                                            let msym = Symbol {
+                                                id: None, repo: self.repo.clone(), name: qualified_name.clone(),
+                                                kind: if ck == "CXXMethodDecl" { "method".to_string() } else { "field".to_string() },
+                                                content_hash: h, file_path: String::new(),
+                                                line_start: ls, line_end: le, language: Some("cpp".to_string()),
+                                                signature: None, parent_class: Some(instance_name.clone()),
+                                                namespace: if ns.is_empty() { None } else { Some(ns.clone()) },
+                                                doc_comment: String::new(),
+                                                is_external: false,
+                                                ..Default::default()
+                                            };
+                                            self.add_symbol(msym, &qualified_name, "", &ns, ck);
+
+                                            // template_use: from "DataStore<int>::store" → "DataStore::store"
+                                            let base_member = format!("{}::{}", tname, mname);
+                                            self.result.edges.push(Edge {
+                                                source_name: qualified_name, source_ns: ns.clone(),
+                                                target_name: base_member,
+                                                edge_type: format!("template_use:{}", mname),
+                                            });
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                     }
                 }
