@@ -137,13 +137,13 @@ fn traverse_calls(
                     // Terminal node — show terminal dependencies
                     let (uses, refs, literals) = crate::query::graph::get_terminal_deps(conn, other_id);
                     if !uses.is_empty() {
-                        out.push_str(&format!("{}   Uses: {}\n", prefix, uses.join(", ")));
+                        out.push_str(&format!("{}   uses: {}\n", prefix, uses.join(", ")));
                     }
                     if !refs.is_empty() {
-                        out.push_str(&format!("{}   References: {}\n", prefix, refs.join(", ")));
+                        out.push_str(&format!("{}   references: {}\n", prefix, refs.join(", ")));
                     }
                     if !literals.is_empty() {
-                        out.push_str(&format!("{}   StringLiterals: {}\n", prefix, literals.join(", ")));
+                        out.push_str(&format!("{}   string_literals: {}\n", prefix, literals.join(", ")));
                     }
                 }
             }

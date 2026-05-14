@@ -685,10 +685,10 @@ fn schema_meta() -> String {
 fn path_analysis(repo: &str, branch: &str, source: &str, target: &str, mode: &str, max_depth: usize, max_paths: usize, edge_filter: &[String], source_id: Option<i64>, target_id: Option<i64>) -> String {
     let conn = match open_repo_db(repo) { Ok(c) => c, Err(e) => return err_resp(serde_json::Value::Null, &e).to_string() };
     let sid = match crate::query::graph::resolve_symbol_id_or_name(&conn, source_id, source, repo, branch) {
-        Some(id) => id, None => return format!("Symbol '{}' not found", source),
+        Some(id) => id, None => return serde_json::json!({"paths": [], "total_found": 0, "error": format!("Symbol '{}' not found", source)}).to_string(),
     };
     let tid = match crate::query::graph::resolve_symbol_id_or_name(&conn, target_id, target, repo, branch) {
-        Some(id) => id, None => return format!("Symbol '{}' not found", target),
+        Some(id) => id, None => return serde_json::json!({"paths": [], "total_found": 0, "error": format!("Symbol '{}' not found", target)}).to_string(),
     };
     let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
     let results = crate::query::graph::bfs_path_search(&conn, sid, tid, edge_filter, max_depth, mode, max_paths, branch_id);
@@ -796,7 +796,7 @@ fn inheritance_tree(repo: &str, branch: &str, symbol: &str, direction: &str, max
     }
 
     let result_children = build_tree(&conn, sid, direction, 0, max_depth, branch_id);
-    serde_json::json!({"root": root_name, "children": result_children}).to_string()
+    serde_json::json!({"symbol": root_name, "children": result_children}).to_string()
 }
 
 

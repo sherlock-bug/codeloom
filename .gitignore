@@ -25,3 +25,11 @@ Thumbs.db
 # Release artifacts
 /codeloom-v*.zip
 codeloom.db
+
+# Temp debug scripts from edge testing
+scripts/apply_*.py
+scripts/clean_*.py
+scripts/fix_*.py
+
+# macOS artifacts
+.DS_Store

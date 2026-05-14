@@ -2,6 +2,7 @@
 mod calib; mod cli; mod config; mod doc; mod embedding; mod ignore; mod indexer; mod linking;
 mod logger; mod mcp; mod query; mod storage; mod util;
 
+#[link(name = "sqlite_vec0", kind = "static")]
 extern "C" {
     /// Register sqlite-vec extension via sqlite3_auto_extension.
     /// Called once at startup, before any database connection is opened.
