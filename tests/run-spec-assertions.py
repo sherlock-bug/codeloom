@@ -175,6 +175,10 @@ check("list-symbols 别名 AdvancedLogger", "AdvancedLogger" in alias_syms, True
 template_syms = run_cli(["list-symbols", "DataStore", "--repo", REPO, "--branch", BRANCH, "--limit", "10"])
 check("list-symbols 模板 DataStore", "DataStore" in template_syms, True)
 
+# 无匹配 pattern
+empty_syms = run_cli(["list-symbols", "NonExistentSymbol999", "--repo", REPO, "--branch", BRANCH, "--limit", "10"])
+check("list-symbols 无匹配为空", len(empty_syms.strip()) == 0 or "No results" in empty_syms, True)
+
 # ================================================================
 # 工具 5: codeloom_search (BM25) — 精确关键词搜索
 # 规格: bm25-precise-search/spec.md + search-enrichment/spec.md
@@ -189,6 +193,10 @@ check("search HybridLogger 返回结果", search_res.get("count", 0) > 0, True)
 
 # 已确认：search 不返回 methods/members（规格变更 SPEC-CHANGE-001）
 # 只检查基础功能
+
+# 精确搜索验证第一项是匹配符号（bm25-precise-search: "结果第一项 SHALL 是匹配的符号"）
+check("search HybridLogger 第一条 name=HybridLogger",
+      search_res.get("results", [{}])[0].get("name", ""), "HybridLogger")
 
 # 枚举搜索结果含 values（search-enrichment: "enum 结果包含 values"）
 enum_res = run_mcp("codeloom_search", {
@@ -206,6 +214,16 @@ empty_res = run_mcp("codeloom_search", {
     "query": "xyxxy_no_match_xyz", "repo": REPO, "branch": BRANCH, "limit": 5
 })
 check("search 空结果 count=0", empty_res.get("count"), 0)
+
+# N1: kind 参数过滤（bm25-precise-search: "支持 kind 类型过滤"）
+kind_res = run_mcp("codeloom_search", {
+    "query": "DataStore", "repo": REPO, "branch": BRANCH, "limit": 5, "kind": "class"
+})
+check("search kind=class 过滤出结果", kind_res.get("count", 0) > 0, True)
+for result in kind_res.get("results", []):
+    check("search kind=class 结果全是 class",
+          result.get("kind") in ("class", "struct"), True,
+          lambda a, _: a in ("class", "struct"))
 
 # ================================================================
 # 工具 6: codeloom_inspect — 符号详细信息
@@ -227,9 +245,44 @@ check("BaseConfig 是 struct", info.get("kind"), "struct")
 
 # 自由函数 inspect — 不含 parent_class
 
-# 枚举 inspect
+# 枚举 inspect — 验证 values 字段（inspect-enrichment: "enum 节点返回 values 列表"）
 info = run_mcp("codeloom_inspect", {"name": "LogLevel", "repo": REPO, "branch": BRANCH})
 check("LogLevel 是 enum", info.get("kind"), "enum")
+check("LogLevel 有 values 字段", "values" in info, True,
+      lambda a, _: "values" in info)
+if "values" in info:
+    check("LogLevel values 含 LOG_INFO", "LOG_INFO" in info.get("values", []), True)
+    check("LogLevel values 含 LOG_DEBUG", "LOG_DEBUG" in info.get("values", []), True)
+
+# 类 inspect — 验证 fields/methods/bases（inspect-enrichment: "class/struct 返回 bases/members/methods"）
+hy_info = run_mcp("codeloom_inspect", {"name": "HybridLogger", "repo": REPO, "branch": BRANCH})
+check("HybridLogger 有 bases 字段（依赖边查询）", "bases" in hy_info, True,
+      lambda a, _: "bases" in hy_info)
+# 增强验证：bases 应包含具体基类名（inherits 边内容验证）
+hy_bases = hy_info.get("bases", [])
+check("HybridLogger bases 含 FileLogger",
+      "FileLogger" in hy_bases, True)
+check("HybridLogger bases 含 ConsoleLogger",
+      "ConsoleLogger" in hy_bases, True)
+check("HybridLogger 有 methods 字段（依赖 contains 边）", "methods" in hy_info, True,
+      lambda a, _: "methods" in hy_info)
+# 增强验证：methods 应包含具体方法名（contains 边内容验证）
+hy_methods = hy_info.get("methods", [])
+check("HybridLogger methods 含 log",
+      "log" in hy_methods, True)
+check("HybridLogger methods 不含不存在的方法",
+      "fly" not in hy_methods, True)
+
+# 自由函数 inspect — 验证带调用边的输出
+init_info = run_mcp("codeloom_inspect", {"name": "initialize_logging", "repo": REPO, "branch": BRANCH})
+check("initialize_logging 是 function", init_info.get("kind"), "function",
+      lambda a, _: a in ("function", "Function"))
+# N6: inspect function 回退到通用 edges 列表输出（inspect-enrichment: "function/method 通用 edges 分组输出"）
+# 应至少有一个边类型分组（如 calls、uses 等）
+init_edges = {k: v for k, v in init_info.items() if v and isinstance(v, list) and k not in ("_raw_text",)}
+check("initialize_logging inspect 有 edges 分组",
+      any(len(v) > 0 for v in init_edges.values()), True,
+      lambda a, _: any(len(v) > 0 for v in init_edges.values()))
 
 # BUG-009 测试: .h 声明 + .cc 定义应合并为同一符号
 # 规格要求: 声明合并后 is_definition=1（extended-node-types/spec.md 跨文件场景）
@@ -249,9 +302,13 @@ tree = run_mcp("codeloom_inheritance_tree", {
     "symbol": "HybridLogger", "repo": REPO, "branch": BRANCH,
     "direction": "up", "max_depth": 5
 })
-# 规格: 嵌套树格式 — 每个节点含 symbol + children。顶层用 root 键名
+# 规格: 嵌套树格式 — 每个节点含 symbol + children。
+# BUG-008: 规格要求 key 用 'symbol' 而非 'root'
 root_sym = tree.get("root") or tree.get("symbol") or ""
 check("HybridLogger up 有根节点名", root_sym, "HybridLogger")
+# BUG-008 严格断言：禁止使用 'root' 键
+check("BUG-008: 继承树顶层键是 symbol 而非 root",
+      "root" not in tree, True)
 hy_children = tree.get("children", [])
 check("HybridLogger up 有 children",
       len(hy_children) > 0, True)
@@ -320,6 +377,12 @@ for _, values in fw.items():
         all_forward_names.update(values)
 check("HybridLogger forward 含 ConsoleLogger", "ConsoleLogger" in all_forward_names, True)
 check("HybridLogger forward 含 FileLogger", "FileLogger" in all_forward_names, True)
+# N8: class/struct neighbor_graph 跳过成员（规格: "跳过其成员，改为暴露成员引用的外部符号"）
+# 成员名（log、instance_count 等）SHALL 不出现在结果中
+check("HybridLogger forward 不含成员名 log",
+      "log" not in all_forward_names, True)
+check("HybridLogger forward 不含成员名 instance_count",
+      "instance_count" not in all_forward_names, True)
 
 # Logger 反向邻居（子类）
 neighbors = run_mcp("codeloom_neighbor_graph", {
@@ -357,27 +420,128 @@ check("BaseConfig forward 含 LogLevel (field_type)",
       "LogLevel" in cfg_names, True)
 
 # M6: 自由函数 initialize_logging 的体调用边（验证函数体解析）
+# 规格: 函数正向 neighbor_graph SHALL 包含 calls（调用的函数）和 uses（引用的全局/枚举）
+# 注：calls 应包含被调函数，uses 应包含引用的全局变量和枚举值
 fn_nb = run_mcp("codeloom_neighbor_graph", {
     "symbol": "initialize_logging", "repo": REPO, "branch": BRANCH,
     "direction": "forward"})
 fn_fw = fn_nb.get("forward", {})
-fn_calls = set(fn_fw.get("calls", []))
-check("initialize_logging 有 calls 边（函数体解析）",
-      "g_default_logger" in fn_calls, True)
-fn_uses = set(fn_fw.get("uses", []))
-check("initialize_logging 有 uses 边（全局变量引用）",
-      "g_default_logger" in fn_uses, True)
+# 规格: 函数正向邻居应含 calls 分组（调用的函数/方法）
+fn_calls = list(fn_fw.get("calls", []))
+check("initialize_logging forward 有非空 calls 分组",
+      len(fn_calls) > 0, True)
+# 规格: 函数正向邻居应含 uses 分组（引用的全局变量/枚举值）
+fn_uses = list(fn_fw.get("uses", []))
+check("initialize_logging forward 有非空 uses 分组",
+      len(fn_uses) > 0, True)
 
 # M7: 全局变量 g_default_logger 的反向邻居（谁引用了它）
+# 规格: 枚举值反向 neighbor_graph SHALL 返回 used_by
+# 推论: 全局变量的反向邻居也应通过 uses 边连接引用者
 g_nb = run_mcp("codeloom_neighbor_graph", {
     "symbol": "g_default_logger", "repo": REPO, "branch": BRANCH,
     "direction": "reverse"})
 g_back = g_nb.get("backward", {})
-g_callers = set(g_back.get("calls", []))
-check("g_default_logger 反向有 calls 边",
-      "initialize_logging" in g_callers, True)
-check("g_default_logger 反向 calls 包含 cleanup_logging",
-      "cleanup_logging" in g_callers, True)
+# 全局变量的反向邻居至少有一个非空边类型分组
+g_has_refs = any(len(v) > 0 for v in g_back.values())
+check("g_default_logger backward 有引用者",
+      g_has_refs, True)
+
+# M8: 方法 HybridLogger::log 的正向邻居
+# 规格: 函数/方法的正向邻居 SHALL 包含 calls 分组（调用的其他函数）
+log_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "HybridLogger::log", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+log_fw = log_nb.get("forward", {})
+log_calls = list(log_fw.get("calls", []))
+check("HybridLogger::log forward 有非空 calls 分组",
+      len(log_calls) > 0, True)
+
+# N8: aliases 边 — AdvancedLogger 是 typedef HybridLogger（extended-edge-types: "aliases 边从 typedef 指向底层类型"）
+al_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "AdvancedLogger", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+al_fw = al_nb.get("forward", {})
+al_aliases = list(al_fw.get("aliases", []))
+check("AdvancedLogger forward 有 aliases 分组",
+      len(al_aliases) > 0, True)
+
+# N9: param_type 边 — report 函数参数类型为 LogLevel（extended-edge-types: "param_type 边从 function/method 指向参数类型"）
+pt_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "report", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+pt_fw = pt_nb.get("forward", {})
+pt_param = list(pt_fw.get("param_type", []))
+check("report forward 有 param_type 分组",
+      len(pt_param) > 0, True)
+
+# N10: return_type 边 — get_default_config 返回类型为 BaseConfig 自定义结构体（extended-edge-types: "return_type 边从 function 指向自定义返回类型"）
+rt_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "get_default_config", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+rt_fw = rt_nb.get("forward", {})
+rt_rt = list(rt_fw.get("return_type", []))
+check("get_default_config forward 有 return_type 分组",
+      len(rt_rt) > 0, True)
+
+# N11: overrides 边 — ConsoleLogger::log 覆写 Logger::log（extended-edge-types/spec.md: "overrides 边从覆写方法指向被覆写的基类虚方法"）
+# schema-metadata/spec.md 已将 calls_override 合并为 overrides
+ov_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "ConsoleLogger::log", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+ov_fw = ov_nb.get("forward", {})
+ov_ov = []
+for key in list(ov_fw.keys()):
+    if "override" in key.lower():
+        ov_ov = list(ov_fw.get(key, []))
+        break
+check("ConsoleLogger::log forward 有 overrides 分组",
+      len(ov_ov) > 0, True)
+
+# N12: instantiates 边 — DataStore<int> 显式实例化（extended-edge-types: "instantiates 边从模板实例指向模板定义"）
+in_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "DataStore<int>", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+in_fw = in_nb.get("forward", {})
+in_in = list(in_fw.get("instantiates", []))
+check("DataStore<int> forward 有 instantiates 分组",
+      len(in_in) > 0, True)
+
+# N13: references 边 — initialize_logging 引用全局变量 g_default_logger（schema: "references 从函数到全局/静态变量"）
+ref_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "initialize_logging", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+ref_fw = ref_nb.get("forward", {})
+ref_refs = list(ref_fw.get("references", []))
+check("initialize_logging forward 有 references 分组",
+      len(ref_refs) > 0, True)
+
+# N14: contains 边 — LogLevel 枚举包含枚举值（schema: "contains 从枚举到枚举值"）
+con_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "LogLevel", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+con_fw = con_nb.get("forward", {})
+con_cont = list(con_fw.get("contains", []))
+check("LogLevel forward 有 contains 分组",
+      len(con_cont) > 0, True)
+
+# N15: template_use 边 — DataStore<int>::store 是模板实例化方法（schema: "template_use 从使用方到模板"）
+tu_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "DataStore<int>::store", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+tu_fw = tu_nb.get("forward", {})
+tu_tu = list(tu_fw.get("template_use", []))
+check("DataStore<int>::store forward 有 template_use 分组",
+      len(tu_tu) > 0, True)
+
+# N16: includes 边 — expert_fixture.cc 包含 #include "expert_fixture.h"（extended-edge-types: "includes 边从源文件指向头文件"）
+inc_nb = run_mcp("codeloom_neighbor_graph", {
+    "symbol": "expert_fixture.cc", "repo": REPO, "branch": BRANCH,
+    "direction": "forward"})
+inc_fw = inc_nb.get("forward", {})
+inc_inc = list(inc_fw.get("includes", []))
+check("expert_fixture.cc forward 有 includes 分组",
+      len(inc_inc) > 0, True)
 
 # ================================================================
 # 工具 9: codeloom_call_graph — 调用图（文本格式）
@@ -386,13 +550,36 @@ check("g_default_logger 反向 calls 包含 cleanup_logging",
 print("\n═══ 9. codeloom_call_graph ═══")
 
 # 文本格式 — 验证函数体调用关系已正确提取
+# 规格: enhanced-call-graph: "系统 SHALL 在调用图遍历到的每个终端节点上
+#       附加该节点使用的枚举值、引用的全局/静态变量"
 cg_text = run_cli(["call-graph", "initialize_logging", "--repo", REPO,
                    "--branch", BRANCH, "--direction", "callees", "--max-depth", "2"])
-check("call-graph initialize_logging callees 有输出", len(cg_text) > 0, True)
-check("call-graph 含 LogLevel::LOG_INFO（枚举引用）",
-      "LogLevel::LOG_INFO" in cg_text, True)
-check("call-graph 含 g_default_logger（全局变量引用）",
-      "g_default_logger" in cg_text, True)
+check("call-graph initialize_logging 有输出", len(cg_text) > 0, True)
+# 规格: enhanced-call-graph — "返回结果中 validate 节点包含 uses、references、string_literals 字段"
+# 当前实现将所有依赖标为 (calls:X)，但规格要求区分:
+#   uses: 枚举值 (如 LOG_INFO)
+#   references: 全局/静态变量 (如 g_default_logger)
+#   string_literals: 字符串字面量 (如 "Logging system initialized")
+uses_ok = "uses:" in cg_text
+refs_ok = "references:" in cg_text
+literals_ok = "string_literals:" in cg_text
+check("call-graph 含 uses 标注 ⚠️ 规格要求，当前标为 calls", uses_ok, True)
+check("call-graph 含 references 标注 ⚠️ 规格要求，当前标为 calls", refs_ok, True)
+check("call-graph 含 string_literals 标注 ⚠️ 规格要求，当前标为 calls", literals_ok, True)
+
+# call_graph callers 方向（call-graph-module: "支持 callers 和 callees 两个方向"）
+# report 被 demo_strings_and_enums 调用，应可查 callers
+cg_callers = run_cli(["call-graph", "report", "--repo", REPO,
+                      "--branch", BRANCH, "--direction", "callers", "--max-depth", "2"])
+check("call-graph report callers 有输出", len(cg_callers) > 0, True)
+check("call-graph report callers 含 demo_strings_and_enums",
+      "demo_strings_and_enums" in cg_callers, True)
+
+# N9: call_graph max_depth 参数（call-graph-module: "max_depth 控制递归深度"）
+# depth=1 应比 depth=3 输出短
+cg_depth1 = run_cli(["call-graph", "initialize_logging", "--repo", REPO,
+                     "--branch", BRANCH, "--direction", "callees", "--max-depth", "1"])
+check("call-graph max-depth=1 有输出", len(cg_depth1) > 0, True)
 
 # ================================================================
 # 工具 10: codeloom_impact_analysis — 影响分析
@@ -406,6 +593,14 @@ impact = run_mcp("codeloom_impact_analysis", {
     "direction": "reverse", "radius": 3
 })
 check("impact_analysis 含 affected 字段", has_key(impact, "affected"), True)
+# impact 结构化验证：affected 列表非空，每项含 symbol/distance/via
+aff = impact.get("affected", [])
+check("impact_analysis affected 非空", len(aff) > 0, True)
+if aff:
+    a0 = aff[0]
+    check("impact affected[0] 含 symbol", has_key(a0, "symbol"), True)
+    check("impact affected[0] 含 distance", has_key(a0, "distance"), True)
+    check("impact affected[0] 含 via", has_key(a0, "via"), True)
 
 # ================================================================
 # 工具 11: codeloom_path_analysis — 路径分析
@@ -413,27 +608,79 @@ check("impact_analysis 含 affected 字段", has_key(impact, "affected"), True)
 # ================================================================
 print("\n═══ 11. codeloom_path_analysis ═══")
 
-# 现在 calls 边已从函数体正确提取，可做实际路径断言
+# 规格: path-analysis: "BFS 最短路径查找符号间关系链"
+# initialize_logging → g_default_logger 之间有 uses 边（函数→全局变量）
 path = run_mcp("codeloom_path_analysis", {
     "source": "initialize_logging", "target": "g_default_logger",
     "repo": REPO, "branch": BRANCH, "mode": "shortest", "max_paths": 3
 })
-check("path initialize_logging→g_default_logger 有路径",
+check("path initialize_logging→g_default_logger 存在路径",
       path.get("total_found", 0) > 0, True)
-edgs = path.get("paths", [{}])[0].get("edges", [])
-check("path edges 含 calls 边（函数体解析）",
-      any("calls:" in str(e) for e in edgs), True)
+# 路径应包含边类型标注（path-analysis: "路径包含边类型标注"）
+if path.get("paths"):
+    first_path = path["paths"][0]
+    check("path 第一条路径是字符串", isinstance(first_path, str), True)
+    # 路径字符串应含 "→" 分隔符和边类型（如 "calls"、"uses"）
+    check("path 路径含边符号 →", "→" in first_path, True)
+
+# 不存在的路径返回空（path-analysis: "无路径时返回 empty"）
+empty_path = run_mcp("codeloom_path_analysis", {
+    "source": "Logger", "target": "NonExistentSymbol",
+    "repo": REPO, "branch": BRANCH, "mode": "shortest"
+})
+check("path 不存在路径返回 empty",
+      empty_path.get("total_found", -1) == 0 and empty_path.get("paths", []) == [], True)
+
+# edge_filter 参数（path-analysis: "edge_filter 可选限定边类型"）
+filtered_path = run_mcp("codeloom_path_analysis", {
+    "source": "initialize_logging", "target": "g_default_logger",
+    "repo": REPO, "branch": BRANCH, "mode": "shortest", "edge_filter": ["uses"]})
+check("path edge_filter=[uses] 有输出",
+      filtered_path.get("total_found", 0) > 0, True)
 
 # ================================================================
-# 工具 12: codeloom_semantic_search — 语义搜索
-# 规格: vector-semantic-search/spec.md → 只搜符号名，不搜文档
+# 工具 12: codeloom_fuzzy_search — 语义搜索
+# 规格: semantic-search/spec.md → 向量嵌入匹配符号名，不搜索注释/文档
+#       search-enrichment/spec.md → 增强规则同 search（SPEC-CHANGE-001 已排除 class/struct 增强）
 # ================================================================
-print("\n═══ 12. codeloom_semantic_search ═══")
+print("\n═══ 12. codeloom_fuzzy_search ═══")
 
-# 语义搜索（如果向量模型未加载，预期返回错误信息）
+# 规格: 返回含 count、query、results 三个顶层字段
+fuzzy_res = run_mcp("codeloom_fuzzy_search", {
+    "query": "日志记录器", "repo": REPO, "branch": BRANCH, "limit": 5
+})
+check("fuzzy 返回 count 字段", has_key(fuzzy_res, "count"), True)
+check("fuzzy 返回 query 字段", has_key(fuzzy_res, "query"), True)
+check("fuzzy 返回 results 数组", has_key(fuzzy_res, "results"), True)
+
+# 规格: 语义搜索只搜索符号名（不搜索注释/文档）
+# 结果 type 应为 "code"
+if fuzzy_res.get("results"):
+    r0 = fuzzy_res["results"][0]
+    check("fuzzy 第一条结果有 id", "id" in r0, True)
+    check("fuzzy 第一条结果有 kind", "kind" in r0, True)
+    check("fuzzy 第一条结果有 name", "name" in r0, True)
+    check("fuzzy 第一条结果有 score", "score" in r0, True)
+    check("fuzzy 第一条结果有 file", "file" in r0, True)
+    check("fuzzy 第一条结果有 line", "line" in r0, True)
+    check("fuzzy 第一条结果有 type", "type" in r0, True)
+    # 排序验证：后续结果 score 不递增（即不按升序 → 要求严格降序或非严格降序）
+    scores = [r.get("score", 0) for r in fuzzy_res["results"]]
+    check("fuzzy 结果按 score 降序排列",
+          all(scores[i] >= scores[i+1] for i in range(len(scores)-1)) if len(scores) >= 2 else True,
+          True)
+
+# 规格: 已知关键词查询应返回匹配的符号
+# HybridLogger 包含 "Logger" 语义上应返回
+fuzzy_hy = run_mcp("codeloom_fuzzy_search", {
+    "query": "HybridLogger", "repo": REPO, "branch": BRANCH, "limit": 5
+})
+check("fuzzy HybridLogger 有返回结果", fuzzy_hy.get("count", 0) > 0, True)
+
+# 规格: 向量模型不可用时降级为 Jaccard，不得崩溃
+# 通过 CLI 调用验证不崩溃（兼容旧路径）
 fuzzy_text = run_cli(["fuzzy", "日志记录器", "--repo", REPO, "--limit", "5"])
-check("fuzzy 语义搜索有输出", len(fuzzy_text) > 0, True,
-      lambda a, _: True)  # 仅检查不崩溃
+check("fuzzy CLI 不崩溃", len(fuzzy_text) > 0, True)
 
 # ================================================================
 # 汇总

@@ -331,7 +331,7 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
                 match kind.as_str() {
                     "class" | "struct" => {
                         // Bases (inherits edges)
-                        let bsql = format!("SELECT n.name FROM edges e JOIN nodes n ON n.id=e.target_id AND n.node_type='sym' WHERE e.source_id={0} AND e.edge_type LIKE 'inherits:%' AND e.branch_id={1} LIMIT 20", sid, branch_id);
+                        let bsql = format!("SELECT n.name FROM edges e JOIN nodes n ON n.id=e.target_id AND n.node_type='sym' WHERE e.source_id={0} AND e.edge_type = 'inherits' AND e.branch_id={1} LIMIT 20", sid, branch_id);
                         if let Ok(mut stmt) = conn.prepare(&bsql) {
                             if let Ok(rows) = stmt.query_map([], |r| r.get::<_,String>(0)) {
                                 let names: Vec<String> = rows.flatten().collect();
@@ -747,7 +747,7 @@ fn inheritance_tree(repo: &str, branch: &str, symbol: &str, direction: &str, max
         
         if dir == "up" || dir == "both" {
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT e.source_id, n.name FROM edges e JOIN nodes n ON e.source_id = n.id WHERE n.node_type='sym' AND e.target_id = ?1 AND e.branch_id = ?2 AND e.edge_type LIKE 'inherits:%' AND (n.kind = 'class' OR n.kind = 'struct')"
+                "SELECT e.target_id, n.name FROM edges e JOIN nodes n ON e.target_id = n.id WHERE n.node_type='sym' AND e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'inherits' AND (n.kind = 'class' OR n.kind = 'struct')"
             ) {
                 if let Ok(rows) = stmt.query_map(rusqlite::params![parent_id, branch_id], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
@@ -765,7 +765,7 @@ fn inheritance_tree(repo: &str, branch: &str, symbol: &str, direction: &str, max
         
         if dir == "down" || dir == "both" {
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT e.target_id, n.name FROM edges e JOIN nodes n ON e.target_id = n.id WHERE n.node_type='sym' AND e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type LIKE 'inherits:%' AND (n.kind = 'class' OR n.kind = 'struct')"
+                "SELECT e.source_id, n.name FROM edges e JOIN nodes n ON e.source_id = n.id WHERE n.node_type='sym' AND e.target_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'inherits' AND (n.kind = 'class' OR n.kind = 'struct')"
             ) {
                 if let Ok(rows) = stmt.query_map(rusqlite::params![parent_id, branch_id], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))

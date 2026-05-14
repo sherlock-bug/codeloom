@@ -62,7 +62,7 @@ pub fn get_edges(
 
     if direction == "reverse" || direction == "both" {
         let sql = format!(
-            "SELECT e.source_id, e.target_id, e.edge_type, s1.name, s2.name \
+            "SELECT e.source_id, e.target_id, e.edge_type, s2.name, s1.name \
              FROM edges e \
              JOIN nodes s2 ON e.source_id = s2.id \
              LEFT JOIN nodes s1 ON e.target_id = s1.id \

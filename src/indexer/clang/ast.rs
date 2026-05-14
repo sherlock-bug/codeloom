@@ -391,6 +391,22 @@ impl ExtractCtx {
                     ..Default::default()
                     };
                     self.add_symbol(sym, n, "", &ns, "enum");
+
+                    // contains edges: enum → enum values
+                    if let Some(inner) = node.get("inner").and_then(|v| v.as_array()) {
+                        for child in inner {
+                            if child.get("kind").and_then(|v| v.as_str()) == Some("EnumConstantDecl") {
+                                if let Some(cn) = child.get("name").and_then(|v| v.as_str()) {
+                                    let qcn = format!("{}::{}", n, cn);
+                                    self.result.edges.push(Edge {
+                                        source_name: n.to_string(), source_ns: ns.clone(),
+                                        target_name: qcn,
+                                        edge_type: "contains".to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
                 // enum values are inside as EnumConstantDecl
             }
@@ -678,14 +694,68 @@ impl ExtractCtx {
     }
 
     fn extract_variable_uses(&mut self, node: &serde_json::Value, func: &str, ns: &str) {
-        extract_decl_refs(node, |ref_name| {
-            let rn = ref_name.clone();
+        // Walk the AST for all DeclRefExpr nodes (from function bodies).
+        // Differentiate by referencedDecl kind:
+        //   - EnumConstantDecl → uses: (enum value usage)
+        //   - VarDecl (global/static) → references: (variable reference)
+        //   - StringLiteral → uses: (string literal usage, handled separately)
+        // ReferencedDecl in the Clang AST has a "kind" field that tells us
+        // what kind of declaration the DeclRefExpr points to.
+        fn walk_refs(
+            n: &serde_json::Value,
+            uses: &mut Vec<String>,
+            refs: &mut Vec<String>,
+        ) {
+            let kind = n.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if kind == "DeclRefExpr" {
+                if let Some(ref_decl) = n.get("referencedDecl") {
+                    if let Some(ref_name) = ref_decl.get("name").and_then(|v| v.as_str()) {
+                        let ref_kind = ref_decl.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                        match ref_kind {
+                            "EnumConstantDecl" => {
+                                if let Some(qtype) = n.get("type").and_then(|v| v.get("qualType")).and_then(|v| v.as_str()) {
+                                    uses.push(format!("{}::{}", qtype, ref_name));
+                                } else {
+                                    uses.push(ref_name.to_string());
+                                }
+                            }
+                            "VarDecl" => {
+                                refs.push(ref_name.to_string());
+                            }
+                            _ => {
+                                uses.push(ref_name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(inner) = n.get("inner").and_then(|v| v.as_array()) {
+                for child in inner {
+                    walk_refs(child, uses, refs);
+                }
+            }
+        }
+
+        let mut uses = Vec::new();
+        let mut refs = Vec::new();
+        walk_refs(node, &mut uses, &mut refs);
+
+        for name in uses {
             self.result.edges.push(Edge {
-                source_name: func.to_string(), source_ns: ns.to_string(),
-                target_name: ref_name,
-                edge_type: format!("uses:{}", rn),
+                source_name: func.to_string(),
+                source_ns: ns.to_string(),
+                target_name: name.clone(),
+                edge_type: format!("uses:{}", &name),
             });
-        });
+        }
+        for name in refs {
+            self.result.edges.push(Edge {
+                source_name: func.to_string(),
+                source_ns: ns.to_string(),
+                target_name: name.clone(),
+                edge_type: format!("references:{}", &name),
+            });
+        }
     }
 
     // ─── Helpers ────────────────────────────────────────────────────
@@ -808,11 +878,11 @@ fn find_override_target(node: &serde_json::Value) -> Option<String> {
 fn extract_call_targets<F: FnMut(String)>(node: &serde_json::Value, mut cb: F) {
     fn walk(n: &serde_json::Value, cb: &mut dyn FnMut(String)) {
         let kind = n.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        // Direct calls: DeclRefExpr in free function calls
         if kind == "DeclRefExpr" {
             if let Some(ref_decl) = n.get("referencedDecl") {
                 if let Some(ref_name) = ref_decl.get("name").and_then(|v| v.as_str()) {
                     // Enum constant names need qualification: qualType::name
-                    // e.g. LOG_INFO → LogLevel::LOG_INFO to match DB storage.
                     if ref_decl.get("kind").and_then(|v| v.as_str()) == Some("EnumConstantDecl") {
                         if let Some(qtype) = n.get("type").and_then(|v| v.get("qualType")).and_then(|v| v.as_str()) {
                             cb(format!("{}::{}", qtype, ref_name));
@@ -825,6 +895,18 @@ fn extract_call_targets<F: FnMut(String)>(node: &serde_json::Value, mut cb: F) {
                 }
             }
         }
+        // Member function calls: MemberExpr in CXXMemberCallExpr
+        // Clang puts the called method's info in MemberExpr.referencedDecl
+        if kind == "MemberExpr" {
+            if let Some(ref_decl) = n.get("referencedDecl") {
+                if let Some(ref_name) = ref_decl.get("name").and_then(|v| v.as_str()) {
+                    cb(ref_name.to_string());
+                }
+            }
+        }
+        // Walk inner recursively so extract_calls can be called on the
+        // FunctionDecl node itself — it will find both DeclRefExpr and MemberExpr
+        // inside the function body (which survives the filter minimally).
         if let Some(inner) = n.get("inner").and_then(|v| v.as_array()) {
             for child in inner {
                 walk(child, cb);

@@ -246,3 +246,65 @@ Clang 索引器 SHALL 正确提取 `#include` 的头文件中定义的符号（�
 - WHEN 切换到 INT8 量化
 - THEN 向量存储空间 SHALL 从 ~153MB 降至 ~38MB
 - AND 语义搜索 top-10 准确率下降不超过 3%
+
+### Requirement: 搜索增强字段缺失（SPEC-CHANGE-001）
+search/semantic_search 结果中的 class/struct/function/section/chunk/file 节点 SHALL 返回增强字段（members、methods、parent_class、prev_section、next_section、sections）。
+当前偏差：已确认不作为 bug 修复（SPEC-CHANGE-001），但相关 spec 文档（search-enrichment/spec.md）未同步更新。
+
+#### Scenario: 类结果展示
+- GIVEN 搜索返回 HybridLogger 结果
+- THEN 结果 SHALL 包含 members 和 methods 字段
+
+### Requirement: inspect 增强字段缺失
+codeloom_inspect 对 enum 节点 SHALL 返回 values 列表，class/struct SHALL 返回 bases/members/methods 结构化信息。
+当前偏差：当前 inspect 对 enum 不返回 values 字段（测试用例已添加但失败）。
+
+#### Scenario: 枚举节点
+- GIVEN 用户 inspect LogLevel 枚举
+- THEN 返回 values 数组含 LOG_INFO/LOG_DEBUG/LOG_WARN/LOG_ERROR
+
+### Requirement: call_graph 终端节点标注不达标
+call_graph 的终端节点 SHALL 按规格区分 uses（枚举值）、references（全局/静态变量）、string_literals 标注，而非全部标为 (calls:X)。
+当前偏差：所有依赖统一标为 (calls:X)。测试用例已按规格添加，4 项均未通过。
+
+#### Scenario: 枚举值标注
+- GIVEN 函数体内引用 LOG_INFO
+- WHEN 在 call_graph 终端节点展示
+- THEN 标注 SHALL 为 (uses:LOG_INFO) 而非 (calls:LOG_INFO)
+
+### Requirement: path_analysis 输出格式不匹配
+codeloom_path_analysis 的输出格式 SHALL 为字符串链（如 "A → calls → B → uses → C"），并正确处理空路径。
+当前偏差：当前输出与规格不符——路径数据格式非字符串链，空路径处理未按规格返回 {paths: [], total_found: 0}。测试用例已按规格添加。
+
+#### Scenario: 路径边类型标注
+- GIVEN 用户查询 initialize_logging → g_default_logger
+- THEN 路径字符串 SHALL 包含 "→" 分隔符和边类型（如 "calls"、"uses"）
+
+### Requirement: 继承树键名 BUG-008
+codeloom_inheritance_tree 返回结果顶层键 SHALL 使用 `symbol`，而非 `root`。
+当前偏差：当前仍使用 `root` 作为顶层键。测试用例已添加 BUG-008 严格断言（"root" not in tree）并失败。
+
+#### Scenario: 继承树键名
+- GIVEN 用户查询 HybridLogger 继承树
+- THEN 顶层字典键 SHALL 为 "symbol"
+
+### Requirement: 非阻塞测试覆盖缺口
+以下测试覆盖缺口已知但不阻塞当前发布，需安排了后续 SDD change 解决：
+
+1. **分支隔离未测试** — 需搭建双分支 fixture 验证 SQL WHERE (branch_id = ? OR branch_id = 0) 的正确性
+2. **inspect 无 template_args 验证** — class/struct 未测 template_args 字段
+3. **inspect file/section/chunk 节点类型未测试** — 规格为这些类型定义了专有输出格式，但测试从未 inspect 过非 sym 节点
+4. **inheritance_tree 无 override 验证** — 虚函数 override 列表未测试
+5. **call_graph 缺 MCP 协议调用** — 仅通过 CLI 测试，无 MCP JSON-RPC 协议层测试
+6. **neighbor_graph 边类型覆盖不全** — contains/returns/param_type/aliases/includes 等边未验证
+7. **impact_analysis 方向不全** — forward 方向、radius=1、edge_filter 未测试
+8. **path_analysis 全路径模式** — mode=all（全路径）未测试
+9. **schema 未逐类型验证** — 15 种节点/11 种边的完整清单未逐类型断言
+10. **id 参数未测试** — 所有工具的 id 参数传参路径完全未覆盖
+11. **错误路径零覆盖** — 不存在 repo/branch/symbol 的 LLM 友好错误处理未测试
+12. **overrides 边未覆盖** — 虚函数覆写边（从派生类 override 方法指向基类虚方法），当前测试已写但实现未产生。schema-metadata/spec.md 已合并 calls_override 为 overrides。
+
+#### Scenario: 分支隔离验证（需新 fixture）
+- GIVEN 同一仓库在 branch-A 和 branch-B 均有索引
+- WHEN branch-A 的符号 X 有 calls 边，branch-B 的符号 X 无此呼叫链
+- THEN branch-A 查询仅看到自己的边，branch-B 查询不看到 branch-A 的边
