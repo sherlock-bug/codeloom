@@ -1,14 +1,12 @@
 # extended-edge-types
 
 ## Purpose
-CodeLoom SHALL 从 Clang AST 中提取 11 种边类型，包括调用、继承、参数类型、返回类型、包含、覆写、别名等关系，构建完整的代码关系图。
+CodeLoom SHALL 从 Clang AST 中提取边类型，包括调用、继承、参数类型、返回类型、包含、覆写、别名等关系，构建完整的代码关系图。
 
-## Requirements
+> ⚠️ **说明**：以下边类型中有部分尚未由索引器实现（标记为 🔴）。对应规格但未实现的边在 `known-limitations/spec.md` 中记录。开发者提交变更前 SHALL 按约定更新相关场景。
 
-### Requirement: 外部调用通过 is_external 区分
+### Requirement: 外部调用通过 is_external 区分 ✅ 已实现
 系统 SHALL 对调用外部符号使用普通 `calls:` 边，通过目标符号的 `is_external` 列区分内外部，不创建独立的 calls_external: 边类型。
-
-#### Scenario: 外部调用用普通 calls 边
 - GIVEN 本项目函数 `process()` 调用了 `std::sort`
 - WHEN 解析到该调用
 - THEN 创建 source=process、target=std::sort、edge_type="calls:std::sort" 的边，其中 std::sort 的 is_external=1

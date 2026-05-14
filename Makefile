@@ -49,4 +49,14 @@ release-zip: release
 	mv $$TMPDIR/$$ZIP_NAME .; \
 	rm -rf $$TMPDIR; \
 	ls -lh $$ZIP_NAME; \
-	echo "Done."
+\techo "Done."
+
+# 索引测试 fixture
+.PHONY: test-fixture-index
+test-fixture-index:
+\tcargo build && cargo run -- index tests/fixtures/comprehensive --repo test-fixture --branch main
+
+# 运行断言式 MCP 测试（需要先 make test-fixture-index）
+.PHONY: test-mcp
+test-mcp:
+\tpython3 tests/run-mcp-assertions.py

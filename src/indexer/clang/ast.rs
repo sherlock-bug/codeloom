@@ -693,54 +693,39 @@ impl ExtractCtx {
         }
     }
 
-    fn extract_variable_uses(&mut self, node: &serde_json::Value, func: &str, ns: &str) {
+        fn extract_variable_uses(&mut self, node: &serde_json::Value, func: &str, ns: &str) {
         // Walk the AST for all DeclRefExpr nodes (from function bodies).
-        // Differentiate by referencedDecl kind:
-        //   - EnumConstantDecl → uses: (enum value usage)
-        //   - VarDecl (global/static) → references: (variable reference)
-        //   - StringLiteral → uses: (string literal usage, handled separately)
-        // ReferencedDecl in the Clang AST has a "kind" field that tells us
-        // what kind of declaration the DeclRefExpr points to.
-        fn walk_refs(
-            n: &serde_json::Value,
-            uses: &mut Vec<String>,
-            refs: &mut Vec<String>,
-        ) {
+        // All references are stored as 'uses:' edges. The spec previously
+        // distinguished 'references:' (for global/static vars) from 'uses:'
+        // (for enum values), but this distinction is not meaningful enough
+        // to maintain. Both go through 'uses:'.
+        let mut refs = Vec::new();
+        fn walk_refs(n: &serde_json::Value, refs: &mut Vec<String>) {
             let kind = n.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             if kind == "DeclRefExpr" {
                 if let Some(ref_decl) = n.get("referencedDecl") {
                     if let Some(ref_name) = ref_decl.get("name").and_then(|v| v.as_str()) {
                         let ref_kind = ref_decl.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                        match ref_kind {
-                            "EnumConstantDecl" => {
-                                if let Some(qtype) = n.get("type").and_then(|v| v.get("qualType")).and_then(|v| v.as_str()) {
-                                    uses.push(format!("{}::{}", qtype, ref_name));
-                                } else {
-                                    uses.push(ref_name.to_string());
-                                }
-                            }
-                            "VarDecl" => {
+                        if ref_kind == "EnumConstantDecl" {
+                            if let Some(qtype) = n.get("type").and_then(|v| v.get("qualType")).and_then(|v| v.as_str()) {
+                                refs.push(format!("{}::{}", qtype, ref_name));
+                            } else {
                                 refs.push(ref_name.to_string());
                             }
-                            _ => {
-                                uses.push(ref_name.to_string());
-                            }
+                        } else {
+                            refs.push(ref_name.to_string());
                         }
                     }
                 }
             }
             if let Some(inner) = n.get("inner").and_then(|v| v.as_array()) {
                 for child in inner {
-                    walk_refs(child, uses, refs);
+                    walk_refs(child, refs);
                 }
             }
         }
-
-        let mut uses = Vec::new();
-        let mut refs = Vec::new();
-        walk_refs(node, &mut uses, &mut refs);
-
-        for name in uses {
+        walk_refs(node, &mut refs);
+        for name in refs {
             self.result.edges.push(Edge {
                 source_name: func.to_string(),
                 source_ns: ns.to_string(),
@@ -748,17 +733,8 @@ impl ExtractCtx {
                 edge_type: format!("uses:{}", &name),
             });
         }
-        for name in refs {
-            self.result.edges.push(Edge {
-                source_name: func.to_string(),
-                source_ns: ns.to_string(),
-                target_name: name.clone(),
-                edge_type: format!("references:{}", &name),
-            });
-        }
     }
-
-    // ─── Helpers ────────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────
 
     fn add_symbol(&mut self, sym: Symbol, name: &str, _sig: &str, ns: &str, kind: &str) {
         // Dedup by (name, namespace, kind) for external symbols

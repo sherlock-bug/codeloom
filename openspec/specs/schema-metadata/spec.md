@@ -19,7 +19,7 @@ CodeLoom 元数据工具：暴露节点类型（15种）和边类型（10种）�
 - THEN `node_kinds` 数组中每个条目包含 `name`、`description`、`example`
 
 #### Scenario: 元数据包含边类型
-- GIVEN CodeLoom edges 表包含 calls, overrides, inherits, contains, uses, references, returns, param_type, field_type, template_use 等边
+- GIVEN CodeLoom edges 表包含 calls, inherits, contains, uses, returns, param_type, field_type, aliases 等边
 - WHEN 查询 schema
 - THEN `edge_types` 数组中每个条目包含 `prefix`、`direction`（from→to 的语义）、`source_kinds`、`target_kinds`
 
