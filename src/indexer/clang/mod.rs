@@ -252,6 +252,14 @@ fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str, branch_name: &str)
                             rusqlite::params![id],
                         )?;
                     }
+                    // Prefer header path over source path for cross-file merges.
+                    // The canonical declaration location (.h) should take priority.
+                    if new_is_header && !is_header(&existing_path) {
+                        conn.execute(
+                            "UPDATE nodes SET file_path=?2 WHERE id=?1 AND node_type='sym'",
+                            rusqlite::params![id, sym.file_path],
+                        )?;
+                    }
                     Ok(id)
                 }
             } else {

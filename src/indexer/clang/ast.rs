@@ -123,7 +123,42 @@ impl ExtractCtx {
         let decl_file = loc_obj
             .and_then(|v| v.get("file"))
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_string();
+        // When loc.file is empty AND the node has includedFrom, the declaration is
+        // in an included project header. Resolve the header path from the TU file
+        // by replacing the .cc/.cpp extension with .h.
+        let decl_file = if decl_file.is_empty() {
+            if let Some(incl) = loc_obj.and_then(|v| v.get("includedFrom")) {
+                let incl_file = incl.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                // Only resolve for project TUs — system includes are handled by is_system()
+                if !incl_file.is_empty() && self.is_project_file(incl_file) {
+                    let path = std::path::Path::new(&self.cur_file);
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if let Some(parent) = path.parent() {
+                            let h_path = parent.join(format!("{}.h", stem));
+                            if h_path.exists() {
+                                log_debug!("indexer::clang::ast", "resolved header decl: {} -> {}",
+                                    self.cur_file, h_path.display());
+                                h_path.to_string_lossy().to_string()
+                            } else {
+                                decl_file
+                            }
+                        } else {
+                            decl_file
+                        }
+                    } else {
+                        decl_file
+                    }
+                } else {
+                    decl_file
+                }
+            } else {
+                decl_file
+            }
+        } else {
+            decl_file
+        };
         let has_loc = loc_obj.map_or(false, |v| !v.as_object().map_or(true, |o| o.is_empty()));
         if !decl_file.is_empty() {
             self.cur_file = decl_file.to_string();
@@ -153,7 +188,7 @@ impl ExtractCtx {
         } else if decl_file.is_empty() {
             !self.is_project_file(&self.cur_file) // header decl, use current file context
         } else {
-            !self.is_project_file(decl_file)
+            !self.is_project_file(&decl_file)
         };
         if name.is_some() {
             log_debug!("indexer::clang::ast", "is_external={} name={:?} kind={} decl_file=\"{}\" cur_file=\"{}\" root=\"{}\"",

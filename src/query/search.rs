@@ -242,7 +242,7 @@ fn enrich_search_results(
                 // Members (fields)
                 if let Ok(mut stmt) = conn.prepare(
                     "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
-                     WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'field' \
+                     WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains' AND n.kind = 'field' \
                      ORDER BY n.id LIMIT 15"
                 ) {
                     let names: Vec<String> = stmt.query_map([r.id, branch_id], |row| {
@@ -255,7 +255,7 @@ fn enrich_search_results(
                 // Methods
                 if let Ok(mut stmt) = conn.prepare(
                     "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
-                     WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'method' \
+                     WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains' AND n.kind = 'method' \
                      ORDER BY n.id LIMIT 15"
                 ) {
                     let names: Vec<String> = stmt.query_map([r.id, branch_id], |row| {
@@ -270,7 +270,7 @@ fn enrich_search_results(
                 // Enum values
                 if let Ok(mut stmt) = conn.prepare(
                     "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
-                     WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'enum_value' \
+                     WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains' AND n.kind = 'enum_value' \
                      ORDER BY n.id LIMIT 15"
                 ) {
                     let names: Vec<String> = stmt.query_map([r.id, branch_id], |row| {
@@ -335,7 +335,7 @@ fn enrich_search_results(
             // Chunk is a doc with doc_id set; find parent section id first
             if let Ok(mut stmt) = conn.prepare(
                 "SELECT e.source_id, n.name FROM edges e JOIN nodes n ON e.source_id = n.id \
-                 WHERE e.target_id = ?1 AND e.edge_type = 'contains:' AND e.branch_id = ?2 LIMIT 1"
+                 WHERE e.target_id = ?1 AND e.edge_type = 'contains' AND e.branch_id = ?2 LIMIT 1"
             ) {
                 if let Ok((parent_id, parent_name)) = stmt.query_row([r.id, branch_id], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
@@ -344,7 +344,7 @@ fn enrich_search_results(
                     // prev chunk: same parent, lower idx
                     if let Ok(mut stmt2) = conn.prepare(
                         "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
-                         WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'chunk' AND n.id < ?3 \
+                         WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains' AND n.kind = 'chunk' AND n.id < ?3 \
                          ORDER BY n.id DESC LIMIT 1"
                     ) {
                         if let Ok(name) = stmt2.query_row([parent_id, branch_id, r.id], |row| row.get::<_, String>(0)) {
@@ -354,7 +354,7 @@ fn enrich_search_results(
                     // next chunk
                     if let Ok(mut stmt3) = conn.prepare(
                         "SELECT n.name FROM edges e JOIN nodes n ON e.target_id = n.id \
-                         WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains:' AND n.kind = 'chunk' AND n.id > ?3 \
+                         WHERE e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type = 'contains' AND n.kind = 'chunk' AND n.id > ?3 \
                          ORDER BY n.id ASC LIMIT 1"
                     ) {
                         if let Ok(name) = stmt3.query_row([parent_id, branch_id, r.id], |row| row.get::<_, String>(0)) {
