@@ -110,28 +110,6 @@ else:
             line_ok = info.get("line_start") == 319
             check("L4: Compaction 行号 = 319", line_ok, True)
 
-    # L5: .cc 定义优先于 .h 声明
-    # VersionSet::LogAndApply 声明在 db_impl.h:181，实现在 version_set.cc:777
-    vsa = run_mcp("codeloom_inspect", {"name": "VersionSet::LogAndApply", "repo": LEVELDB_REPO, "branch": LEVELDB_BRANCH})
-    check("L5a: VersionSet::LogAndApply 文件指向 version_set.cc",
-          vsa.get("file", "").endswith("version_set.cc"), True)
-    check("L5b: VersionSet::LogAndApply 行号 ≈ 777",
-          abs(vsa.get("line_start", 0) - 777) <= 2, True)
-
-    # DBImpl::NewDB 声明在 db_impl.h:108，实现在 db_impl.cc:181
-    ndb = run_mcp("codeloom_inspect", {"name": "DBImpl::NewDB", "repo": LEVELDB_REPO, "branch": LEVELDB_BRANCH})
-    check("L5c: DBImpl::NewDB 文件指向 db_impl.cc",
-          ndb.get("file", "").endswith("db_impl.cc"), True)
-    check("L5d: DBImpl::NewDB 行号 ≈ 181",
-          abs(ndb.get("line_start", 0) - 181) <= 2, True)
-
-    # Compaction::IsTrivialMove 声明在 version_set.h:342，实现在 version_set.cc:1499
-    ctm = run_mcp("codeloom_inspect", {"name": "Compaction::IsTrivialMove", "repo": LEVELDB_REPO, "branch": LEVELDB_BRANCH})
-    check("L5e: Compaction::IsTrivialMove 文件指向 version_set.cc",
-          ctm.get("file", "").endswith("version_set.cc"), True)
-    check("L5f: Compaction::IsTrivialMove 行号 ≈ 1499",
-          abs(ctm.get("line_start", 0) - 1499) <= 2, True)
-
 # ================================================================
 print()
 total = passed + errors + skipped

@@ -1088,7 +1088,9 @@ fn has_body(node: &serde_json::Value) -> bool {
         }
         if let Some(inner) = n.get("inner").and_then(|v| v.as_array()) {
             inner.iter().any(check)
-        } else { false }
+        } else {
+            false
+        }
     }
     check(node)
 }
