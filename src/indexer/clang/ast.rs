@@ -480,7 +480,7 @@ impl ExtractCtx {
             "VarDecl" => {
                 if let Some(n) = name {
                     let storage = node.get("storageClass").and_then(|v| v.as_str()).unwrap_or("");
-                    let is_global_or_static = storage == "static" || loc.0 == 0;
+                    let is_global_or_static = storage == "static" || storage == "extern" || loc.0 == 0;
                     
                     let k = if storage == "static" { "static_var" }
                         else if is_global_or_static { "global" }
