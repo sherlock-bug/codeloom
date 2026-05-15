@@ -902,6 +902,14 @@ for sym in ("DataStore::store", "DataStore::retrieve", "CustomError::what"):
     data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
     check(f"G5: {sym} 唯一性 (去重)", len(data_lines), 1)
 
+# G5b: .cc 实现优先于 .h 声明（定义优先合并策略）
+# CustomError::what 声明在 expert_fixture.h:73，实现在 expert_fixture.cc:43
+what = run_mcp("codeloom_inspect", {"name": "CustomError::what", "repo": REPO, "branch": BRANCH})
+check("G5b: CustomError::what 文件指向 .cc（定义优先）",
+      what.get("file", "").endswith(".cc"), True)
+check("G5b: CustomError::what 行号 ≈ 43（定义行）",
+      abs(what.get("line_start", 0) - 43) <= 2, True)
+
 # G6: enum_value 类型符号存在
 for ev in ("LogLevel::LOG_DEBUG", "LogLevel::LOG_INFO", "LogLevel::LOG_WARN", "LogLevel::LOG_ERROR"):
     info = run_mcp("codeloom_inspect", {"name": ev, "repo": REPO, "branch": BRANCH})
