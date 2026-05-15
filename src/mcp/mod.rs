@@ -307,7 +307,7 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
     }
     let mut results = Vec::new();
     for (sid, ntype, sname, kind, file, lstart, lend, sig, parent, ns, lang, doc) in &rows {
-        let esc = |s: &str| s.replace('\\', "\\\\").replace('\"', "\\\"");
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('\"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
         let mut json = format!(
             "{{\"name\":\"{}\",\"kind\":\"{}\",\"node_type\":\"{}\"",
             esc(sname), esc(kind), esc(ntype)

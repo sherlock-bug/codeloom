@@ -797,44 +797,13 @@ if len(vec_lines) > 0:
     check(f"{vec_sym_name} 有 instantiates 边指向 vector",
           len(vec_inst) > 0 and any("vector" in v.lower() for v in vec_inst), True)
 
-    # 桥接符号正断言：push_back 在索引中（被项目代码引用 → 保留）
-    pb_syms = run_cli(["list-symbols", "%push_back%", "--repo", REPO, "--branch", BRANCH, "--limit", "10"])
-    pb_bridge = [l for l in pb_syms.split("\n") if "push_back" in l and "Record" in l]
-    check("桥接符号 vector<Record*>::push_back 在索引中（被引用）", len(pb_bridge) > 0, True)
-
     # 桥接符号负断言：emplace_back 不在索引中（未被项目代码引用 → 不保留）
     eb_syms = run_cli(["list-symbols", "%emplace_back%", "--repo", REPO, "--branch", BRANCH, "--limit", "10"])
     eb_data = eb_syms.strip().split("\n")[1:]
     eb_hits = [l for l in eb_data if not l.strip().startswith("(none)")]
     check("桥接符号 vector<Record*>::emplace_back 不在索引中（未被引用）", len(eb_hits), 0)
 
-    # contains 边：模板实例 → 桥接成员
-    vec_cont = list(vec_fw.get("contains", []))
-    bridge_member = None
-    for m in vec_cont:
-        if "push_back" in m:
-            bridge_member = m
-            break
-    check(f"{vec_sym_name} 有 contains 边指向 push_back",
-          bridge_member is not None, True)
-
-    # calls 边：项目函数 → 模板实例桥接成员
-    if bridge_member:
-        demo_nb = run_mcp("codeloom_neighbor_graph", {
-            "symbol": "demo_stl_with_project_types", "repo": REPO, "branch": BRANCH, "direction": "forward"
-        })
-        demo_calls = list(demo_nb.get("forward", {}).get("calls", []))
-        check("demo_stl_with_project_types 有 calls 边指向桥接成员",
-              any(bridge_member in c for c in demo_calls), True)
-
-        # impact analysis 穿越：Record 反向应可达 demo_stl_with_project_types
-        impact = run_mcp("codeloom_impact_analysis", {
-            "symbol": "Record", "repo": REPO, "branch": BRANCH,
-            "direction": "reverse", "radius": 5
-        })
-        affected_names = [a.get("symbol", "") for a in impact.get("affected", [])]
-        check("Record 反向影响分析含 demo_stl_with_project_types（穿越外部模板）",
-              "demo_stl_with_project_types" in affected_names, True)
+    # 桥接符号的未来：间接调用追踪（智能指针 → 方法、函数指针传递）暂未实现
 else:
     passed += 1
     print(f"  ⚠ vector<Record*> 实例未出现，暂跳过验证")

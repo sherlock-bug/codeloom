@@ -194,7 +194,7 @@ def filter_node(node, project_root, fallback_file=None):
                 if has_project_file and isinstance(child, dict):
                     child_loc = child.get("loc", {})
                     if isinstance(child_loc, dict) and not child_loc.get("file"):
-                        if child_kind in BODY_KINDS or child_kind == "DeclRefExpr":
+                        if child_kind in BODY_KINDS or child_kind in ("DeclRefExpr", "MemberExpr"):
                             child = dict(child)
                             child["loc"] = dict(child_loc)
                             child["loc"]["file"] = node_file
