@@ -59,6 +59,14 @@ def is_system(node, project_root, fallback_file=None):
         # for non-body nodes (body nodes are handled separately in filter_node),
         # so treat missing file as external/system.
         # The only exception: previousDecl linking to a project declaration.
+        # 
+        # However, some project nodes (like explicit ClassTemplateSpecializationDecl
+        # instantiations in .cc files) also lack loc.file but have a line number
+        # and a project fallback_file. Check if fallback indicates project context.
+        if fallback_file and fallback_file.startswith(project_root):
+            loc = node.get("loc", {})
+            if isinstance(loc, dict) and loc.get("line", 0):
+                return False
         return True
     # Resolve relative paths to match absolute project_root
     abs_file = os.path.abspath(file)
@@ -194,7 +202,7 @@ def filter_node(node, project_root, fallback_file=None):
                 if has_project_file and isinstance(child, dict):
                     child_loc = child.get("loc", {})
                     if isinstance(child_loc, dict) and not child_loc.get("file"):
-                        if child_kind in BODY_KINDS or child_kind in ("DeclRefExpr", "MemberExpr"):
+                        if child_kind in BODY_KINDS or child_kind in ("DeclRefExpr", "MemberExpr", "ParmVarDecl", "CXXThisExpr"):
                             child = dict(child)
                             child["loc"] = dict(child_loc)
                             child["loc"]["file"] = node_file
