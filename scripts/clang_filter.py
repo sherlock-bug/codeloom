@@ -376,6 +376,7 @@ def filter_node(node, project_root, fallback_file=None):
         # in header but defined in .cc. Clang omits loc.file for these.
         # Let it through; Rust side decides based on cur_file context.
         if kind == "FunctionDecl" and _has_body(node):
+            filtered["hasBody"] = True  # Tell Rust side this node has a body
             pass  # keep
         elif kind == "ClassTemplateSpecializationDecl" and _has_project_type_arg(node):
             pass  # keep
@@ -386,6 +387,12 @@ def filter_node(node, project_root, fallback_file=None):
             pass  # keep — provides type info for kept CTS nodes
         else:
             return None
+
+    # Inject hasBody marker for FunctionDecl/CXXMethodDecl with body.
+    # The CompoundStmt body was already stripped by BODY_KINDS filtering,
+    # so Rust side needs this marker to detect the node has a definition.
+    if kind in ("FunctionDecl", "CXXMethodDecl") and _has_body(node):
+        filtered["hasBody"] = True
 
     # Now check BODY_KINDS — body nodes with surviving children (e.g. DeclRefExpr)
     # get a minimal representation so the extractor can find symbol references.

@@ -254,12 +254,16 @@ fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str, branch_name: &str)
                             rusqlite::params![id],
                         )?;
                     }
-                    // Prefer header path over source path for cross-file merges.
-                    // The canonical declaration location (.h) should take priority.
-                    if new_is_header && !is_header(&existing_path) {
+                    // Definition location takes priority over declaration for cross-file merges.
+                    // When .cc definition merges into .h declaration slot, update the
+                    // symbol's location to the definition file/line for accurate navigation.
+                    eprintln!("DBG_UPSERT: cross-file merge for {}: sym.is_def={}, existing.is_def={}, new_file={}, existing_file={}",
+                        sym.name, sym.is_definition, existing_is_def, sym.file_path, existing_path);
+                    if sym.is_definition && !existing_is_def {
+                        eprintln!("DBG_UPSERT: UPDATING id={} file_path={} line_start={}", id, sym.file_path, sym.line_start);
                         conn.execute(
-                            "UPDATE nodes SET file_path=?2 WHERE id=?1 AND node_type='sym'",
-                            rusqlite::params![id, sym.file_path],
+                            "UPDATE nodes SET file_path=?2, line_start=?3, line_end=?4 WHERE id=?1 AND node_type='sym'",
+                            rusqlite::params![id, sym.file_path, sym.line_start, sym.line_end],
                         )?;
                     }
                     Ok(id)

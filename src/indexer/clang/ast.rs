@@ -1000,9 +1000,21 @@ impl ExtractCtx {
     fn add_symbol(&mut self, sym: Symbol, name: &str, _sig: &str, ns: &str, kind: &str) {
         // Dedup by (name, namespace, kind) for external symbols
         let key = (name.to_string(), ns.to_string(), kind.to_string());
-        if self.seen_symbols.iter().any(|(n, s, k)| n == &key.0 && s == &key.1 && k == &key.2) {
+        if let Some(pos) = self.seen_symbols.iter().position(|(n, s, k)| n == &key.0 && s == &key.1 && k == &key.2) {
+            // Duplicate key. If new symbol is a definition and existing is not,
+            // replace the existing entry — the .cc definition has better location info.
+            if sym.is_definition {
+                if let Some(existing_idx) = self.result.symbols.iter().position(|s| {
+                    s.name == key.0
+                        && s.namespace.as_deref().unwrap_or("") == key.1
+                        && s.kind == key.2
+                }) {
+                    self.result.symbols[existing_idx] = sym;
+                }
+            }
             return;
         }
+        eprintln!("DBG_ADD_SYM: new key ({:?}), adding: file={} line={} is_def={}", key, sym.file_path, sym.line_start, sym.is_definition);
         self.seen_symbols.push(key);
         self.result.symbols.push(sym);
     }
@@ -1082,6 +1094,10 @@ fn extract_template_args_from_sig(sig: &str) -> String {
 }
 
 fn has_body(node: &serde_json::Value) -> bool {
+    // Python clang_filter may inject hasBody flag when CompoundStmt was stripped
+    if node.get("hasBody").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return true;
+    }
     fn check(n: &serde_json::Value) -> bool {
         if n.get("kind").and_then(|v| v.as_str()) == Some("CompoundStmt") {
             return true;

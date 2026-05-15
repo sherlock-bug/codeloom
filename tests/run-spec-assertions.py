@@ -312,8 +312,8 @@ check("initialize_logging inspect 有 edges 分组",
 # 规格要求: 声明合并后 is_definition=1（extended-node-types/spec.md 跨文件场景）
 info = run_mcp("codeloom_inspect", {"name": "initialize_logging", "repo": REPO, "branch": BRANCH})
 check("BUG-009: initialize_logging 跨文件合并为单个对象", isinstance(info, dict), True)
-# 合并后 file_path 保留 .h（声明文件），不是 .cc（定义文件）
-check("BUG-009: initialize_logging 路径指向 .h", info.get("file", "").endswith(".h"), True)
+# 合并后 file_path 指向 .cc（定义文件优先于声明文件）
+check("BUG-009: initialize_logging 路径指向 .cc（定义优先）", info.get("file", "").endswith(".cc"), True)
 
 # ================================================================
 # 工具 7: codeloom_inheritance_tree — 继承树
@@ -901,6 +901,14 @@ for sym in ("DataStore::store", "DataStore::retrieve", "CustomError::what"):
     lines = run_cli(["list-symbols", sym, "--repo", REPO, "--branch", BRANCH, "--limit", "10"])
     data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
     check(f"G5: {sym} 唯一性 (去重)", len(data_lines), 1)
+
+# G5b: .cc 实现优先于 .h 声明（定义优先合并策略）
+# CustomError::what 声明在 expert_fixture.h:73，实现在 expert_fixture.cc:43
+what = run_mcp("codeloom_inspect", {"name": "CustomError::what", "repo": REPO, "branch": BRANCH})
+check("G5b: CustomError::what 文件指向 .cc（定义优先）",
+      what.get("file", "").endswith(".cc"), True)
+check("G5b: CustomError::what 行号 ≈ 43（定义行）",
+      abs(what.get("line_start", 0) - 43) <= 2, True)
 
 # G6: enum_value 类型符号存在
 for ev in ("LogLevel::LOG_DEBUG", "LogLevel::LOG_INFO", "LogLevel::LOG_WARN", "LogLevel::LOG_ERROR"):
