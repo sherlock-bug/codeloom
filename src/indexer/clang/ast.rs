@@ -616,6 +616,19 @@ impl ExtractCtx {
             "NamespaceDecl" => {
                 if let Some(n) = name {
                     if n != "(anonymous)" && !n.is_empty() {
+                        // Skip external/system namespaces — they only exist to carry
+                        // project-type children (like std::vector<MyType>). Creating a
+                        // symbol for them pollutes the index with STL internals.
+                        if is_external {
+                            // Still recurse into children so template instances etc.
+                            // can be found within this namespace context.
+                            if let Some(inner) = node.get("inner").and_then(|v| v.as_array()) {
+                                for child in inner {
+                                    self.extract_node(child, &ns, None);
+                                }
+                            }
+                            return;
+                        }
                         let hash = format!("ns:{}", n);
                         let sym = Symbol {
                             id: None, repo: self.repo.clone(), name: n.to_string(), kind: "namespace".to_string(),
@@ -1009,14 +1022,27 @@ fn get_range(node: &serde_json::Value, file_path: &str) -> (u32, u32) {
     let begin = range.and_then(|v| v.get("begin"));
     let end = range.and_then(|v| v.get("end"));
 
-    // Try range.begin.line first (rarely present in Clang 18), fallback to offset→line
+    // Try range.begin.line first (rarely present in Clang 18), fallback to loc.line
+    // (which is always correct — from #line directive), then offset→line.
     let ls = begin.and_then(|v| v.get("line")).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let ls = if ls > 0 {
         ls
-    } else if let Some(off) = begin.and_then(|v| v.get("offset")).and_then(|v| v.as_u64()) {
-        offset_to_line(file_path, off as u32)
     } else {
-        0
+        // Use loc.line when range.begin.line is missing.
+        // loc.line is accurate (from Clang's #line directive tracking).
+        // offset_to_line is unreliable for nodes in included headers since the
+        // byte offset refers to the preprocessed file, not the source file.
+        let loc_line = node.get("loc")
+            .and_then(|v| v.get("line"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        if loc_line > 0 {
+            loc_line
+        } else if let Some(off) = begin.and_then(|v| v.get("offset")).and_then(|v| v.as_u64()) {
+            offset_to_line(file_path, off as u32)
+        } else {
+            0
+        }
     };
 
     // line_end: try range.end.line, then offset→line, then fallback to ls

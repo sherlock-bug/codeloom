@@ -864,9 +864,13 @@ for qfield, bare in [
     info_q = run_mcp("codeloom_inspect", {"name": qfield, "repo": REPO, "branch": BRANCH})
     check(f"G2: '{bare}'裸名→合格名 {qfield} 存在",
           isinstance(info_q, dict), True)
-    info_b = run_mcp("codeloom_inspect", {"name": bare, "repo": REPO, "branch": BRANCH})
-    check(f"G2: '{bare}'裸名不存在",
-          isinstance(info_b, list) or (isinstance(info_b, dict) and "error" in info_b), True)
+    # Use list-symbols with exact match for bare name check (codeloom_inspect
+    # has LIKE fallback that may match qualified names via %::suffix)
+    bare_lines = run_cli(["list-symbols", bare, "--repo", REPO, "--branch", BRANCH, "--limit", "5"])
+    bare_data = [l for l in bare_lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
+    # Only count exact bare name matches (not qualified like Class::bare)
+    bare_hits = [l for l in bare_data if l.strip().split()[-1] == bare and "::" not in l]
+    check(f"G2: '{bare}'裸名不存在", len(bare_hits), 0)
 
 # G3: 模板类方法应有合格名称
 for qmethod, bare in [
@@ -877,18 +881,20 @@ for qmethod, bare in [
     info_q = run_mcp("codeloom_inspect", {"name": qmethod, "repo": REPO, "branch": BRANCH})
     check(f"G3: '{bare}'裸名→合格名 {qmethod} 存在",
           isinstance(info_q, dict), True)
-    info_b = run_mcp("codeloom_inspect", {"name": bare, "repo": REPO, "branch": BRANCH})
-    check(f"G3: '{bare}'裸名不存在",
-          isinstance(info_b, list) or (isinstance(info_b, dict) and "error" in info_b), True)
+    bare_lines = run_cli(["list-symbols", bare, "--repo", REPO, "--branch", BRANCH, "--limit", "5"])
+    bare_data = [l for l in bare_lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
+    bare_hits = [l for l in bare_data if l.strip().split()[-1] == bare and "::" not in l]
+    check(f"G3: '{bare}'裸名不存在", len(bare_hits), 0)
 
 # G4: .cc 中类外定义方法应有合格名称
 for qmethod, bare in [("CustomError::what", "what")]:
     info_q = run_mcp("codeloom_inspect", {"name": qmethod, "repo": REPO, "branch": BRANCH})
     check(f"G4: '{bare}'裸名→合格名 {qmethod} 存在",
           isinstance(info_q, dict), True)
-    info_b = run_mcp("codeloom_inspect", {"name": bare, "repo": REPO, "branch": BRANCH})
-    check(f"G4: '{bare}'裸名不存在",
-          isinstance(info_b, list) or (isinstance(info_b, dict) and "error" in info_b), True)
+    bare_what = run_cli(["list-symbols", bare, "--repo", REPO, "--branch", BRANCH, "--limit", "5"])
+    bare_what_data = [l for l in bare_what.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
+    bare_what_hits = [l for l in bare_what_data if l.strip().split()[-1] == bare and "::" not in l]
+    check(f"G4: '{bare}'裸名不存在", len(bare_what_hits), 0)
 
 # G5: 符号去重 — 每个合格名唯一
 for sym in ("DataStore::store", "DataStore::retrieve", "CustomError::what"):
@@ -929,32 +935,10 @@ data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswi
 check("G11: template_instance DataStore<int> 在索引中", len(data_lines) > 0, True)
 
 # ================================================================
-# Leveldb 索引质量测试（需 leveldb 仓库已索引）
+# Leveldb 索引质量测试（已分离到 run-leveldb-assertions.py）
+# 发版本时手动跑：python3 tests/run-leveldb-assertions.py
 # ================================================================
-LEVELDB_REPO = "leveldb"
-LEVELDB_BRANCH = "main"
-
-leveldb_ok = run_cli(["list-repos"]).strip()
-if "leveldb" in leveldb_ok:
-    # BUG-011: class Compaction 应在 version_set.h:319 唯一定义
-    lines = run_cli(["list-symbols", "Compaction", "--repo", LEVELDB_REPO, "--branch", LEVELDB_BRANCH, "--limit", "10"])
-    data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
-    check("L1: class Compaction 唯一性（应为 1 个）", len(data_lines), 1)
-
-    if data_lines:
-        # Inspect the first result
-        sym = data_lines[0].strip()
-        info = run_mcp("codeloom_inspect", {"name": sym, "repo": LEVELDB_REPO, "branch": LEVELDB_BRANCH})
-        is_class = isinstance(info, dict) and info.get("kind") == "class"
-        check("L2: Compaction 类型为 class", is_class, True)
-        if is_class:
-            file_ok = "version_set.h" in info.get("file", "")
-            check("L3: Compaction 文件指向 version_set.h", file_ok, True)
-            line_ok = info.get("line_start") == 319
-            check("L4: Compaction 行号 = 319", line_ok, True)
-else:
-    passed += 1  # Skip leveldb tests if repo not available
-    print("  ⏭ L0: leveldb 仓库未索引，跳过 leveldb 测试")
+print("  ⏭ leveldb 测试已分离（python3 tests/run-leveldb-assertions.py）")
 
 # ================================================================
 print(f"\n{'='*50}")

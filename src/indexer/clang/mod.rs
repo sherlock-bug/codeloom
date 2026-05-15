@@ -354,7 +354,7 @@ fn parse_file(file: &str, extra_args: &[String], project_root: &str) -> anyhow::
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let filter_script = std::path::Path::new(&home).join(".codeloom/scripts/clang_filter.py");
     
-    // Build pipeline: clang ... | python3 filter.py <project_root>
+    // Build pipeline: clang ... | python3 filter.py <project_root> <source_file>
     // Compiler flags (-I/-D/-std= etc) go BEFORE --, only the source file after
     let mut clang_args = String::from("-fsyntax-only -Xclang -ast-dump=json -I'");
     clang_args.push_str(project_root);

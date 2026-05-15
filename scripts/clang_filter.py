@@ -31,17 +31,139 @@ BODY_KINDS = frozenset({
     "WarnUnusedResultAttr", "AlwaysInlineAttr", "VisibilityAttr",
 })
 
+# ─── Linemap: track source file byte ranges in preprocessed output ─
+
+def build_linemap(pp_file):
+    """Parse #line directives from -E output → {source_file: (start_offset, end_offset)}.
+    
+    For each source file referenced in #line directives, records its byte range
+    within the preprocessed output. An AST node with offset O (in the source file)
+    can be mapped to the preprocessed offset by: pp_off = file_start + source_off.
+    Then looked up in a separate sorted index to verify the file context.
+    
+    Returns:
+        file_ranges: {source_file: (preprocessed_start, preprocessed_end)}
+        file_order: [(preprocessed_start, source_file)] sorted for binary search
+    """
+    if not pp_file or not os.path.exists(pp_file):
+        return {}, []
+    
+    try:
+        with open(pp_file, 'r') as f:
+            content = f.read()
+    except (IOError, OSError):
+        return {}, []
+    
+    lines = content.split('\n')
+    offset = 0
+    current_file = None
+    file_ranges = {}  # source_file → [start_offset, end_offset]
+    
+    for line in lines:
+        line_bytes = len(line.encode('utf-8')) + 1  # +1 for newline
+        
+        if line.startswith('# ') and len(line) > 2 and line[2:3].isdigit():
+            parts = line.split()
+            if len(parts) >= 3:
+                try:
+                    _line_num = int(parts[1])
+                    fname = parts[2].strip('"')
+                    if fname:
+                        if current_file is not None and current_file in file_ranges:
+                            file_ranges[current_file][1] = offset
+                        current_file = fname
+                        # Don't track non-project files (system headers, <built-in>, etc.)
+                        if not fname.startswith('/usr/') and not fname.startswith('<'):
+                            if fname not in file_ranges:
+                                file_ranges[fname] = [offset, offset]
+                            else:
+                                # Already seen this file; update end later
+                                pass
+                except (ValueError, IndexError):
+                    pass
+        
+        offset += line_bytes
+    
+    # Finalize last file range
+    if current_file and current_file in file_ranges:
+        file_ranges[current_file][1] = offset
+    
+    # Build sorted list for binary search by preprocessed offset
+    # Each entry: (preprocessed_offset, source_file)
+    file_order = []
+    for fname, (start, end) in file_ranges.items():
+        file_order.append((start, fname))
+    file_order.sort()
+    
+    return file_ranges, file_order
+
+
+def linemap_lookup(file_ranges, file_order, source_offset, source_line, target_class_name=None):
+    """Find the source file for a declaration in an included header.
+    
+    Uses two clues:
+    1. source_offset: byte offset within the source file
+    2. source_line: line number in the source file
+    
+    Strategy: for each project source file, check if a class/struct with
+    target_class_name exists at the given line. Returns the matching file or ''.
+    """
+    if not file_ranges or not file_order:
+        return ''
+    
+    # Build a list of candidate files that contain the given source_line
+    # by checking preprocessed file ranges
+    # This is a heuristic — we look at ALL files in the project's include tree
+    # that have enough bytes to contain source_offset
+    
+    candidates = []
+    for fname, (start, end) in file_ranges.items():
+        file_size = end - start
+        if source_offset < file_size:
+            # This file's range in the preprocessed output is large enough
+            # to contain source_offset bytes. It's a candidate.
+            candidates.append(fname)
+    
+    if not candidates:
+        return ''
+    
+    # If there's only one candidate, use it
+    if len(candidates) == 1:
+        return candidates[0]
+    
+    # Multiple candidates — try to disambiguate by checking the actual content
+    # for the target class name at the given line
+    if target_class_name:
+        for fname in candidates:
+            # Only check project files (skip system)
+            if fname.startswith('/usr/') or fname.startswith('<'):
+                continue
+            try:
+                with open(fname, 'r') as f:
+                    for i, line in enumerate(f, 1):
+                        if i == source_line and target_class_name in line:
+                            return fname
+            except (IOError, OSError):
+                continue
+    
+    # Fallback: return the last candidate (most likely the most deeply nested header)
+    return candidates[-1] if candidates else ''
+
+
+# ─── Filtering logic ────────────────────────────────────────────────
 
 def get_node_file(node):
-    """Extract the source file path from a Clang AST node. Returns '' if unknown."""
+    """Extract the source file path from a Clang AST node. Returns '' if unknown.
+    """
     loc = node.get("loc", {})
     if not isinstance(loc, dict) or not loc:
         return ""
+    
     file = loc.get("file", "")
     if file:
         return file
-    # loc.file is empty — fall back to includedFrom.file.
-    # This captures the includer's path for header-declared functions.
+    
+    # Fall back to includedFrom.file (the includer's file path).
     incl = loc.get("includedFrom", {})
     if isinstance(incl, dict):
         return incl.get("file", "")
@@ -63,13 +185,18 @@ def is_system(node, project_root, fallback_file=None):
         # However, some project nodes (like explicit ClassTemplateSpecializationDecl
         # instantiations in .cc files) also lack loc.file but have a line number
         # and a project fallback_file. Check if fallback indicates project context.
-        if fallback_file and fallback_file.startswith(project_root):
+        if fallback_file and (fallback_file.startswith(project_root) or
+                              os.path.normpath(os.path.join(project_root, fallback_file)).startswith(project_root)):
             loc = node.get("loc", {})
             if isinstance(loc, dict) and loc.get("line", 0):
                 return False
         return True
     # Resolve relative paths to match absolute project_root
-    abs_file = os.path.abspath(file)
+    # Use project_root-relative resolution, NOT os.path.abspath (CWD-dependent)
+    if os.path.isabs(file):
+        abs_file = file
+    else:
+        abs_file = os.path.normpath(os.path.join(project_root, file))
     if abs_file.startswith(project_root):
         return False
     return not file.startswith(project_root)
@@ -184,11 +311,21 @@ def filter_node(node, project_root, fallback_file=None):
     kind = node.get("kind", "")
 
     # Determine file for propagation: need this before children recursion
-    # for path injection into body nodes
+    # for path injection into child nodes
     node_file = get_node_file(node)
     if not node_file:
         node_file = fallback_file or ""
-    has_project_file = bool(node_file) and node_file.startswith(project_root)
+    # Resolve relative paths against project_root (NOT CWD — os.path.abspath
+    # depends on the running process's working directory, which may not match
+    # Clang's relative path convention like "./db/version_set.h").
+    def _resolve(f):
+        if not f:
+            return ""
+        if os.path.isabs(f):
+            return f
+        return os.path.normpath(os.path.join(project_root, f))
+    abs_node_file = _resolve(node_file)
+    has_project_file = bool(abs_node_file) and abs_node_file.startswith(project_root)
 
     # Recurse into children FIRST (before system/BODY_KINDS checks), so
     # system namespaces containing CTS nodes with project-type template args
@@ -202,10 +339,20 @@ def filter_node(node, project_root, fallback_file=None):
                 if has_project_file and isinstance(child, dict):
                     child_loc = child.get("loc", {})
                     if isinstance(child_loc, dict) and not child_loc.get("file"):
-                        if child_kind in BODY_KINDS or child_kind in ("DeclRefExpr", "MemberExpr", "ParmVarDecl", "CXXThisExpr"):
+                        # Inject loc.file for declaration nodes that need file context
+                        # from included headers: CXXRecordDecl, ClassTemplateDecl.
+                        # Previously restricted to BODY_KINDS only. Expanded to include
+                        # CXXRecordDecl to fix BUG-011 (duplicate class symbols with
+                        # wrong file/line from different TUs).
+                        # Do NOT inject for FunctionDecl/VarDecl — system functions
+                        # like printf would get the TU's file path and bypass is_system.
+                        if child_kind in BODY_KINDS or child_kind in (
+                            "DeclRefExpr", "MemberExpr", "ParmVarDecl", "CXXThisExpr",
+                            "CXXRecordDecl", "ClassTemplateDecl",
+                        ):
                             child = dict(child)
                             child["loc"] = dict(child_loc)
-                            child["loc"]["file"] = node_file
+                            child["loc"]["file"] = _resolve(node_file)  # always absolute path
                 child_fallback = node_file if has_project_file else fallback_file
                 result = filter_node(child, project_root, child_fallback)
                 if result is not None:
