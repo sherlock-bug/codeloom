@@ -91,18 +91,39 @@ pub fn get_edges(
 /// Resolve a symbol name to its internal ID.
 pub fn resolve_symbol_id(conn: &Connection, name: &str, repo: &str, branch: &str) -> Option<i64> {
     let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).ok()?;
-    // Try sym node first, fallback to file node (e.g., for includes edges)
-    conn.query_row(
+    // Try sym node first (exact match), fallback to file node, then LIKE fallback
+    let exact = conn.query_row(
         "SELECT n.id FROM nodes n JOIN branches b ON n.id = b.node_id \
          WHERE n.name = ?1 AND n.node_type='sym' AND b.repo = ?2 AND (b.branch_id = ?3 OR b.branch_id = 0)",
         rusqlite::params![name, repo, branch_id],
         |row| row.get(0),
+    ).ok();
+    if exact.is_some() { return exact; }
+
+    // File nodes store branch_id directly on the nodes table (not in the branches join table)
+    let file = conn.query_row(
+        "SELECT id FROM nodes \
+         WHERE name = ?1 AND node_type='file' AND repo = ?2 AND (branch_id = ?3 OR branch_id = 0)",
+        rusqlite::params![name, repo, branch_id],
+        |row| row.get(0),
+    ).ok();
+    if file.is_some() { return file; }
+
+    // LIKE fallback for qualified-name suffix (e.g., "store" → "%::store" matches DataStore::store)
+    // Only for sym nodes, prefer suffix match over broad match
+    let suffix_pat = format!("%::{}", name);
+    conn.query_row(
+        "SELECT n.id FROM nodes n JOIN branches b ON n.id = b.node_id \
+         WHERE n.name LIKE ?1 AND n.node_type='sym' AND b.repo = ?2 AND (b.branch_id = ?3 OR b.branch_id = 0) LIMIT 1",
+        rusqlite::params![suffix_pat, repo, branch_id],
+        |row| row.get(0),
     ).ok().or_else(|| {
-        // File nodes store branch_id directly on the nodes table (not in the branches join table)
+        // Broad LIKE fallback (last resort)
+        let broad_pat = format!("%{}%", name);
         conn.query_row(
-            "SELECT id FROM nodes \
-             WHERE name = ?1 AND node_type='file' AND repo = ?2 AND (branch_id = ?3 OR branch_id = 0)",
-            rusqlite::params![name, repo, branch_id],
+            "SELECT n.id FROM nodes n JOIN branches b ON n.id = b.node_id \
+             WHERE n.name LIKE ?1 AND n.node_type='sym' AND b.repo = ?2 AND (b.branch_id = ?3 OR b.branch_id = 0) LIMIT 1",
+            rusqlite::params![broad_pat, repo, branch_id],
             |row| row.get(0),
         ).ok()
     })

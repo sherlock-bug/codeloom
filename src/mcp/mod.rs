@@ -295,7 +295,7 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
     let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
     let bwc = branch_where_clause(branch);
     let sql = format!("SELECT n.id, n.node_type, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name=?2 {}", bwc);
-    let rows: Vec<(i64,String,String,String,String,i64,i64,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)> = match conn.prepare(&sql) {
+    let mut rows: Vec<(i64,String,String,String,String,i64,i64,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)> = match conn.prepare(&sql) {
         Ok(mut stmt) => stmt.query_map(rusqlite::params![repo, name], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
                 r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?))
@@ -303,7 +303,24 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
         Err(_) => return format!("{{\"error\":\"Error querying symbol '{}'\"}}", name),
     };
     if rows.is_empty() {
-        return format!("{{\"error\":\"Symbol '{}' not found in {} (branch={})\"}}", name, repo, branch);
+        // LIKE fallback: suffix match first (e.g., "store" → "%::store"), then broad
+        let like_sql = format!("SELECT n.id, n.node_type, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name LIKE ?2 AND n.node_type='sym' {} LIMIT 1", bwc);
+        for pat in [format!("%::{}", name), format!("%{}%", name)] {
+            if let Ok(mut stmt) = conn.prepare(&like_sql) {
+                if let Ok(mut q) = stmt.query_map(rusqlite::params![repo, pat], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
+                        r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?))
+                }) {
+                    if let Some(Ok(row)) = q.next() {
+                        rows.push(row);
+                        break;
+                    }
+                }
+            }
+        }
+        if rows.is_empty() {
+            return format!("{{\"error\":\"Symbol '{}' not found in {} (branch={})\"}}", name, repo, branch);
+        }
     }
     let mut results = Vec::new();
     for (sid, ntype, sname, kind, file, lstart, lend, sig, parent, ns, lang, doc) in &rows {
