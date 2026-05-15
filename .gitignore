@@ -33,3 +33,6 @@ scripts/fix_*.py
 
 # macOS artifacts
 .DS_Store
+
+# Python cache
+__pycache__/

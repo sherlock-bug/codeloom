@@ -124,11 +124,13 @@ pub fn index_clang(
                     if let Some(&sid) = src_id {
                         let tid = if let Some(&id) = tgt_id {
                             id
-                        } else if edge.edge_type.starts_with("calls:") {
+                        } else if edge.edge_type.starts_with("calls:") || edge.edge_type.starts_with("uses:") {
                             // Direct function calls to unknown targets (C library functions like
                             // printf, strstr pulled in from system headers). Skip edge + stub.
                             // MemberExpr / pointer-based calls to project symbols keep working
                             // because those targets ARE in name_to_id.
+                            // Variable references (uses:) also produce noisy stubs for local
+                            // variables/parameters — skip those too.
                             continue;
                         } else {
                             let stub_kind = infer_stub_kind(&edge.edge_type);

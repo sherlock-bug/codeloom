@@ -236,20 +236,46 @@ impl ExtractCtx {
                             // isn't nested inside a CXXRecordDecl in the AST tree.
                             // Try to extract class name from mangledName (Itanium ABI).
                             // Format: _ZN<len><class><len><method>E...
+                            // Const methods: _ZNK instead of _ZN
+                            // Template class methods: _ZN<len><class>I<args>E<len><method>E...
                             let mangled = node.get("mangledName").and_then(|v| v.as_str()).unwrap_or("");
-                            if mangled.starts_with("_ZN") {
-                                let rest = &mangled[3..]; // skip _ZN
-                                if let Some(e_pos) = rest.find('E') {
-                                    let inner = &rest[..e_pos]; // everything before E
-                                    // Parse: <len><name><len><name>...
-                                    // First name is the class
-                                    if let Some(len_end) = inner.find(|c: char| !c.is_ascii_digit()) {
-                                        if let Ok(len) = inner[..len_end].parse::<usize>() {
-                                            // Bounds check: mangled name length may exceed remaining chars
-                                            if len_end + len <= inner.len() {
-                                                let class_name = &inner[len_end..len_end + len];
-                                                if len_end + len < inner.len() && inner[len_end + len..].starts_with(|c: char| c.is_ascii_digit()) {
-                                                    format!("{}::{}", class_name, n)
+                            if mangled.starts_with("_Z") && mangled.len() > 3 {
+                                let skip = if mangled.starts_with("_ZNK") { 4 }
+                                    else if mangled.starts_with("_ZN") { 3 }
+                                    else { 0 };
+                                if skip > 0 {
+                                    let rest = &mangled[skip..]; // skip _ZN or _ZNK
+                                    // Find the LAST 'E' — this is the nested-name end
+                                    // (not template-arg end, which would be an earlier 'E')
+                                    if let Some(e_pos) = rest.rfind('E') {
+                                        let inner = &rest[..e_pos]; // everything before last E
+                                        // Parse: <len><name>... — first name is the class
+                                        if let Some(len_end) = inner.find(|c: char| !c.is_ascii_digit()) {
+                                            if let Ok(len) = inner[..len_end].parse::<usize>() {
+                                                if len_end + len <= inner.len() {
+                                                    let class_name = &inner[len_end..len_end + len];
+                                                    let remaining = &inner[len_end + len..];
+                                                    // Check if there's a method name after class
+                                                    // Normal: <len><name> (e.g., "4what")
+                                                    // Template: I<args>E<len><name> (e.g., "IiE5store")
+                                                    let has_method = if remaining.starts_with(|c: char| c.is_ascii_digit()) {
+                                                        // Non-template class method: <len><name> (e.g., "4what")
+                                                        true
+                                                    } else if remaining.starts_with('I') {
+                                                        // Template class method: I<args>E<len><name> (e.g., "IiE5store")
+                                                        // For template instances, the mangled name only has the plain class
+                                                        // name (e.g., "DataStore") not the full instance name (e.g.,
+                                                        // "DataStore<int>"). Creating "DataStore::store" would collide
+                                                        // with the primary template's method symbol. Keep bare instead.
+                                                        false
+                                                    } else {
+                                                        false
+                                                    };
+                                                    if has_method {
+                                                        format!("{}::{}", class_name, n)
+                                                    } else {
+                                                        n.to_string()
+                                                    }
                                                 } else {
                                                     n.to_string()
                                                 }
@@ -266,7 +292,7 @@ impl ExtractCtx {
                                     n.to_string()
                                 }
                             } else {
-                                n.to_string()
+                                return;
                             }
                         }
                     } else {
@@ -293,7 +319,7 @@ impl ExtractCtx {
                     sym.is_virtual = is_virtual;
                     sym.is_external = is_external;
                     sym.sid = Some(make_sid(&self.repo, &qname, &sig, &ns, k, &sym.file_path));
-                    self.result.symbols.push(sym);
+                    self.add_symbol(sym, &qname, &sig, &ns, k);
 
                     // edges: only extract from internal (project) symbols
                     if !is_external {
@@ -341,7 +367,9 @@ impl ExtractCtx {
                     // Still process inner children so namespaces etc. don't lose context
                     if let Some(inner) = node.get("inner").and_then(|v| v.as_array()) {
                         for child in inner {
-                            self.extract_node(child, &ns, parent_class);
+                            // Forward declarations and template classes: pass the class name
+                            // as parent_class so children (fields, methods) get qualified names.
+                            self.extract_node(child, &ns, name);
                         }
                     }
                     return;
@@ -832,7 +860,8 @@ impl ExtractCtx {
         if let Some(inner) = node.get("inner").and_then(|v| v.as_array()) {
             let child_ns = if kind == "NamespaceDecl" { &ns } else { parent_ns };
             for child in inner {
-                let child_parent = if matches!(kind, "CXXRecordDecl" | "ClassTemplateDecl" | "EnumDecl") {
+                let child_parent =
+                    if matches!(kind, "CXXRecordDecl" | "ClassTemplateDecl" | "ClassTemplateSpecializationDecl" | "EnumDecl") {
                     name
                 } else {
                     parent_class

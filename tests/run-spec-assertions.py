@@ -841,6 +841,93 @@ for sym in ("allocator", "char_traits", "is_same", "remove_reference",
     real_hits = [l for l in data_lines if not l.strip().startswith("(none)")
                  and not l.strip().startswith("[template_instance]")]
     check(f"STL 内部 {sym} 不在索引中", len(real_hits), 0)
+
+# ================================================================
+# 16. 索引完整性检查 — 审计发现的问题
+# ================================================================
+print("\n═══ 16. 索引完整性 — index-integrity ═══")
+
+# G1: 全局变量应被索引
+for gvar in ("g_default_logger", "g_app_name", "g_max_msg_len"):
+    info = run_mcp("codeloom_inspect", {"name": gvar, "repo": REPO, "branch": BRANCH})
+    check(f"G1: 全局变量 {gvar} 在索引中",
+          isinstance(info, dict) and info.get("kind") == "global", True)
+
+# G2: 模板类字段应有合格名称（非裸名）
+# 正反断言对：合格名应存在，裸名不应存在
+for qfield, bare in [
+    ("DataStore::data", "data"),
+    ("DataStore::count", "count"),
+    ("Pair::first", "first"),
+    ("Pair::second", "second"),
+]:
+    info_q = run_mcp("codeloom_inspect", {"name": qfield, "repo": REPO, "branch": BRANCH})
+    check(f"G2: '{bare}'裸名→合格名 {qfield} 存在",
+          isinstance(info_q, dict), True)
+    info_b = run_mcp("codeloom_inspect", {"name": bare, "repo": REPO, "branch": BRANCH})
+    check(f"G2: '{bare}'裸名不存在",
+          isinstance(info_b, list) or (isinstance(info_b, dict) and "error" in info_b), True)
+
+# G3: 模板类方法应有合格名称
+for qmethod, bare in [
+    ("DataStore::clear", "clear"),
+    ("DataStore::retrieve", "retrieve"),
+    ("DataStore::store", "store"),
+]:
+    info_q = run_mcp("codeloom_inspect", {"name": qmethod, "repo": REPO, "branch": BRANCH})
+    check(f"G3: '{bare}'裸名→合格名 {qmethod} 存在",
+          isinstance(info_q, dict), True)
+    info_b = run_mcp("codeloom_inspect", {"name": bare, "repo": REPO, "branch": BRANCH})
+    check(f"G3: '{bare}'裸名不存在",
+          isinstance(info_b, list) or (isinstance(info_b, dict) and "error" in info_b), True)
+
+# G4: .cc 中类外定义方法应有合格名称
+for qmethod, bare in [("CustomError::what", "what")]:
+    info_q = run_mcp("codeloom_inspect", {"name": qmethod, "repo": REPO, "branch": BRANCH})
+    check(f"G4: '{bare}'裸名→合格名 {qmethod} 存在",
+          isinstance(info_q, dict), True)
+    info_b = run_mcp("codeloom_inspect", {"name": bare, "repo": REPO, "branch": BRANCH})
+    check(f"G4: '{bare}'裸名不存在",
+          isinstance(info_b, list) or (isinstance(info_b, dict) and "error" in info_b), True)
+
+# G5: 符号去重 — 每个合格名唯一
+for sym in ("DataStore::store", "DataStore::retrieve", "CustomError::what"):
+    lines = run_cli(["list-symbols", sym, "--repo", REPO, "--branch", BRANCH, "--limit", "10"])
+    data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
+    check(f"G5: {sym} 唯一性 (去重)", len(data_lines), 1)
+
+# G6: enum_value 类型符号存在
+for ev in ("LogLevel::LOG_DEBUG", "LogLevel::LOG_INFO", "LogLevel::LOG_WARN", "LogLevel::LOG_ERROR"):
+    info = run_mcp("codeloom_inspect", {"name": ev, "repo": REPO, "branch": BRANCH})
+    check(f"G6: enum_value {ev} 在索引中",
+          isinstance(info, dict) and info.get("kind") == "enum_value", True)
+
+# G7: typedef 类型符号存在
+for td in ("AdvancedLogger", "SimpleLogger"):
+    info = run_mcp("codeloom_inspect", {"name": td, "repo": REPO, "branch": BRANCH})
+    check(f"G7: typedef {td} 在索引中",
+          isinstance(info, dict) and info.get("kind") == "typedef", True)
+
+# G8: static_var 类型符号存在
+info = run_mcp("codeloom_inspect", {"name": "instance_count", "repo": REPO, "branch": BRANCH})
+check("G8: static_var instance_count 在索引中",
+      isinstance(info, dict) and info.get("kind") == "static_var", True)
+
+# G9: namespace 类型符号存在
+info = run_mcp("codeloom_inspect", {"name": "std", "repo": REPO, "branch": BRANCH})
+check("G9: namespace std 在索引中",
+      isinstance(info, dict) and info.get("kind") == "namespace", True)
+
+# G10: template_function 存在（无 file_path，用 list-symbols 检测）
+lines = run_cli(["list-symbols", "max_of", "--repo", REPO, "--branch", BRANCH, "--limit", "5"])
+data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
+check("G10: template_function max_of 在索引中", len(data_lines) > 0, True)
+
+# G11: template_instance 存在（无 file_path，用 list-symbols 检测）
+lines = run_cli(["list-symbols", "DataStore<int>", "--repo", REPO, "--branch", BRANCH, "--limit", "5"])
+data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
+check("G11: template_instance DataStore<int> 在索引中", len(data_lines) > 0, True)
+
 # ================================================================
 print(f"\n{'='*50}")
 total = passed + errors + skipped
