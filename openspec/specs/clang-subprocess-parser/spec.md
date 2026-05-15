@@ -99,3 +99,4 @@ Clang 索引器在处理 CXXRecordDecl 和 ClassTemplateDecl 节点时，SHALL �
 - WHEN Clang 解析器处理该节点
 - THEN SHALL 被跳过，与 class 的前向声明行为一致
 
+#

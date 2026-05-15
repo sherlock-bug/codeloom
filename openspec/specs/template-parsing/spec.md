@@ -49,3 +49,5 @@ CodeLoom C++ 索引器的模板解析功能域。支持模板类/函数提取、
 - GIVEN `class A { std::vector<B> items; }`，B 是项目内已索引的类
 - WHEN 索引
 - THEN A 有一条 `aggregate:B` 边，to 为 B 的真实符号 ID
+
+#

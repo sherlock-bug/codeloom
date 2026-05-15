@@ -99,3 +99,5 @@ CodeLoom code-indexing 功能域。本规范描述此功能的需求和行为。
 - GIVEN `a.cc` 和 `b.cc` 各有一处 `"hello"`
 - WHEN 索引两文件
 - THEN symbols 表中 SHALL 有两条 `name="hello"` 记录（不同 file_path）
+
+#

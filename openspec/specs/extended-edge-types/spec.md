@@ -5,11 +5,7 @@ CodeLoom SHALL 从 Clang AST 中提取边类型，包括调用、继承、参数
 
 > ⚠️ **说明**：以下边类型中有部分尚未由索引器实现（标记为 🔴）。对应规格但未实现的边在 `known-limitations/spec.md` 中记录。开发者提交变更前 SHALL 按约定更新相关场景。
 
-### Requirement: 外部调用通过 is_external 区分 ✅ 已实现
-系统 SHALL 对调用外部符号使用普通 `calls:` 边，通过目标符号的 `is_external` 列区分内外部，不创建独立的 calls_external: 边类型。
-- GIVEN 本项目函数 `process()` 调用了 `std::sort`
-- WHEN 解析到该调用
-- THEN 创建 source=process、target=std::sort、edge_type="calls:std::sort" 的边，其中 std::sort 的 is_external=1
+## Requirements
 
 ### Requirement: 提取参数类型边
 系统 SHALL 从函数声明的参数列表中提取每个参数的类型，创建 param_type: 边，从函数节点指向参数类型对应的 class/struct/enum 节点。
@@ -39,14 +35,6 @@ CodeLoom SHALL 从 Clang AST 中提取边类型，包括调用、继承、参数
 - GIVEN `main.cpp` 包含 `#include "helper.h"`
 - WHEN 解析 main.cpp 的 AST，提取预处理指令
 - THEN 创建 source=main.cpp、target=helper.h、edge_type="includes:helper.h" 的边
-
-### Requirement: 提取 typedef 别名边
-系统 SHALL 从 TypedefDecl/TypeAliasDecl 中提取 aliases: 边，从 typedef 节点指向底层类型。
-
-#### Scenario: typedef 指向类型
-- GIVEN `typedef MyClass* MyClassPtr;`
-- WHEN 解析 TypedefDecl
-- THEN 创建 source=MyClassPtr、target=MyClass、edge_type="aliases:MyClass" 的边
 
 ### Requirement: 提取函数对变量的依赖边
 系统 SHALL 从函数体内部对全局变量、静态变量、枚举值、字符串字面量的引用中提取 uses: 边，从 function/method 指向被引用的变量节点。

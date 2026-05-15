@@ -36,3 +36,5 @@ CodeLoom SHALL 为项目外部符号创建存根记录，通过白名单机制�
 - GIVEN `a.cpp` 和 `b.cpp` 都引用了 `std::string`
 - WHEN `a.cpp` 创建了 kind=class、is_external=1 的 std::string，`b.cpp` 再次遇到
 - THEN 查找已有 (name="std::string", namespace="std", kind="class") 并复用
+
+#
