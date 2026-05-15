@@ -882,6 +882,14 @@ impl ExtractCtx {
                 if let Some(ref_decl) = n.get("referencedDecl") {
                     if let Some(ref_name) = ref_decl.get("name").and_then(|v| v.as_str()) {
                         let ref_kind = ref_decl.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                        // Skip function references — function calls are handled
+                        // by direct 'calls:' edge logic elsewhere, not as 'uses:'.
+                        // Including them here would trigger create_external_stub
+                        // for C library functions (memcpy, printf, etc.),
+                        // creating spurious symbols in the index.
+                        if ref_kind == "FunctionDecl" || ref_kind == "CXXMethodDecl" {
+                            return;
+                        }
                         if ref_kind == "EnumConstantDecl" {
                             if let Some(qtype) = n.get("type").and_then(|v| v.get("qualType")).and_then(|v| v.as_str()) {
                                 refs.push(format!("{}::{}", qtype, ref_name));

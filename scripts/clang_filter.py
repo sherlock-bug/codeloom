@@ -40,19 +40,16 @@ def get_node_file(node):
     file = loc.get("file", "")
     if file:
         return file
-    # loc.file is empty — do NOT fall back to includedFrom.file.
-    # includedFrom.file points to the .cc file that #included the header, NOT
-    # to the actual definition location (which is in a system header). Using it
-    # as the node's file makes system header declarations look like project code.
+    # loc.file is empty — fall back to includedFrom.file.
+    # This captures the includer's path for header-declared functions.
+    incl = loc.get("includedFrom", {})
+    if isinstance(incl, dict):
+        return incl.get("file", "")
     return ""
 
 
 def is_system(node, project_root, fallback_file=None):
     """Check if node belongs to system headers (not under project_root)."""
-    # Nodes with previousDecl linking to a project declaration are project nodes
-    if isinstance(node.get("previousDecl"), str) and node["previousDecl"]:
-        return False
-
     file = get_node_file(node)
     if not file:
         # Declaration nodes from system headers have no loc.file (Clang omits it

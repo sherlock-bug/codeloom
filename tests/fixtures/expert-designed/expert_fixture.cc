@@ -1,15 +1,24 @@
 #include "expert_fixture.h"
+#include "include/expert_config.h"
 #include <cstring>
+#include <vector>
+#include <cstdio>
 
+// ============================================================
 // Static member definition
+// ============================================================
 int Logger::instance_count = 0;
 
+// ============================================================
 // Global variable definitions
+// ============================================================
 Logger*     g_default_logger = nullptr;
 const char* g_app_name       = "ExpertFixture";
 int         g_max_msg_len    = MAX_BUFFER;
 
-// --- Virtual method implementations ---
+// ============================================================
+// Virtual method implementations
+// ============================================================
 
 void Logger::log(LogLevel level, const char* msg) {
     ++instance_count;
@@ -28,7 +37,16 @@ void HybridLogger::log(LogLevel level, const char* msg) {
     ConsoleLogger::log(level, msg);
 }
 
-// --- Template method definitions ---
+// ============================================================
+// CustomError implementation (external base)
+// ============================================================
+const char* CustomError::what() const noexcept {
+    return "custom error";
+}
+
+// ============================================================
+// Template method definitions
+// ============================================================
 
 template<typename T>
 void DataStore<T>::store(T value) {
@@ -46,14 +64,18 @@ void DataStore<T>::clear() {
     count = 0;
 }
 
-// --- Template function definition ---
+// ============================================================
+// Template function definition
+// ============================================================
 
 template<typename T>
 T max_of(T a, T b) {
     return (a > b) ? a : b;
 }
 
-// --- Regular function implementations ---
+// ============================================================
+// Regular function implementations
+// ============================================================
 
 int initialize_logging(Logger* logger) {
     if (!logger) {
@@ -85,7 +107,36 @@ const char* get_status_message(int code) {
     }
 }
 
-// --- Cover remaining scenarios ---
+// Uses Config from subdirectory header (tests includedFrom retention)
+int use_config() {
+    Config cfg;
+    cfg.version = 1;
+    cfg.debug_mode = true;
+    return cfg.version;
+}
+
+// Uses CustomError derived from external base (tests external stub)
+const char* get_error_message(const CustomError& err) {
+    return err.what();
+}
+
+// Uses std::vector<int> — pure builtin type params (should be filtered)
+int use_plain_int_vector() {
+    std::vector<int> v;
+    v.push_back(42);
+    return (int)v.size();
+}
+
+// Returns std::unique_ptr<Record> (tests return_type normalization)
+std::unique_ptr<Record> make_record(int id) {
+    auto r = std::make_unique<Record>();
+    r->id = id;
+    return r;
+}
+
+// ============================================================
+// Cover remaining scenarios
+// ============================================================
 
 void demo_strings_and_enums() {
     report(LOG_DEBUG, "This is a debug message");
@@ -124,8 +175,34 @@ BaseConfig get_default_config() {
     return cfg;
 }
 
-// --- Explicit template instantiations ---
+// ============================================================
+// Explicit template instantiations
+// ============================================================
 
 template class DataStore<int>;
 template class DataStore<double>;
 template struct Pair<long>;
+
+// ============================================================
+// System symbol filter scenarios
+// ============================================================
+
+void demo_c_library_calls() {
+    Record r;
+    r.id = 42;
+    std::memcpy(r.name, "demo", 5);
+    std::printf("id=%d\n", r.id);
+    char buf[64];
+    std::strcpy(buf, "hello");
+}
+
+// ============================================================
+// Bridge symbol scenario
+// ============================================================
+
+int demo_stl_with_project_types() {
+    std::vector<Record*> records;
+    Record* r = nullptr;
+    records.push_back(r);
+    return (int)records.size();
+}
