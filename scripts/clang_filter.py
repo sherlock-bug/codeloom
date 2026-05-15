@@ -153,6 +153,17 @@ def _has_project_type_arg(node):
     return False
 
 
+def _has_body(node):
+    """Check if a FunctionDecl node has a body (CompoundStmt child)."""
+    inner = node.get("inner", [])
+    if not isinstance(inner, list):
+        return False
+    return any(
+        isinstance(c, dict) and c.get("kind") == "CompoundStmt"
+        for c in inner
+    )
+
+
 def filter_node(node, project_root, fallback_file=None):
     """Recursively filter a Clang AST node. Returns filtered dict or None.
 
@@ -206,7 +217,12 @@ def filter_node(node, project_root, fallback_file=None):
     # Exception: system containers (namespace, class template, record, linkage spec)
     # with surviving children — keeps the nesting hierarchy so CTS nodes remain reachable.
     if kind not in BODY_KINDS and is_system(node, project_root, fallback_file):
-        if kind == "ClassTemplateSpecializationDecl" and _has_project_type_arg(node):
+        # FunctionDecl with body but no file info — project function declared
+        # in header but defined in .cc. Clang omits loc.file for these.
+        # Let it through; Rust side decides based on cur_file context.
+        if kind == "FunctionDecl" and _has_body(node):
+            pass  # keep
+        elif kind == "ClassTemplateSpecializationDecl" and _has_project_type_arg(node):
             pass  # keep
         elif kind in ("NamespaceDecl", "LinkageSpecDecl", "ClassTemplateDecl",
                       "CXXRecordDecl", "RecordDecl") and inner:
