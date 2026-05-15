@@ -451,13 +451,29 @@ impl ExtractCtx {
                     };
                     self.add_symbol(sym, n, "", &ns, k);
 
-                    // uses_type edge
+                    // uses_type edge: link VarDecl → its type for impact analysis
+                    // For template types (e.g. "std::unique_ptr<Iterator>"), strip namespace
+                    // and template args to get the template base name ("unique_ptr"),
+                    // so name_to_id resolves it to the same target as instantiates: edges.
+                    // This bridges: SomeFunction → unique_ptr → template_instance → Iterator.
                     if !var_type.is_empty() && !is_builtin_type(&var_type) {
                         let tname = strip_cv_ref(&var_type);
+                        let target = if tname.starts_with("std::") || tname.starts_with("::std::") {
+                            let stripped = tname.trim_start_matches("::std::")
+                                                 .trim_start_matches("std::")
+                                                 .trim_start_matches("::");
+                            if stripped.contains('<') {
+                                stripped.split('<').next().unwrap_or(stripped).trim().to_string()
+                            } else {
+                                stripped.to_string()
+                            }
+                        } else {
+                            tname.to_string()
+                        };
                         self.result.edges.push(Edge {
                             source_name: n.to_string(), source_ns: ns.clone(),
-                            target_name: tname.to_string(),
-                            edge_type: format!("uses_type:{}", tname),
+                            target_name: target.clone(),
+                            edge_type: format!("uses_type:{}", target),
                         });
                     }
                 }
