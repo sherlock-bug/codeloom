@@ -40,10 +40,10 @@ def get_node_file(node):
     file = loc.get("file", "")
     if file:
         return file
-    # Header declarations: file is empty, but includedFrom has the TU file
-    incl = loc.get("includedFrom", {})
-    if isinstance(incl, dict):
-        return incl.get("file", "")
+    # loc.file is empty — do NOT fall back to includedFrom.file.
+    # includedFrom.file points to the .cc file that #included the header, NOT
+    # to the actual definition location (which is in a system header). Using it
+    # as the node's file makes system header declarations look like project code.
     return ""
 
 
@@ -55,28 +55,105 @@ def is_system(node, project_root, fallback_file=None):
 
     file = get_node_file(node)
     if not file:
-        # No file path at all. Check if node has any location info (line/col).
-        loc = node.get("loc", {})
-        if isinstance(loc, dict):
-            if loc.get("line"):
-                return False
-        # Use fallback_file from parent context
-        if fallback_file:
-            abs_fb = os.path.abspath(fallback_file)
-            if abs_fb.startswith(project_root):
-                return False
-            return not fallback_file.startswith(project_root)
-        # Check range.begin for line info
-        rng = node.get("range", {})
-        rbegin = rng.get("begin", {}) if isinstance(rng, dict) else {}
-        if isinstance(rbegin, dict) and rbegin.get("line"):
-            return False
+        # Declaration nodes from system headers have no loc.file (Clang omits it
+        # when the declaration comes from an included system header). Having a
+        # line number does NOT mean it's a project node — C library functions
+        # like strstr() have loc={line:42,col:5} but no file. We are only called
+        # for non-body nodes (body nodes are handled separately in filter_node),
+        # so treat missing file as external/system.
+        # The only exception: previousDecl linking to a project declaration.
         return True
     # Resolve relative paths to match absolute project_root
     abs_file = os.path.abspath(file)
     if abs_file.startswith(project_root):
         return False
     return not file.startswith(project_root)
+
+
+def _is_detail_template(name):
+    """Check if a class template is an internal STL detail template.
+    These have no semantic value for project-level impact analysis
+    even when instantiated with project types."""
+    # STL internal helpers: __* and _* (underscore + capital letter)
+    if name.startswith("__"):
+        return True
+    if len(name) > 1 and name.startswith("_") and name[1].isupper():
+        return True
+    # Allocator internals
+    if name in ("allocator", "allocator_traits", "__alloc_traits",
+                "__new_allocator", "rebind"):
+        return True
+    # Type traits (pure compile-time machinery)
+    if name.startswith(("is_", "has_", "remove_", "add_", "enable_if",
+                        "conditional", "common_type", "common_reference",
+                        "decay", "underlying_type", "integral_constant",
+                        "bool_constant", "void_t")):
+        return True
+    # Iterator helpers
+    if name in ("iterator_traits", "__normal_iterator", "reverse_iterator",
+                "move_iterator", "__iterator_traits",
+                "__gnu_cxx::__normal_iterator",
+                "pointer_traits", "raw_storage_iterator"):
+        return True
+    # Compiler intrinsics / helpers
+    if name in ("initializer_list", "numeric_limits",
+                "unary_function", "binary_function",
+                "__is_abstract", "__is_pod", "__is_empty",
+                "__is_polymorphic", "__is_final"):
+        return True
+    # Char traits / locale / facets
+    if name in ("char_traits", "ctype", "ctype_byname", "codecvt",
+                "num_get", "num_put", "money_get", "money_put",
+                "time_get", "time_put", "messages", "collate",
+                "numpunct", "moneypunct", "timepunct",
+                "fpos", "_Char_types"):
+        return True
+    return False
+
+
+def _has_project_type_arg(node):
+    """Check if a ClassTemplateSpecializationDecl has a template argument
+    that's a project type (not std::, not built-in, not internal __).
+    Returns True if the CTS should be kept for impact analysis.
+    Also checks the template name: detail/internal templates are blocked."""
+    name = node.get("name", "")
+    if _is_detail_template(name):
+        return False
+    inner = node.get("inner", [])
+    if not isinstance(inner, list):
+        return False
+    # std and builtin types to ignore as template args
+    builtins = frozenset({
+        "void", "bool", "char", "signed char", "unsigned char", "wchar_t",
+        "char16_t", "char32_t", "short", "unsigned short", "int", "unsigned int",
+        "long", "unsigned long", "long long", "unsigned long long",
+        "float", "double", "long double", "__int128_t", "__uint128_t",
+        "size_t", "ssize_t", "int8_t", "uint8_t", "int16_t", "uint16_t",
+        "int32_t", "uint32_t", "int64_t", "uint64_t", "__mbstate_t",
+        "std::byte", "std::nullptr_t", "nullptr_t",
+    })
+    for child in inner:
+        if not isinstance(child, dict) or child.get("kind") != "TemplateArgument":
+            continue
+        qual_type = child.get("type", {}).get("qualType", "")
+        if not qual_type or qual_type == "?":
+            continue
+        # Strip cv-qualifiers, references, pointers
+        base = qual_type.strip()
+        while base.startswith("const ") or base.startswith("volatile ") or base.startswith("constexpr "):
+            for p in ("const ", "volatile ", "constexpr "):
+                if base.startswith(p):
+                    base = base[len(p):]
+                    break
+        base = base.rstrip(" *&")
+        # Check if it's a known non-project type
+        if base in builtins:
+            continue
+        if base.startswith("std::") or base.startswith("__") or base.startswith("::std::"):
+            continue
+        # Looks like a project type — keep the CTS
+        return True
+    return False
 
 
 def filter_node(node, project_root, fallback_file=None):
@@ -90,31 +167,29 @@ def filter_node(node, project_root, fallback_file=None):
 
     kind = node.get("kind", "")
 
-    # Strip system nodes for non-body nodes
-    if kind not in BODY_KINDS and is_system(node, project_root, fallback_file):
-        return None
-
-    # Determine file for propagation: prefer own file, then fallback
+    # Determine file for propagation: need this before children recursion
+    # for path injection into body nodes
     node_file = get_node_file(node)
     if not node_file:
         node_file = fallback_file or ""
     has_project_file = bool(node_file) and node_file.startswith(project_root)
 
-    # Recurse into children FIRST (before BODY_KINDS check), passing our
-    # project file as fallback so DeclRefExpr inside bodies can survive.
+    # Recurse into children FIRST (before system/BODY_KINDS checks), so
+    # system namespaces containing CTS nodes with project-type template args
+    # (e.g. std::vector<MyType>) can survive through their children.
     filtered = {}
     for key, val in node.items():
         if key == "inner" and isinstance(val, list):
             new_inner = []
             for child in val:
-                # Propagate file to children that lack loc.file
+                child_kind = child.get("kind", "") if isinstance(child, dict) else ""
                 if has_project_file and isinstance(child, dict):
                     child_loc = child.get("loc", {})
                     if isinstance(child_loc, dict) and not child_loc.get("file"):
-                        child = dict(child)  # shallow copy
-                        child["loc"] = dict(child_loc)
-                        child["loc"]["file"] = node_file
-                # Pass our project file as fallback for deeper body nodes
+                        if child_kind in BODY_KINDS or child_kind == "DeclRefExpr":
+                            child = dict(child)
+                            child["loc"] = dict(child_loc)
+                            child["loc"]["file"] = node_file
                 child_fallback = node_file if has_project_file else fallback_file
                 result = filter_node(child, project_root, child_fallback)
                 if result is not None:
@@ -124,6 +199,25 @@ def filter_node(node, project_root, fallback_file=None):
             filtered[key] = val
         else:
             filtered[key] = val
+
+    # Now check: should this node be kept?
+    inner = filtered.get("inner", [])
+    
+    # Strip system nodes for non-body nodes
+    # Exception: ClassTemplateSpecializationDecl with project-type template args
+    # (e.g. vector<FileMetaData>) — kept for impact analysis.
+    # Exception: system containers (namespace, class template, record, linkage spec)
+    # with surviving children — keeps the nesting hierarchy so CTS nodes remain reachable.
+    if kind not in BODY_KINDS and is_system(node, project_root, fallback_file):
+        if kind == "ClassTemplateSpecializationDecl" and _has_project_type_arg(node):
+            pass  # keep
+        elif kind in ("NamespaceDecl", "LinkageSpecDecl", "ClassTemplateDecl",
+                      "CXXRecordDecl", "RecordDecl") and inner:
+            pass  # keep with surviving children
+        elif kind == "TemplateArgument":
+            pass  # keep — provides type info for kept CTS nodes
+        else:
+            return None
 
     # Now check BODY_KINDS — body nodes with surviving children (e.g. DeclRefExpr)
     # get a minimal representation so the extractor can find symbol references.

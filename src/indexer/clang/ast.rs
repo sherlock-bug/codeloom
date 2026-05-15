@@ -128,6 +128,11 @@ impl ExtractCtx {
         if !decl_file.is_empty() {
             self.cur_file = decl_file.to_string();
         }
+        // Skip all implicit/compiler-generated symbols — no nodes, no edges.
+        let is_implicit = node.get("isImplicit").and_then(|v| v.as_bool()).unwrap_or(false);
+        if is_implicit {
+            return;
+        }
         // Compute namespace
         let ns = match kind {
             "NamespaceDecl" => {
@@ -165,6 +170,12 @@ impl ExtractCtx {
                     
                     let sig = build_signature(node);
                     let is_def = has_body(node);
+                    // System header function declarations: no loc.file + no body → skip.
+                    // These are C library functions (strstr, putchar, etc.) pulled in via
+                    // #include but incorrectly treated as project symbols due to loc fallback.
+                    if decl_file.is_empty() && !is_def {
+                        return;
+                    }
                     let access = self.current_access.clone();
                     let is_virtual = node.get("virtual")
                         .or_else(|| node.get("isVirtual"))
@@ -541,9 +552,23 @@ impl ExtractCtx {
                                 let tkind = if first_func { "template_function" } else { "template_instance" };
                                 first_func = false;
 
-                                let hash = hash_content(cn, tkind, &self.file, ls);
+                                // Template instances include deduced type args in name,
+                                // e.g. "foo<int>" vs primary "foo", so name_to_id and
+                                // instantiates: edges resolve naturally without conflict.
+                                let instance_name = if tkind == "template_instance" {
+                                    let targs = extract_template_args_from_sig(&sig);
+                                    if targs.is_empty() {
+                                        cn.to_string()
+                                    } else {
+                                        format!("{}<{}>", cn, targs)
+                                    }
+                                } else {
+                                    cn.to_string()
+                                };
+
+                                let hash = hash_content(&instance_name, tkind, &self.file, ls);
                                 let tsym = Symbol {
-                                    id: None, repo: self.repo.clone(), name: cn.to_string(),
+                                    id: None, repo: self.repo.clone(), name: instance_name.clone(),
                                     kind: tkind.to_string(), content_hash: hash,
                                     file_path: String::new(),  // template: no single definition file
                                     line_start: get_range(child, &self.cur_file).0, line_end: get_range(child, &self.cur_file).1,
@@ -554,12 +579,12 @@ impl ExtractCtx {
                                     is_definition: is_def, is_external: false,
                                 ..Default::default()
                                 };
-                                self.add_symbol(tsym, cn, &sig, &ns, tkind);
+                                self.add_symbol(tsym, &instance_name, &sig, &ns, tkind);
 
-                                // instantiates edge for template instances
+                                // instantiates edge: instance → primary template (e.g. foo<int> → foo)
                                 if tkind == "template_instance" {
                                     self.result.edges.push(Edge {
-                                        source_name: cn.to_string(), source_ns: ns.clone(),
+                                        source_name: instance_name.clone(), source_ns: ns.clone(),
                                         target_name: cn.to_string(),
                                         edge_type: format!("instantiates:{}", cn),
                                     });
@@ -580,10 +605,9 @@ impl ExtractCtx {
                     let primary = node.get("specializedTemplate")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    // Simple heuristic: if name starts with "std::" it's external
-                    if primary.starts_with("std::") {
-                        // STL template instance — skip
-                    } else {
+                    // 放开 std:: class template instances — 对影响分析/调用图/代码理解至关重要
+                    // 主模板（如 std::vector）不在项目里时 instantiates 边会指向外部 stub，不影响
+                    {
                         // Build full instance name with template args (e.g., "DataStore<int>")
                         let template_args: Vec<String> = node.get("inner")
                             .and_then(|v| v.as_array())
@@ -631,6 +655,23 @@ impl ExtractCtx {
 
                         // template instances only store type parameters — no member/method extraction
                         // (those are available from the base template via inheritance_tree)
+                        
+                        // uses_type edges: template_instance → argument types (impact analysis)
+                        // e.g., vector<FileMetaData*> → uses_type:FileMetaData
+                        for arg_type in &template_args {
+                            let clean = strip_cv_ref(arg_type);
+                            if !clean.is_empty() && !is_builtin_type(clean)
+                                && !clean.starts_with("std::")
+                                && !clean.starts_with("::std::")
+                                && !clean.starts_with("__")
+                            {
+                                self.result.edges.push(Edge {
+                                    source_name: instance_name.clone(), source_ns: ns.clone(),
+                                    target_name: clean.to_string(),
+                                    edge_type: format!("uses_type:{}", clean),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -889,6 +930,21 @@ fn build_signature(node: &serde_json::Value) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("?")
         .to_string()
+}
+
+/// Extract template argument types from a function's signature.
+/// Signature format: "return_type (param1, param2, ...)"
+/// Returns the param list as template args, e.g. "int, double" from "void (int, double)".
+fn extract_template_args_from_sig(sig: &str) -> String {
+    if let Some(start) = sig.find('(') {
+        if let Some(end) = sig.rfind(')') {
+            let params = sig[start + 1..end].trim();
+            if !params.is_empty() {
+                return params.to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 fn has_body(node: &serde_json::Value) -> bool {

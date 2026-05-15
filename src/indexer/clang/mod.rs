@@ -103,7 +103,13 @@ pub fn index_clang(
                     let id = upsert_symbol(conn, sym, repo_name, branch_name)?;
                     let key = format!("{}::{}", sym.namespace.as_deref().unwrap_or(""), sym.name);
                     name_to_id.insert(key, id);
-                    name_to_id.insert(sym.name.clone(), id);
+                    // Skip template_instance for simple name — function template instances
+                    // share their name with the primary template. Keeping the template in
+                    // name_to_id by name ensures instantiates: edges resolve correctly
+                    // (instance → template). The instance is still findable by ns-qualified key.
+                    if sym.kind != "template_instance" {
+                        name_to_id.insert(sym.name.clone(), id);
+                    }
                     symbols_count += 1;
                 }
 
@@ -118,6 +124,12 @@ pub fn index_clang(
                     if let Some(&sid) = src_id {
                         let tid = if let Some(&id) = tgt_id {
                             id
+                        } else if edge.edge_type.starts_with("calls:") {
+                            // Direct function calls to unknown targets (C library functions like
+                            // printf, strstr pulled in from system headers). Skip edge + stub.
+                            // MemberExpr / pointer-based calls to project symbols keep working
+                            // because those targets ARE in name_to_id.
+                            continue;
                         } else {
                             let stub_kind = infer_stub_kind(&edge.edge_type);
                             create_external_stub(conn, &edge.target_name, stub_kind, "", repo_name)?
