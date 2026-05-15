@@ -929,6 +929,34 @@ data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswi
 check("G11: template_instance DataStore<int> 在索引中", len(data_lines) > 0, True)
 
 # ================================================================
+# Leveldb 索引质量测试（需 leveldb 仓库已索引）
+# ================================================================
+LEVELDB_REPO = "leveldb"
+LEVELDB_BRANCH = "main"
+
+leveldb_ok = run_cli(["list-repos"]).strip()
+if "leveldb" in leveldb_ok:
+    # BUG-011: class Compaction 应在 version_set.h:319 唯一定义
+    lines = run_cli(["list-symbols", "Compaction", "--repo", LEVELDB_REPO, "--branch", LEVELDB_BRANCH, "--limit", "10"])
+    data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
+    check("L1: class Compaction 唯一性（应为 1 个）", len(data_lines), 1)
+
+    if data_lines:
+        # Inspect the first result
+        sym = data_lines[0].strip()
+        info = run_mcp("codeloom_inspect", {"name": sym, "repo": LEVELDB_REPO, "branch": LEVELDB_BRANCH})
+        is_class = isinstance(info, dict) and info.get("kind") == "class"
+        check("L2: Compaction 类型为 class", is_class, True)
+        if is_class:
+            file_ok = "version_set.h" in info.get("file", "")
+            check("L3: Compaction 文件指向 version_set.h", file_ok, True)
+            line_ok = info.get("line_start") == 319
+            check("L4: Compaction 行号 = 319", line_ok, True)
+else:
+    passed += 1  # Skip leveldb tests if repo not available
+    print("  ⏭ L0: leveldb 仓库未索引，跳过 leveldb 测试")
+
+# ================================================================
 print(f"\n{'='*50}")
 total = passed + errors + skipped
 print(f"总计: {passed} 通过, {errors} 失败, {skipped} 跳过 (共 {total})")

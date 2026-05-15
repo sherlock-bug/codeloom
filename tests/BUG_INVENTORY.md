@@ -67,6 +67,23 @@
 - **预期**: 统一使用 `symbol` 键名
 - **实际**: 顶层返回 `root` 键，子节点用 `symbol` 键。不一致
 
+---
+
+## P2 — 索引数据质量
+
+### BUG-011: 跨 TU 类符号重复 + 文件/行号错误（leveldb Compaction）
+- **工具**: codeloom_list_symbols / codeloom_inspect
+- **测试库**: `leveldb`（外部仓库，保留在索引中）
+- **输入**: 搜索 `Compaction`（`class Compaction` 定义于 `db/version_set.h:319`）
+- **预期**: 1 个结果，`file_path` = `...version_set.h`, `line_start` = 319
+- **实际**: 
+  - 2 个结果（id=1229, 2100）
+  - id=1229: `file=db_impl.h:93` ❌（实际为 `CompactionStats` 所在行）
+  - id=2100: `file=corruption_test.cc:363` ❌（实际为 `ASSERT` 语句）
+  - 两套子符号（methods/fields）全部指向各自的错误文件/行号
+  - 正确的 `version_set.h:319` 无对应条目
+- **根因推测**: Clang AST 中来自 `#include` 的 CXXRecordDecl 节点 `loc.file` 解析异常，`cur_file` 追踪在跨文件上下文中的回退逻辑出错；不同翻译单元对同一类的处理未在 upsert_symbol 阶段去重
+
 ### BUG-011: inspect 枚举缺失 values 字段
 - **工具**: codeloom_inspect
 - **输入**: `{name: "LogLevel"}`
