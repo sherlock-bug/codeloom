@@ -415,13 +415,28 @@ impl ExtractCtx {
                     };
                     self.add_symbol(sym, &qname, "", &ns, "field");
 
-                    // uses_type edge
+                    // uses_type edge: link field → its type for impact analysis
+                    // For template types (e.g. "std::unique_ptr<Iterator>"), strip namespace
+                    // and template args to get the template base name ("unique_ptr"),
+                    // so name_to_id resolves it to the same target as instantiates: edges.
                     if !field_type.is_empty() && !is_builtin_type(&field_type) {
                         let tname = strip_cv_ref(&field_type);
+                        let target = if tname.starts_with("std::") || tname.starts_with("::std::") {
+                            let stripped = tname.trim_start_matches("::std::")
+                                                 .trim_start_matches("std::")
+                                                 .trim_start_matches("::");
+                            if stripped.contains('<') {
+                                stripped.split('<').next().unwrap_or(stripped).trim().to_string()
+                            } else {
+                                stripped.to_string()
+                            }
+                        } else {
+                            tname.to_string()
+                        };
                         self.result.edges.push(Edge {
                             source_name: qname.clone(), source_ns: ns.clone(),
-                            target_name: tname.to_string(),
-                            edge_type: format!("uses_type:{}", tname),
+                            target_name: target.clone(),
+                            edge_type: format!("uses_type:{}", target),
                         });
                     }
                 }
@@ -567,6 +582,11 @@ impl ExtractCtx {
                                 let is_def = has_body(child);
                                 let tkind = if first_func { "template_function" } else { "template_instance" };
                                 first_func = false;
+                                // Skip STL detail function template instances
+                                // (char_traits, allocator, type traits, etc.)
+                                if tkind == "template_instance" && is_detail_fn_template(cn) {
+                                    continue;
+                                }
 
                                 // Template instances include deduced type args in name,
                                 // e.g. "foo<int>" vs primary "foo", so name_to_id and
@@ -981,6 +1001,24 @@ fn extract_type_string(node: &serde_json::Value) -> String {
         .and_then(|v| v.as_str())
         .map(|t| strip_cv_ref(t).to_string())
         .unwrap_or_default()
+}
+
+/// Check if a function template name is an STL internal detail template.
+/// These have no semantic value for project-level code understanding.
+fn is_detail_fn_template(name: &str) -> bool {
+    if name.starts_with("__") {
+        return true;
+    }
+    matches!(name,
+        "char_traits" | "ctype" | "ctype_byname" | "codecvt"
+        | "allocator" | "allocator_traits" | "__new_allocator" | "rebind"
+        | "numeric_limits" | "iterator_traits"
+        | "hash" | "pointer_traits" | "raw_storage_iterator"
+        | "unary_function" | "binary_function"
+        | "initializer_list"
+    ) || name.starts_with("is_") || name.starts_with("has_")
+        || name.starts_with("remove_") || name.starts_with("add_")
+        || name.starts_with("enable_if") || name.starts_with("__is")
 }
 
 fn strip_cv_ref(t: &str) -> &str {
