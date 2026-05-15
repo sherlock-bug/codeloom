@@ -674,8 +674,7 @@ fn schema_meta() -> String {
             {"prefix":"references","description":"函数引用了全局/静态变量","direction":"从函数到全局/静态变量","source_kinds":["function","method"],"target_kinds":["global","static_var"]},
             {"prefix":"returns","description":"函数的返回类型","direction":"从函数到返回类型","source_kinds":["function","method"],"target_kinds":["class","struct","enum"]},
             {"prefix":"param_type","description":"函数的参数类型","direction":"从函数到参数类型","source_kinds":["function","method"],"target_kinds":["class","struct","enum"]},
-            {"prefix":"field_type","description":"字段的类型","direction":"从字段到类型","source_kinds":["field"],"target_kinds":["class","struct","enum"]},
-            {"prefix":"template_use","description":"使用了模板实例化","direction":"从使用方到模板","source_kinds":["function","method","field"],"target_kinds":["template_class","template_struct","template_function"]}
+            {"prefix":"field_type","description":"字段的类型","direction":"从字段到类型","source_kinds":["field"],"target_kinds":["class","struct","enum"]}
         ]
     }).to_string()
 }

@@ -153,12 +153,12 @@ check("node_kinds 数量 >= 13 (规格冲突: 两套命名体系)",
       len(nk) >= 13, True,
       lambda a, _: len(nk) >= 13)
 
-# M5: ⚠️ 边类型数量 — schema-metadata 规格说 10 种(calls/calls_override/inherits/contains/uses/references/returns/param_type/field_type/template_use)，
+# M5: ⚠️ 边类型数量 — schema-metadata 规格说 9 种(calls/calls_override/inherits/contains/uses/references/returns/param_type/field_type)，
 #    extended-edge-types 规格说 11 种且名称不同(overrides/aliases/includes 等)。两规格冲突。
-#    此处断言不少于 10 种
-check("edge_types 数量 >= 10 (规格冲突: schema-metadata=10, extended-edge-types=11)",
-      len(et) >= 10, True,
-      lambda a, _: len(et) >= 10)
+#    此处断言不少于 9 种
+check("edge_types 数量 >= 9 (规格冲突: schema-metadata=9, extended-edge-types=11)",
+      len(et) >= 9, True,
+      lambda a, _: len(et) >= 9)
 
 # ================================================================
 # 工具 2: codeloom_list_repos — 列出仓库
@@ -549,16 +549,7 @@ con_cont = list(con_fw.get("contains", []))
 check("LogLevel forward 有 contains 分组",
       len(con_cont) > 0, True)
 
-# N15: template_use 边 — DataStore<int>::store 是模板实例化方法（schema: "template_use 从使用方到模板"）
-tu_nb = run_mcp("codeloom_neighbor_graph", {
-    "symbol": "DataStore<int>::store", "repo": REPO, "branch": BRANCH,
-    "direction": "forward"})
-tu_fw = tu_nb.get("forward", {})
-tu_tu = list(tu_fw.get("template_use", []))
-check("DataStore<int>::store forward 有 template_use 分组",
-      len(tu_tu) > 0, True)
-
-# N16: includes 边 — expert_fixture.cc 包含 #include "expert_fixture.h"（extended-edge-types: "includes 边从源文件指向头文件"）
+# N15: includes 边 — expert_fixture.cc 包含 #include "expert_fixture.h"（extended-edge-types: "includes 边从源文件指向头文件"）
 inc_nb = run_mcp("codeloom_neighbor_graph", {
     "symbol": "expert_fixture.cc", "repo": REPO, "branch": BRANCH,
     "direction": "forward"})

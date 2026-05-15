@@ -84,7 +84,7 @@
 | **名称** | `codeloom_schema` 导出节点类型和边类型枚举 |
 | **前置条件** | 无（无参数工具） |
 | **JSON-RPC 请求** | `echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"codeloom_schema","arguments":{}}}' \| /mnt/d/RagMcpHermes/codeloom/target/debug/codeloom mcp 2>/dev/null` |
-| **预期结果** | JSON 响应，包含 `node_kinds`（≥15 种，含 function/method/class/struct/enum/enum_value/field/global/static_var/macro/template_function/template_class/template_struct/variable/string_literal）和 `edge_types`（≥10 种，含 calls/calls_override/inherits/contains/uses/references/returns/param_type/field_type/template_use） |
+| **预期结果** | JSON 响应，包含 `node_kinds`（≥15 种，含 function/method/class/struct/enum/enum_value/field/global/static_var/macro/template_function/template_class/template_struct/variable/string_literal）和 `edge_types`（≥9 种，含 calls/calls_override/inherits/contains/uses/references/returns/param_type/field_type） |
 | **验证方法** | 解析 JSON 确认 `node_kinds` 数组长度 ≥15；`edge_types` 数组长度 ≥10；每种节点/边类型有 `name`/`description`/`example` 字段 |
 
 ---

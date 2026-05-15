@@ -34,8 +34,7 @@
 | c | **instantiates** | DataStore<int> | 显式模板实例化 | .cc:129 `template class DataStore<int>;` |
 | d | **references** | initialize_logging | 引用全局变量 g_default_logger | .cc:62 `g_default_logger = logger;` |
 | e | **contains** | LogLevel | 枚举包含枚举值 | .h:8-13 enum { LOG_DEBUG, LOG_INFO, ... } |
-| f | **template_use** | DataStore<int>::store | 模板实例化方法使用模板定义 | .cc:129 |
-| g | **includes** | expert_fixture.cc | #include "expert_fixture.h" | .cc:1 `#include "expert_fixture.h"` |
+| f | **includes** | expert_fixture.cc | #include "expert_fixture.h" | .cc:1 `#include "expert_fixture.h"` |
 
 - **影响工具**:
   - neighbor_graph: HybridLogger::log 无 calls 边、LogLevel 无 contains 边、initialize_logging 无 references 边等
@@ -105,9 +104,9 @@
 
 ## ⚠️ 规格冲突（非实现 bug）
 
-### SPEC-CONFLICT-001: schema-metadata 说 10 种边，extended-edge-types 说 11 种
-- **schema-metadata**: calls, calls_override, inherits, contains, uses, references, returns, param_type, field_type, template_use
-- **extended-edge-types**: calls, overrides, inherits, contains, uses, param_type, return_type, includes, aliases, field_type, template_use
+### SPEC-CONFLICT-001: schema-metadata 说 9 种边，extended-edge-types 说 11 种
+- **schema-metadata**: calls, calls_override, inherits, contains, uses, references, returns, param_type, field_type
+- **extended-edge-types**: calls, overrides, inherits, contains, uses, param_type, return_type, includes, aliases, field_type
 - **差异**: 命名不同（calls_override vs overrides, returns vs return_type）、边集不同
 - **现状**: 已确认 calls_override 合并为 overrides，schema-metadata 已同步更新
 

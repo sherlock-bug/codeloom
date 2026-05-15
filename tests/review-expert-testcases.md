@@ -21,7 +21,7 @@
 - **修正**：应标记为 ⚠️ "规格冲突"，去掉 🐛
 
 ### ❌ 用例 3：边类型 10 vs 11 标注为 🐛
-**问题**：schema-metadata/spec.md 本身就说"10 种边类型"且列表明确：`calls, calls_override, inherits, contains, uses, references, returns, param_type, field_type, template_use`。schema 实际输出就是这 10 种，**与 schema-metadata 规格一致**。
+**问题**：schema-metadata/spec.md 本身就说"9 种边类型"且列表明确：`calls, calls_override, inherits, contains, uses, references, returns, param_type, field_type`。schema 实际输出就是这 9 种，**与 schema-metadata 规格一致**。
 extended-edge-types/spec.md 定义了另外一套 11 种命名体系（overrides、aliases、includes 等）。
 **这是规格之间的冲突，不是实现 bug**。
 **修正**：改为 ⚠️ "规格冲突"，去掉 🐛
