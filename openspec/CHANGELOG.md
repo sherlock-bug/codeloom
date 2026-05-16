@@ -1,5 +1,10 @@
 # CodeLoom CHANGELOG
 
+## 2026-05-16 — fix-abstract-interface-cross-tu
+
+- **FIX**: 抽象接口指针跨 TU 调用边（G18）— `ast.rs` 的 MemberExpr 类名提取增加 `trim_start_matches("const ")`，修复 `const AbstractWorker *` → target 变为 `AbstractWorker::DoOp` 而非 `const AbstractWorker::DoOp`
+- **VERIFIED**: 断言 198/198 全绿（G18d 通过）
+
 ## 2026-05-16 — fix-cross-tu-namespace
 
 - **FIX**: 节点 FQN 命名 — 方法/函数节点名包含完整 namespace 前缀，跨 TU 调用边的 target_name 与 DB 节点名统一（`ast.rs`）
