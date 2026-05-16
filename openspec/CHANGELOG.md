@@ -1,5 +1,14 @@
 # CodeLoom CHANGELOG
 
+## 2026-05-16 — fix-cross-tu-namespace
+
+- **FIX**: 节点 FQN 命名 — 方法/函数节点名包含完整 namespace 前缀，跨 TU 调用边的 target_name 与 DB 节点名统一（`ast.rs`）
+- **FIX**: 跨 TU 调用边 — `name_to_id` 查找失败时 fallback 到 DB 查询（精确 + LIKE 后缀剥离兜底）
+- **FIX**: line_end schema 迁移 — 消除 `attrs` JSON 双写不一致，列是唯一来源（G5d 修复）
+- **FIX**: `inspect_symbol` SQL — 去掉不存在的 `is_definition` 列引用
+- **NEW**: 断言仓 G5d/G17 修复，G18 抽象接口指针跨 TU 调用边场景（已知限制）
+- **VERIFIED**: 断言 197/199 通过（2 个 G18 限制独立修复），leveldb `VersionSet::AddLiveFiles` 跨 TU 边确认存在
+
 ## 2026-05-12 — fix-mcp-graph-branch-filtering
 
 - **FIX**: 所有图分析 MCP 工具（call_graph、path_analysis、impact_analysis、neighbor_graph、inheritance_tree、inspect_symbol）的 `edges` 表查询统一添加 `branch_id` 过滤，多分支索引边数据不再污染。

@@ -301,8 +301,18 @@ codeloom_inheritance_tree 返回结果顶层键 SHALL 使用 `symbol`，而非 `
 8. **path_analysis 全路径模式** — mode=all（全路径）未测试
 9. **schema 未逐类型验证** — 15 种节点/11 种边的完整清单未逐类型断言
 10. **id 参数未测试** — 所有工具的 id 参数传参路径完全未覆盖
-11. **错误路径零覆盖** — 不存在 repo/branch/symbol 的 LLM 友好错误处理未测试
+- 所有工具均有一个 id 参数传递路径未在测试中覆盖
 12. **overrides 边未覆盖** — 虚函数覆写边（从派生类 override 方法指向基类虚方法），当前测试已写但实现未产生。schema-metadata/spec.md 已合并 calls_override 为 overrides。
+
+### Requirement: G18 抽象接口指针跨 TU 调用边缺失
+系统 SHALL 通过抽象接口/纯虚类指针的跨 TU 调用生成调用边（如 `env_->GetChildren(...)` → `Env::GetChildren`）。
+当前偏差：`clang_filter.py` 的 body stripping 会系统性移除函数体内通过抽象接口指针（CXXMemberCallExpr）发起的调用，导致此类跨 TU 调用边全部丢失。已在断言仓 G18 中验证，await/fix 状态。根因在于 filter 对 MemberExpr 链的截断策略偏保守，待独立 change 修复。
+
+#### Scenario: 抽象接口指针调用
+- GIVEN 类 `AbstractInterface` 声明纯虚方法 `doOp()`
+- AND 函数 `call_abstract_worker()` 通过 `AbstractInterface*` 指针调用 `obj->doOp()`
+- WHEN 索引后查询 `call_abstract_worker` 的调用边
+- THEN 调用图中 SHALL 包含 `call_abstract_worker` → `AbstractInterface::doOp` 边
 
 #### Scenario: 分支隔离验证（需新 fixture）
 - GIVEN 同一仓库在 branch-A 和 branch-B 均有索引

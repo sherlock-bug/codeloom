@@ -30,6 +30,14 @@ Non-Goals:
 ### Decision: filter.py 保留，不碰
 跨 TU 场景中 filter.py 的 `loc: null` 问题（DeclStmt 导致子树被 strip）是独立 bug，本次不做修改。本 change 专注边缘匹配逻辑。
 
+### Decision: line_end 从 attrs JSON 迁移到列
+`line_end` 在原始 schema 中同时存在于 `nodes` 表列和 `attrs` JSON 中，但不同 merge 路径（same-file vs cross-file）只更新其中一处，导致双写不一致（G5d 断言失败：.cc 定义行号被 .h 声明的 attrs 旧值覆盖）。
+选择迁移到列唯一存储，理由：
+- 消除双写根源——列是唯一可靠来源，后续不会再有同步问题
+- INSERT/SELECT/merge 路径统一操作列而非 JSON
+- 所有阅读端（MCP inspect、CLI inspect）从 `n.line_end` 读取，不走 `json_extract`
+- 涉及 5 个文件改动：`symbols.rs`（建表+INSERT）、`nodes.rs`（struct+SELECT）、`clang/mod.rs`（merge 路径）、`mcp/mod.rs`、`cli/mod.rs`
+
 ## Risks / Trade-offs
 | 风险 | 缓解措施 |
 |------|---------|
