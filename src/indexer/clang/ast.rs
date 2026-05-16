@@ -1248,7 +1248,13 @@ fn extract_call_targets<F: FnMut(String)>(node: &serde_json::Value, mut cb: F) {
                             // Fallback: type.qualType (virtual calls, logger->log style)
                             if let Some(qt) = cast.get("type").and_then(|v| v.get("qualType")).and_then(|v| v.as_str()) {
                                 // Extract class name from "Logger *" → "Logger"
-                                let stripped = qt.trim_end_matches(" *").trim_end_matches(" &").trim();
+                                // Also strip cv-qualifiers: "const Logger *" → "Logger"
+                                let stripped = qt.trim_start_matches("const ")
+                                    .trim_start_matches("volatile ")
+                                    .trim_start_matches("constexpr ")
+                                    .trim_end_matches(" *")
+                                    .trim_end_matches(" &")
+                                    .trim();
                                 if !stripped.is_empty() && stripped != "<bound member function type>" {
                                     return Some(stripped.to_string());
                                 }

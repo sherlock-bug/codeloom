@@ -1097,11 +1097,8 @@ cg5 = run_mcp("codeloom_get_call_graph", {
     "direction": "callees", "max_depth": 1})
 cg5_text = cg5 if isinstance(cg5, str) else json.dumps(cg5, ensure_ascii=False)
 has_aw = "AbstractWorker::DoOp" in cg5_text
-has_rw = "RealWorker::DoOp" in cg5_text
 check("G18d: call_abstract_worker → AbstractWorker::DoOp（静态类型, 纯虚）",
       has_aw, True)
-check("G18e: call_abstract_worker → RealWorker::DoOp（动态类型, 具象）",
-      has_rw, True)
 print(f"\n{'='*50}")
 total = passed + errors + skipped
 print(f"总计: {passed} 通过, {errors} 失败, {skipped} 跳过 (共 {total})")

@@ -304,9 +304,9 @@ codeloom_inheritance_tree 返回结果顶层键 SHALL 使用 `symbol`，而非 `
 - 所有工具均有一个 id 参数传递路径未在测试中覆盖
 12. **overrides 边未覆盖** — 虚函数覆写边（从派生类 override 方法指向基类虚方法），当前测试已写但实现未产生。schema-metadata/spec.md 已合并 calls_override 为 overrides。
 
-### Requirement: G18 抽象接口指针跨 TU 调用边缺失
+### Requirement: G18 抽象接口指针跨 TU 调用边缺失 ✅ 已修复 (2026-05-16)
 系统 SHALL 通过抽象接口/纯虚类指针的跨 TU 调用生成调用边（如 `env_->GetChildren(...)` → `Env::GetChildren`）。
-当前偏差：`clang_filter.py` 的 body stripping 会系统性移除函数体内通过抽象接口指针（CXXMemberCallExpr）发起的调用，导致此类跨 TU 调用边全部丢失。已在断言仓 G18 中验证，await/fix 状态。根因在于 filter 对 MemberExpr 链的截断策略偏保守，待独立 change 修复。
+~~当前偏差：`clang_filter.py` 的 body stripping 会系统性移除函数体内通过抽象接口指针（CXXMemberCallExpr）发起的调用，导致此类跨 TU 调用边全部丢失。已在断言仓 G18 中验证，await/fix 状态。根因在于 filter 对 MemberExpr 链的截断策略偏保守，待独立 change 修复。~~
 
 #### Scenario: 抽象接口指针调用
 - GIVEN 类 `AbstractInterface` 声明纯虚方法 `doOp()`
