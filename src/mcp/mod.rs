@@ -550,11 +550,11 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
 
 fn mcp_edge_category(etype: &str) -> &str {
     if etype.starts_with("calls:") { "Calls" }
-    else if etype.starts_with("inherits:") { "Inherits" }
-    else if etype.starts_with("overrides:") { "Overrides" }
-    else if etype.starts_with("contains:") { "Contains" }
+    else if etype.starts_with("inherits") { "Inherits" }
+    else if etype.starts_with("overrides") { "Overrides" }
+    else if etype.starts_with("contains") { "Contains" }
     else if etype.starts_with("param_type:") { "Parameters" }
-    else if etype.starts_with("returns:") { "Returns" }
+    else if etype.starts_with("return_type:") { "Returns" }
     else if etype.starts_with("field_type:") { "Fields" }
     else { "Other" }
 }
@@ -801,8 +801,12 @@ fn inheritance_tree(repo: &str, branch: &str, symbol: &str, direction: &str, max
     
     fn get_overrides(conn: &rusqlite::Connection, class_id: i64, branch_id: i64) -> Vec<String> {
         let mut ov = vec![];
+        // 先通过 contains 边找到类的所有方法，再查这些方法的 overrides 边
         if let Ok(mut stmt) = conn.prepare(
-            "SELECT n.name FROM edges e JOIN nodes n ON e.source_id = n.id WHERE n.node_type='sym' AND e.source_id = ?1 AND e.branch_id = ?2 AND e.edge_type LIKE 'overrides:%'"
+            "SELECT n.name FROM edges e \
+             JOIN nodes n ON e.target_id = n.id \
+             WHERE e.source_id IN (SELECT target_id FROM edges WHERE source_id = ?1 AND edge_type = 'contains') \
+             AND e.branch_id = ?2 AND e.edge_type = 'overrides'"
         ) {
             if let Ok(rows) = stmt.query_map(rusqlite::params![class_id, branch_id], |r| r.get::<_,String>(0)) {
                 ov = rows.flatten().collect();

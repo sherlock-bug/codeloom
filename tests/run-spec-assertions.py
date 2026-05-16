@@ -910,6 +910,63 @@ check("G5b: CustomError::what 文件指向 .cc（定义优先）",
 check("G5b: CustomError::what 行号 ≈ 43（定义行）",
       abs(what.get("line_start", 0) - 43) <= 2, True)
 
+# G5c: 带 namespace 的 out-of-line 定义 — 类名应从 mangled name 正确解析
+# test_ns::NsClass::ns_method 声明在 expert_fixture.h:150，实现在 expert_fixture.cc:214
+# 如果 mangled name 解析出错，qname 会变成 test_ns::ns_method（漏掉类名）
+ns_method = run_mcp("codeloom_inspect", {"name": "NsClass::ns_method", "repo": REPO, "branch": BRANCH})
+# inspect 可能返回 list（声明+定义两条），取定义条目（含 file/line）
+ns_entries = ns_method if isinstance(ns_method, list) else [ns_method]
+ns_has_dot_cc = any(
+    isinstance(e, dict) and e.get("file", "").endswith(".cc") for e in ns_entries
+)
+ns_def = next((e for e in ns_entries if isinstance(e, dict) and e.get("file", "").endswith(".cc")), {})
+check("G5c: NsClass::ns_method 存在（至少一条）",
+      len(ns_entries) > 0 and any(isinstance(e, dict) for e in ns_entries), True)
+check("G5c: NsClass::ns_method 指向 .cc（定义优先）",
+      ns_has_dot_cc, True)
+check("G5c: NsClass::ns_method 行号 ≈ 214（定义行）",
+      abs(ns_def.get("line_start", 0) - 214) <= 2 if ns_def else False, True)
+
+# G5d: 所有 .cc 定义的方法 line_end > line_start（line_end 必须 > 开始行）
+for sym_name in ("HybridLogger::log", "CustomError::what", "NsClass::ns_method"):
+    info = run_mcp("codeloom_inspect", {"name": sym_name, "repo": REPO, "branch": BRANCH})
+    entries = info if isinstance(info, list) else [info]
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("file", "").endswith(".cc") and entry.get("line_end", 0) > 0:
+            check(f"G5d: {sym_name} .cc 定义 line_end={entry['line_end']} > line_start={entry['line_start']}",
+                  entry["line_end"] > entry["line_start"], True)
+
+# G5e: inheritance_tree 的 overrides 非空 — ConsoleLogger::log 覆写 Logger::log
+tree = run_mcp("codeloom_inheritance_tree", {
+    "symbol": "HybridLogger", "repo": REPO, "branch": BRANCH, "direction": "up"})
+# 深度遍历树，找 overrides 非空的节点
+def find_overrides(node):
+    ov = node.get("overrides", [])
+    if ov:
+        return ov
+    for child in node.get("children", []):
+        r = find_overrides(child)
+        if r:
+            return r
+    return []
+tree_ov = find_overrides(tree)
+check("G5e: inheritance_tree 含非空 overrides（如 Logger::log 被覆写）",
+      len(tree_ov) > 0, True)
+
+# G5f: inspect 的边归类不应出现 "Other" — 所有边类型应有明确分类
+other_info = run_mcp("codeloom_inspect", {"name": "HybridLogger::log", "repo": REPO, "branch": BRANCH})
+other_entries = other_info if isinstance(other_info, list) else [other_info]
+has_other = False
+for entry in other_entries:
+    if isinstance(entry, dict) and "edges" in entry:
+        if "Other" in entry["edges"]:
+            has_other = True
+            other_edges = entry["edges"]["Other"]
+            check("G5f: inspect 边类型无 'Other'",
+                  False, True,
+                  comparator=lambda a, b: print(f"      Other 分类含: {[e.get('name','') for e in other_edges]}") or False)
+check("G5f: inspect 边类型无 'Other'", has_other, False)
+
 # G6: enum_value 类型符号存在
 for ev in ("LogLevel::LOG_DEBUG", "LogLevel::LOG_INFO", "LogLevel::LOG_WARN", "LogLevel::LOG_ERROR"):
     info = run_mcp("codeloom_inspect", {"name": ev, "repo": REPO, "branch": BRANCH})
@@ -941,12 +998,6 @@ check("G10: template_function max_of 在索引中", len(data_lines) > 0, True)
 lines = run_cli(["list-symbols", "DataStore<int>", "--repo", REPO, "--branch", BRANCH, "--limit", "5"])
 data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
 check("G11: template_instance DataStore<int> 在索引中", len(data_lines) > 0, True)
-
-# ================================================================
-# Leveldb 索引质量测试（已分离到 run-leveldb-assertions.py）
-# 发版本时手动跑：python3 tests/run-leveldb-assertions.py
-# ================================================================
-print("  ⏭ leveldb 测试已分离（python3 tests/run-leveldb-assertions.py）")
 
 # ================================================================
 print(f"\n{'='*50}")

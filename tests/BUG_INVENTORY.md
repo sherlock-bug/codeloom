@@ -154,6 +154,24 @@
 
 ---
 
+### BUG-016: 系统符号泄漏——CXXMethodDecl 非项目节点路径为空
+- **工具**: codeloom_list_symbols / codeloom_inspect
+- **测试库**: `leveldb`（外部仓库，保留在索引中）
+- **现象**: 索引中混入 1,032 个空 `file_path` 符号（362 method + 321 function + 192 template_instance + 157 template_function），以及 327 个系统头文件符号
+- **典型样例**: `atomic<bool>` (template_instance, file_path="")
+- **根因**: `clang_filter.py` 的 is_system() 过滤逻辑在 hasBody=True 注入时放行了 CXXMethodDef 系统节点，这些节点在 `ast.rs` 中因 `decl_file` 为空且无 `includedFrom`，产生 file_path="" 的脏符号
+- **影响**: 搜索/查询会返回无位置信息的脏数据
+- **优先级**: P2
+
+### BUG-017: 方法 line_end 小于 line_start
+- **工具**: codeloom_inspect
+- **测试库**: `leveldb` 中 `Reader::ReadRecord`（`/mnt/d/code/leveldb/db/log_reader.cc:56`）
+- **现象**: inspect 显示 `line_end=55`，但 `line_start=56`（end < start，实际 end 应为函数体结束行）
+- **根因推测**: `get_range()` 的行号解析对某些 Clang range 格式返回了错误值。可能跟 range 中 `.begin` 和 `.end` 的 `file` 字段缺失有关（类似 loc.file 为空的问题），导致 fallback 到 `loc.line` 或 offset→line 时取了错误行号
+- **影响**: 影响方法定义的范围显示（不阻塞功能，但导航精度下降）
+- **优先级**: P3
+- **状态**: 2026-05-16 确认，已知但暂不处理
+
 ## 发现但未修复
 
 ### BUG-009: .h 声明 + .cc 定义 → FIXED-002
@@ -168,9 +186,11 @@
 
 | 状态 | 数量 | 说明 |
 |------|------|------|
-| P0 — 数据错误 | 9 | BUG-002 + BUG-010(a~g) + 旧 BUG-001 已修 |
-| P1 — 功能缺失 | 5 | BUG-008, BUG-011~015 |
-| 已修复 | 3 | FIXED-001~003 |
+|| P0 — 数据错误 | 9 | BUG-002 + BUG-010(a~g) + 旧 BUG-001 已修 |
+|| P1 — 功能缺失 | 5 | BUG-008, BUG-011~015 |
+|| P2 — 数据质量 | 1 | BUG-016 |
+|| P3 — 小问题 | 1 | BUG-017 |
+|| 已修复 | 3 | FIXED-001~003 |
 | 规格变更 | 1 | SPEC-CHANGE-001 |
 | 规格冲突 | 2 | SPEC-CONFLICT-001~002 |
-| **待修复合计** | **14** | **9 P0 + 5 P1** |
+| **待修复合计** | **15** | **9 P0 + 5 P1 + 1 P2** |

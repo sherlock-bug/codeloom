@@ -245,46 +245,54 @@ impl ExtractCtx {
                                     else { 0 };
                                 if skip > 0 {
                                     let rest = &mangled[skip..]; // skip _ZN or _ZNK
-                                    // Find the LAST 'E' — this is the nested-name end
-                                    // (not template-arg end, which would be an earlier 'E')
-                                    if let Some(e_pos) = rest.rfind('E') {
-                                        let inner = &rest[..e_pos]; // everything before last E
-                                        // Parse: <len><name>... — first name is the class
-                                        if let Some(len_end) = inner.find(|c: char| !c.is_ascii_digit()) {
-                                            if let Ok(len) = inner[..len_end].parse::<usize>() {
-                                                if len_end + len <= inner.len() {
-                                                    let class_name = &inner[len_end..len_end + len];
-                                                    let remaining = &inner[len_end + len..];
-                                                    // Check if there's a method name after class
-                                                    // Normal: <len><name> (e.g., "4what")
-                                                    // Template: I<args>E<len><name> (e.g., "IiE5store")
-                                                    let has_method = if remaining.starts_with(|c: char| c.is_ascii_digit()) {
-                                                        // Non-template class method: <len><name> (e.g., "4what")
-                                                        true
-                                                    } else if remaining.starts_with('I') {
-                                                        // Template class method: I<args>E<len><name> (e.g., "IiE5store")
-                                                        // For template instances, the mangled name only has the plain class
-                                                        // name (e.g., "DataStore") not the full instance name (e.g.,
-                                                        // "DataStore<int>"). Creating "DataStore::store" would collide
-                                                        // with the primary template's method symbol. Keep bare instead.
-                                                        false
-                                                    } else {
-                                                        false
-                                                    };
-                                                    if has_method {
-                                                        format!("{}::{}", class_name, n)
-                                                    } else {
-                                                        n.to_string()
-                                                    }
+                                    // Parse all <len><name> components sequentially up to
+                                    // the first 'E' (end of nested name), skipping I...E
+                                    // template args. The last component is the method name,
+                                    // the second-to-last is the class name.
+                                    // Examples:
+                                    //   leveldb::VersionSet::LogAndApply →
+                                    //     _ZN7leveldb10VersionSet11LogAndApplyE...
+                                    //     → ["leveldb", "VersionSet", "LogAndApply"]
+                                    //   DataStore::store (template) →
+                                    //     _ZN9DataStoreIiE5storeE...
+                                    //     → ["DataStore", "store"]
+                                    let mut components: Vec<&str> = Vec::new();
+                                    let mut i = 0;
+                                    let rest_bytes = rest.as_bytes();
+                                    while i < rest.len() {
+                                        if rest_bytes[i] == b'E' {
+                                            break; // end of nested name
+                                        } else if rest_bytes[i] == b'I' {
+                                            // Skip template args: I...E
+                                            if let Some(e_pos) = rest[i..].find('E') {
+                                                i += e_pos + 1;
+                                                continue;
+                                            }
+                                            break;
+                                        } else if rest_bytes[i].is_ascii_digit() {
+                                            let digits_start = i;
+                                            while i < rest.len() && rest_bytes[i].is_ascii_digit() {
+                                                i += 1;
+                                            }
+                                            if let Ok(len) = rest[digits_start..i].parse::<usize>() {
+                                                if i + len <= rest.len() {
+                                                    components.push(&rest[i..i + len]);
+                                                    i += len;
                                                 } else {
-                                                    n.to_string()
+                                                    break;
                                                 }
                                             } else {
-                                                n.to_string()
+                                                break;
                                             }
                                         } else {
-                                            n.to_string()
+                                            break;
                                         }
+                                    }
+                                    // With components like [ns..., class, method]:
+                                    // if len >= 2, the class is components[components.len() - 2]
+                                    if components.len() >= 2 {
+                                        let class_name = components[components.len() - 2];
+                                        format!("{}::{}", class_name, n)
                                     } else {
                                         n.to_string()
                                     }
@@ -1014,7 +1022,7 @@ impl ExtractCtx {
             }
             return;
         }
-        eprintln!("DBG_ADD_SYM: new key ({:?}), adding: file={} line={} is_def={}", key, sym.file_path, sym.line_start, sym.is_definition);
+        log_debug!("indexer::clang::ast", "DBG_ADD_SYM: new key ({:?}), adding: file={} line={} is_def={}", key, sym.file_path, sym.line_start, sym.is_definition);
         self.seen_symbols.push(key);
         self.result.symbols.push(sym);
     }

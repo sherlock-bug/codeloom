@@ -206,3 +206,11 @@ int demo_stl_with_project_types() {
     records.push_back(r);
     return (int)records.size();
 }
+
+// ============================================================
+// Namespace out-of-line definition (tests definition-first location)
+// ============================================================
+
+void test_ns::NsClass::ns_method() {
+    // Defined in .cc — should resolve to this file, not the .h declaration
+}

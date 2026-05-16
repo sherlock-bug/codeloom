@@ -145,4 +145,12 @@ void demo_stl_with_project_types();
 // C library function calls (tests system symbol filtering)
 void demo_c_library_calls();
 
+// Namespace-scoped class for out-of-line definition location test
+namespace test_ns {
+    class NsClass {
+    public:
+        void ns_method();
+    };
+}
+
 #endif
