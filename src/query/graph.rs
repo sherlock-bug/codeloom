@@ -92,6 +92,17 @@ pub fn get_edges(
 pub fn resolve_symbol_id(conn: &Connection, name: &str, repo: &str, branch: &str) -> Option<i64> {
     let branch_id = crate::storage::resolve_branch_id(conn, repo, branch).ok()?;
     // Try sym node first (exact match), fallback to file node, then LIKE fallback
+    // NOTE: LIKE %::name is tried BEFORE exact match, because stubs with old naming
+    // (e.g. NsClass::ns_method without namespace) can shadow FQN nodes.
+    let like_pat = format!("%::{}", name);
+    let like = conn.query_row(
+        "SELECT n.id FROM nodes n JOIN branches b ON n.id = b.node_id \
+         WHERE n.name LIKE ?1 AND n.node_type='sym' AND b.repo = ?2 AND (b.branch_id = ?3 OR b.branch_id = 0) LIMIT 1",
+        rusqlite::params![like_pat, repo, branch_id],
+        |row| row.get(0),
+    ).ok();
+    if like.is_some() { return like; }
+
     let exact = conn.query_row(
         "SELECT n.id FROM nodes n JOIN branches b ON n.id = b.node_id \
          WHERE n.name = ?1 AND n.node_type='sym' AND b.repo = ?2 AND (b.branch_id = ?3 OR b.branch_id = 0)",

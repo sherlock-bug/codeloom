@@ -82,7 +82,6 @@ impl Symbol {
             "template_args": self.template_args,
             "language": self.language,
             "parent_class": self.parent_class,
-            "line_end": self.line_end,
             "sid": sid,
         });
 
@@ -113,11 +112,11 @@ impl Symbol {
             Ok(nid)
         } else {
             let nid = conn.query_row(
-                "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_id,kind,attrs) \
-                 VALUES (?1,'sym',?2,?3,?4,?5,?6,?7,?8,?9) RETURNING id",
+                "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,line_end,content_hash,branch_id,kind,attrs) \
+                 VALUES (?1,'sym',?2,?3,?4,?5,?6,?7,?8,?9,?10) RETURNING id",
                 rusqlite::params![
                     self.repo, self.name, content, self.file_path, self.line_start,
-                    self.content_hash, branch_id, self.kind, attrs.to_string(),
+                    self.line_end, self.content_hash, branch_id, self.kind, attrs.to_string(),
                 ],
                 |row| row.get(0),
             )?;

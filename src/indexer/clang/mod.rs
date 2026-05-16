@@ -124,14 +124,40 @@ pub fn index_clang(
                     if let Some(&sid) = src_id {
                         let tid = if let Some(&id) = tgt_id {
                             id
-                        } else if edge.edge_type.starts_with("calls:") || edge.edge_type.starts_with("uses:") {
-                            // Direct function calls to unknown targets (C library functions like
-                            // printf, strstr pulled in from system headers). Skip edge + stub.
-                            // MemberExpr / pointer-based calls to project symbols keep working
-                            // because those targets ARE in name_to_id.
-                            // Variable references (uses:) also produce noisy stubs for local
-                            // variables/parameters — skip those too.
-                            continue;
+                        } else if edge.edge_type.starts_with("calls:")
+                            || edge.edge_type.starts_with("uses:")
+                        {
+                            // Direct function calls to unknown targets — could be:
+                            // (a) C library functions (printf, strstr) — skip
+                            // (b) Cross-TU project function — try DB lookup
+                            // MemberExpr / pointer-based calls with FQN target_name
+                            // will match DB now that names include namespace.
+                            if edge.edge_type.starts_with("calls:") {
+                                let fqn = &edge.target_name;
+                                // 1. LIKE fallback first: qualType may omit namespace (Handler* → Handler::handle)
+                                // Match %::Handler::handle against cross_tu::Handler::handle
+                                let like_pat = format!("%::{}", fqn);
+                                if let Ok(id) = conn.query_row(
+                                    "SELECT id FROM nodes WHERE name LIKE ?1 AND repo=?2 AND node_type='sym' LIMIT 1",
+                                    rusqlite::params![like_pat, repo_name],
+                                    |row| row.get::<_, i64>(0),
+                                ) {
+                                    id
+                                } else {
+                                    // 2. Exact FQN match (e.g., Client::process)
+                                    if let Ok(id) = conn.query_row(
+                                        "SELECT id FROM nodes WHERE name=?1 AND repo=?2 AND node_type='sym' LIMIT 1",
+                                        rusqlite::params![fqn, repo_name],
+                                        |row| row.get::<_, i64>(0),
+                                    ) {
+                                        id
+                                    } else {
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                continue;
+                            }
                         } else {
                             let stub_kind = infer_stub_kind(&edge.edge_type);
                             create_external_stub(conn, &edge.target_name, stub_kind, "", repo_name)?
@@ -275,9 +301,9 @@ fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str, branch_name: &str)
         Some((id, true, _)) if !sym.is_external => {
             // External stub upgraded by real project implementation
             conn.execute(
-                "UPDATE nodes SET line_start=?2, \
+                "UPDATE nodes SET line_start=?2, line_end=?3, \
                  attrs = json_set(attrs, '$.is_external', 0, '$.is_definition', ?1, \
-                   '$.line_end', ?3, '$.signature', ?4, '$.sid', ?5, '$.doc_comment', ?6) \
+                   '$.signature', ?4, '$.sid', ?5, '$.doc_comment', ?6) \
                  WHERE id=?7 AND node_type='sym'",
                 rusqlite::params![sym.is_definition as i32, sym.line_start, sym.line_end,
                     sym.signature, sym.sid, sym.doc_comment, id],
@@ -287,10 +313,10 @@ fn upsert_symbol(conn: &Connection, sym: &Symbol, repo: &str, branch_name: &str)
         Some((id, false, false)) if sym.is_definition => {
             // Declaration → definition merge
             conn.execute(
-                "UPDATE nodes SET line_start=?1, \
+                "UPDATE nodes SET line_start=?1, line_end=?2, \
                  content = CASE WHEN ?3 != '' AND content NOT LIKE '%' || ?3 || '%' \
                    THEN content || CHAR(10) || ?3 ELSE content END, \
-                 attrs = json_set(attrs, '$.is_definition', 1, '$.line_end', ?2) \
+                 attrs = json_set(attrs, '$.is_definition', 1) \
                  WHERE id=?4 AND node_type='sym'",
                 rusqlite::params![sym.line_start, sym.line_end, sym.doc_comment, id],
             )?;
@@ -324,7 +350,6 @@ fn create_external_stub(
         "language": "cpp",
         "sid": sid,
         "namespace": ns,
-        "line_end": 0,
     });
 
     // Check if node already exists
@@ -344,8 +369,8 @@ fn create_external_stub(
         // Resolve branch ID (external stubs are branch-independent → use "main")
         let bid = crate::storage::resolve_branch_id(conn, repo, "main")?;
         Ok(conn.query_row(
-            "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,content_hash,branch_id,kind,attrs) \
-             VALUES (?1,'sym',?2,?3,'',0,?4,?5,?6,?7) RETURNING id",
+            "INSERT INTO nodes (repo,node_type,name,content,file_path,line_start,line_end,content_hash,branch_id,kind,attrs) \
+             VALUES (?1,'sym',?2,?3,'',0,0,?4,?5,?6,?7) RETURNING id",
             rusqlite::params![repo, name, content, hash, bid, kind, attrs.to_string()],
             |row| row.get(0),
         )?)

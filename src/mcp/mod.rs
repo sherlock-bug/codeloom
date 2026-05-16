@@ -294,7 +294,7 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
     let name = if name.is_empty() { if let Some(sid) = sym_id { conn.query_row("SELECT name FROM nodes WHERE id=?1", rusqlite::params![sid], |r| r.get::<_, String>(0)).unwrap_or_default() } else { name.to_string() } } else { name.to_string() };
     let branch_id = crate::storage::resolve_branch_id(&conn, repo, branch).unwrap_or(0);
     let bwc = branch_where_clause(branch);
-    let sql = format!("SELECT n.id, n.node_type, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name=?2 {}", bwc);
+    let sql = format!("SELECT n.id, n.node_type, n.name, n.kind, n.file_path, n.line_start, n.line_end, json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name=?2 {}", bwc);
     let mut rows: Vec<(i64,String,String,String,String,i64,i64,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)> = match conn.prepare(&sql) {
         Ok(mut stmt) => stmt.query_map(rusqlite::params![repo, name], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
@@ -302,11 +302,12 @@ fn inspect_symbol(name: &str, repo: &str, branch: &str, sym_id: Option<i64>) -> 
         }).map(|r| r.flatten().collect()).unwrap_or_default(),
         Err(_) => return format!("{{\"error\":\"Error querying symbol '{}'\"}}", name),
     };
-    if rows.is_empty() {
+    if rows.is_empty() || rows.iter().all(|r| r.4.is_empty()) {
         // LIKE fallback: suffix match first (e.g., "store" → "%::store"), then broad
-        let like_sql = format!("SELECT n.id, n.node_type, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name LIKE ?2 AND n.node_type='sym' {} LIMIT 1", bwc);
-        for pat in [format!("%::{}", name), format!("%{}%", name)] {
-            if let Ok(mut stmt) = conn.prepare(&like_sql) {
+        let like_sql =            format!("SELECT n.id, n.node_type, n.name, n.kind, n.file_path, n.line_start, n.line_end, json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name LIKE ?2 AND n.node_type='sym' {} ORDER BY CASE WHEN n.file_path LIKE '%.cc' THEN 0 WHEN n.file_path LIKE '%.cpp' THEN 0 ELSE 1 END, n.id LIMIT 1", bwc);
+        rows.clear();
+        if let Ok(mut stmt) = conn.prepare(&like_sql) {
+            for pat in [format!("%::{}", name), format!("%{}%", name)] {
                 if let Ok(mut q) = stmt.query_map(rusqlite::params![repo, pat], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
                         r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?))

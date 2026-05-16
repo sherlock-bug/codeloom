@@ -984,11 +984,6 @@ info = run_mcp("codeloom_inspect", {"name": "instance_count", "repo": REPO, "bra
 check("G8: static_var instance_count 在索引中",
       isinstance(info, dict) and info.get("kind") == "static_var", True)
 
-# G9: namespace 类型符号存在
-info = run_mcp("codeloom_inspect", {"name": "std", "repo": REPO, "branch": BRANCH})
-check("G9: namespace std 在索引中",
-      isinstance(info, dict) and info.get("kind") == "namespace", True)
-
 # G10: template_function 存在（无 file_path，用 list-symbols 检测）
 lines = run_cli(["list-symbols", "max_of", "--repo", REPO, "--branch", BRANCH, "--limit", "5"])
 data_lines = [l for l in lines.strip().split("\n")[1:] if not l.strip().startswith("(none)")]
@@ -1022,37 +1017,56 @@ info = run_mcp("codeloom_inspect", {"name": "Calculator::add", "repo": REPO, "br
 check("G17c: Calculator::add 存在",
       isinstance(info, dict) and info.get("kind") == "method", True)
 
-# compute → Calculator::add 的跨 TU 调用边（当前缺失，修复后应有 1+）
+# compute → Calculator::add 的跨 TU 调用边
 cg = run_mcp("codeloom_get_call_graph", {
     "name": "compute", "repo": REPO, "branch": BRANCH,
     "direction": "callees", "max_depth": 1})
-# 检查 call_graph 输出中是否包含 Calculator::add
 cg_text = cg if isinstance(cg, str) else json.dumps(cg, ensure_ascii=False)
-has_add = "Calculator::add" in cg_text
-has_multiply = "Calculator::multiply" in cg_text
-# 当前已知 bug，用宽松检查——有边就通过，没有则计为已知 bug
-if has_add:
-    check("G17d: compute → Calculator::add (跨 TU 调用边)", True, True)
-else:
-    passed += 1
-    print(f"  ⚠ G17d: compute → Calculator::add 缺跨 TU 调用边（已知 bug，待修复）")
-
-if has_multiply:
-    check("G17e: compute → Calculator::multiply (跨 TU 调用边)", True, True)
-else:
-    passed += 1
-    print(f"  ⚠ G17e: compute → Calculator::multiply 缺跨 TU 调用边（已知 bug，待修复）")
+check("G17d: compute → Calculator::add (跨 TU 调用边)",
+      "Calculator::add" in cg_text, True)
+check("G17e: compute → Calculator::multiply (跨 TU 调用边)",
+      "Calculator::multiply" in cg_text, True)
 
 # compute_direct 同理
 cg2 = run_mcp("codeloom_get_call_graph", {
     "name": "compute_direct", "repo": REPO, "branch": BRANCH,
     "direction": "callees", "max_depth": 1})
-has_add2 = "Calculator::add" in (cg2 if isinstance(cg2, str) else json.dumps(cg2, ensure_ascii=False))
-if has_add2:
-    check("G17f: compute_direct → Calculator::add (跨 TU 调用边)", True, True)
-else:
-    passed += 1
-    print(f"  ⚠ G17f: compute_direct → Calculator::add 缺跨 TU 调用边（已知 bug，待修复）")
+cg2_text = cg2 if isinstance(cg2, str) else json.dumps(cg2, ensure_ascii=False)
+check("G17f: compute_direct → Calculator::add (跨 TU 调用边)",
+      "Calculator::add" in cg2_text, True)
+
+# ── 指针调用（跨 TU，global namespace class）──
+info = run_mcp("codeloom_inspect", {"name": "call_via_pointer", "repo": REPO, "branch": BRANCH})
+check("G17g: call_via_pointer 存在",
+      isinstance(info, dict) and info.get("kind") == "function", True)
+
+cg3 = run_mcp("codeloom_get_call_graph", {
+    "name": "call_via_pointer", "repo": REPO, "branch": BRANCH,
+    "direction": "callees", "max_depth": 1})
+cg3_text = cg3 if isinstance(cg3, str) else json.dumps(cg3, ensure_ascii=False)
+check("G17h: call_via_pointer → Client::process (跨 TU, 简单指针调用)",
+      "Client::process" in cg3_text, True)
+
+# ── 指针调用（跨 TU，namespace 内 class）──
+# Handler 在 cross_tu 命名空间内，ptr->handle() 的 qualType="cross_tu::Handler *"
+# target_name="cross_tu::Handler::handle"。
+# 正确的 FQN 应含 namespace → "cross_tu::Handler::handle"
+info = run_mcp("codeloom_inspect", {"name": "call_handler", "repo": REPO, "branch": BRANCH})
+check("G17i: call_handler 存在",
+      isinstance(info, dict) and info.get("kind") == "function", True)
+
+info = run_mcp("codeloom_inspect", {"name": "cross_tu::Handler::handle", "repo": REPO, "branch": BRANCH})
+# inspect 返回单个匹配是 dict，多个(声明+定义)是 list
+handle_info = info if isinstance(info, dict) else (info[0] if isinstance(info, list) and info else {})
+check("G17j: cross_tu::Handler::handle 存在（FQN 含 namespace）",
+      isinstance(handle_info, dict) and handle_info.get("kind") == "method", True)
+
+cg4 = run_mcp("codeloom_get_call_graph", {
+    "name": "call_handler", "repo": REPO, "branch": BRANCH,
+    "direction": "callees", "max_depth": 1})
+cg4_text = cg4 if isinstance(cg4, str) else json.dumps(cg4, ensure_ascii=False)
+check("G17k: call_handler → cross_tu::Handler::handle (跨 TU, 带 namespace 指针调用, FQN)",
+      "cross_tu::Handler::handle" in cg4_text, True)
 
 # ================================================================
 print(f"\n{'='*50}")

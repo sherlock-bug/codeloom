@@ -17,4 +17,26 @@ int compute_direct() {
     return calc.add(10, 20);
 }
 
+// Pointer-based call — reproduces the env_->GetChildren() pattern.
+// Here, ptr is Client*, and ptr->process(val) makes Clang produce
+// ImplicitCastExpr with qualType="Client *", so the MemberExpr
+// handler resolves class_name="Client" and builds
+// target_name="Client::process" (no namespace, global scope).
+// Uses a passed-in pointer to avoid CXXNewExpr filter issues.
+int call_via_pointer(Client* ptr, int val) {
+    int result = ptr->process(val);
+    return result;
+}
+
+// Pointer-based call via cross_tu::Handler — reproduces the exact leveldb
+// pattern: namespace-qualified class called via pointer.
+// handler is Handler*, so Clang's qualType should be "cross_tu::Handler *"
+// leading to target_name="cross_tu::Handler::handle".
+// DB stores name="Handler::handle", namespace="cross_tu".
+// Uses a passed-in pointer to avoid CXXNewExpr filter issues.
+int call_handler(Handler* h, int val) {
+    int result = h->handle(val);
+    return result;
+}
+
 }  // namespace cross_tu

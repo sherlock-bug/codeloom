@@ -1,4 +1,4 @@
-// Callee — defines cross_tu::Calculator methods.
+// Callee — defines cross_tu::Calculator methods and global Client::process.
 // These ARE extracted as CXXMethodDecl with bodies.
 // This file is in the same fixture as caller.cc, so both are indexed.
 
@@ -15,3 +15,11 @@ int Calculator::multiply(int a, int b) {
 }
 
 }  // namespace cross_tu
+
+int Client::process(int value) {
+    return value * 2;
+}
+
+int cross_tu::Handler::handle(int value) {
+    return value + 1;
+}

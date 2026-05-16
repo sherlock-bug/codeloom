@@ -230,7 +230,12 @@ impl ExtractCtx {
                     let k = if kind == "CXXMethodDecl" { "method" } else { "function" };
                     let qname = if k == "method" {
                         if let Some(p) = parent_class {
-                            format!("{}::{}", p, n)
+                            // Inline class method: include namespace in qualified name
+                            if ns.is_empty() {
+                                format!("{}::{}", p, n)
+                            } else {
+                                format!("{}::{}::{}", ns, p, n)
+                            }
                         } else {
                             // .cc definition: parent_class is None because the method
                             // isn't nested inside a CXXRecordDecl in the AST tree.
@@ -289,10 +294,11 @@ impl ExtractCtx {
                                         }
                                     }
                                     // With components like [ns..., class, method]:
-                                    // if len >= 2, the class is components[components.len() - 2]
+                                    // join all namespace+class components for FQN
                                     if components.len() >= 2 {
-                                        let class_name = components[components.len() - 2];
-                                        format!("{}::{}", class_name, n)
+                                        // Join all namespace + class components (not just the last one)
+                                        let prefix = components[..components.len() - 1].join("::");
+                                        format!("{}::{}", prefix, n)
                                     } else {
                                         n.to_string()
                                     }
@@ -319,7 +325,19 @@ impl ExtractCtx {
                     sym.line_end = le;
                     sym.language = Some("cpp".to_string());
                     sym.signature = Some(sig.clone());
-                    sym.namespace = if ns.is_empty() { None } else { Some(ns.clone()) };
+                    sym.namespace = if ns.is_empty() {
+                        // Out-of-line definitions: extract namespace from mangled name
+                        // qname = "test_ns::NsClass::ns_method" → ns = "test_ns"
+                        let parts: Vec<&str> = qname.split("::").collect();
+                        if k == "method" && parts.len() > 2 {
+                            // Strip last two parts (class::method), rest is namespace
+                            Some(parts[..parts.len() - 2].join("::"))
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(ns.clone())
+                    };
                     sym.parent_class = if k == "method" { parent_class.map(|s| s.to_string()) } else { None };
                     sym.doc_comment = String::new();
                     sym.is_definition = is_def;
@@ -332,6 +350,7 @@ impl ExtractCtx {
                     // edges: only extract from internal (project) symbols
                     if !is_external {
                         self.extract_calls(node, &qname, &ns, &sig);
+                        log_debug!("indexer::clang::ast", "extract_calls done for {} (ns={}) edges_count={}", qname, ns, self.result.edges.len());
                         self.extract_param_types(node, &qname, &ns);
                         self.extract_return_type(node, &qname, &ns);
                         self.extract_variable_uses(node, &qname, &ns);
@@ -1182,6 +1201,11 @@ fn strip_template_args(name: &str) -> &str {
 fn extract_call_targets<F: FnMut(String)>(node: &serde_json::Value, mut cb: F) {
     fn walk(n: &serde_json::Value, cb: &mut dyn FnMut(String)) {
         let kind = n.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind != "" {
+            let name = n.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let has_inner = n.get("inner").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            eprintln!("DBG_walk: kind={} name={} inner_len={}", kind, name, has_inner);
+        }
         // Direct function calls: DeclRefExpr targeting FunctionDecl → 'calls:' edges.
         // Enum/variable references (EnumConstantDecl/VarDecl) are handled by
         // extract_variable_uses → 'uses:' edges, NOT here. This avoids duplicate
@@ -1206,6 +1230,8 @@ fn extract_call_targets<F: FnMut(String)>(node: &serde_json::Value, mut cb: F) {
         // In both cases, the call target is ClassName::methodName.
         if kind == "MemberExpr" {
             if let Some(method_name) = n.get("name").and_then(|v| v.as_str()) {
+                // Debug: check MemberExpr content
+                let _dbg_inner = n.get("inner").and_then(|v| v.as_array());
                 // Try to find the class name from the ImplicitCastExpr path or type
                 let class_name = n.get("inner").and_then(|v| v.as_array())
                     .and_then(|inner| inner.first())

@@ -686,7 +686,7 @@ pub async fn run(cmd: Command) -> anyhow::Result<()> {
             if !dbp.exists() { println!("Repo '{}' not found.", repo); return Ok(()); }
             let conn = crate::storage::open(&dbp.to_string_lossy())?;
             // Fetch symbol with all fields
-            let sql = "SELECT n.id, n.name, n.kind, n.file_path, n.line_start, CAST(json_extract(n.attrs,'$.line_end') AS INTEGER), json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name=?2 AND n.node_type='sym' AND b.branch_name=?3 LIMIT 5";
+            let sql = "SELECT n.id, n.name, n.kind, n.file_path, n.line_start, n.line_end, json_extract(n.attrs,'$.signature'), json_extract(n.attrs,'$.parent_class'), json_extract(n.attrs,'$.namespace'), json_extract(n.attrs,'$.language'), n.content FROM nodes n JOIN branches b ON b.node_id=n.id WHERE n.repo=?1 AND n.name=?2 AND n.node_type='sym' AND b.branch_name=?3 LIMIT 5";
             let mut stmt = conn.prepare(sql)?;
             let rows = stmt.query_map(rusqlite::params![repo, name, branch], |r| {
                 Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,

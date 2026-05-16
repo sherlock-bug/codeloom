@@ -348,7 +348,7 @@ def filter_node(node, project_root, fallback_file=None):
                         # like printf would get the TU's file path and bypass is_system.
                         if child_kind in BODY_KINDS or child_kind in (
                             "DeclRefExpr", "MemberExpr", "ParmVarDecl", "CXXThisExpr",
-                            "CXXRecordDecl", "ClassTemplateDecl",
+                            "VarDecl", "CXXRecordDecl", "ClassTemplateDecl",
                         ):
                             child = dict(child)
                             child["loc"] = dict(child_loc)
@@ -372,10 +372,15 @@ def filter_node(node, project_root, fallback_file=None):
     # Exception: system containers (namespace, class template, record, linkage spec)
     # with surviving children — keeps the nesting hierarchy so CTS nodes remain reachable.
     if kind not in BODY_KINDS and is_system(node, project_root, fallback_file):
-        # FunctionDecl with body but no file info — project function declared
-        # in header but defined in .cc. Clang omits loc.file for these.
-        # Let it through; Rust side decides based on cur_file context.
-        if kind == "FunctionDecl" and _has_body(node):
+        # FunctionDecl/CXXMethodDecl with body but no file info — project
+        # functions/methods defined in .cc or in the main file. Clang omits
+        # loc.file for these when they're in the main TU (not an included header).
+        # Guard: only apply to nodes without includedFrom (main file's own nodes,
+        # not methods pulled in from system headers with inlined bodies).
+        # For CXXMethodDecl, additionally check no includedFrom to avoid leaking
+        # system inlined methods like std::atomic::exchange.
+        if kind in ("FunctionDecl", "CXXMethodDecl") and _has_body(node) \
+           and not node.get("loc", {}).get("includedFrom"):
             filtered["hasBody"] = True  # Tell Rust side this node has a body
             pass  # keep
         elif kind == "ClassTemplateSpecializationDecl" and _has_project_type_arg(node):
