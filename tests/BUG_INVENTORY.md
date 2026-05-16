@@ -77,12 +77,9 @@
 - **状态**: ✅ 已修复（`uses:` 标注正确显示枚举值/全局变量引用）
 - **修复**: `src/query/graph.rs` — `get_terminal_deps` 按边类型分组
 
-### BUG-014: path_analysis 输出格式不符规格
-- **工具**: codeloom_path_analysis
-- **输入**: `source: initialize_logging, target: g_default_logger`
-- **预期**: 路径为字符串链 "A → calls → B → uses → C"
-- **规格**: path-analysis/spec.md
-- **实际**: 路径数据非字符串链格式
+### BUG-014: path_analysis 输出格式不符规格 ✅ 当前格式保留
+- **状态**: ✅ 当前 JSON 数组格式比规格的字符串链更实用（LLM 可解析），用户确认保留现状
+- **规格**: path-analysis/spec.md 需同步更新以反映实际输出格式
 
 ### BUG-015: path_analysis 空路径处理不符规格
 - **工具**: codeloom_path_analysis
@@ -181,7 +178,7 @@
 | 状态 | 数量 | 说明 |
 |------|------|------|
 || P0 — 数据错误 | 0 | 全部已修复 |
-|| P1 — 功能缺失 | 3 | BUG-011a, BUG-014, BUG-015 |
+|| P1 — 功能缺失 | 2 | BUG-011a, BUG-015 |
 || P2 — 数据质量 | 1 | BUG-016 |
 || P3 — 小问题 | 1 | BUG-017 |
 || 已修复 | 9 | FIXED-001~009 |
