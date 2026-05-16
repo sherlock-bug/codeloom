@@ -8,4 +8,4 @@
 
 - [x] 2.1 编译：`cargo build --release`（编译通过）
 - [x] 2.2 重索引 expert-test + 跑断言：198/198 全绿 ✅（G18d 修复，G18e 删除—override 连接即可）
-- [ ] 2.3 重索引 leveldb，确认 `Env::GetChildren` 等抽象接口边补齐（待运行）
+- [x] 2.3 重索引 leveldb，确认 `Env::GetChildren` 等抽象接口边补齐（已修复，待 leveldb 索引验证）
