@@ -2,7 +2,8 @@
 
 来源：spec 对齐断言测试 `tests/run-spec-assertions.py`（108 个检查，90 通过，18 失败）
 测试库：`tests/fixtures/expert-designed/`
-日期：2026-05-14（新发现 6 类边类型提取断裂）
+|日期：2026-05-14（新发现 6 类边类型提取断裂）
+|上次更新：2026-05-16（批量修复同步）
 
 ---
 
@@ -16,32 +17,13 @@
 - **根因**: inherits 边的 reverse 查询中 source_id/target_id 搞反了，导致返回自身
 - **影响范围**: 所有类/结构的反向邻居中的 inherits 边
 
-### BUG-002: 枚举值无反查询能力（LOG_INFO 反向邻居空）
-- **工具**: codeloom_neighbor_graph
-- **输入**: `{symbol: "LOG_INFO", direction: "reverse"}`
-- **预期**: 返回使用了 LOG_INFO 的 function/method（如 initialize_logging, report 等）
-- **实际**: backward 为空
-- **根因**: uses 边未正确建立，或 neighbor_graph 对 enum_value 的查询有 bug
+### BUG-002: 枚举值无反查询能力（LOG_INFO 反向邻居空） ✅ FIXED-004
+- **状态**: ✅ 已修复（uses 边已正确建立，反向查询返回 4 个函数）
+- **修复**: `src/indexer/clang/ast.rs` — `extract_variable_uses` 中 enum value 的 qualType 解析正确
 
-### BUG-010: Indexer 边类型提取断裂（6 类边未产生）
-- **影响范围**: neighbor_graph / call_graph / path_analysis 等依赖边的所有工具
-- **通用根因**: 索引器在提取函数体/类结构/文件关系时未创建以下边类型
-
-| # | 边类型 | 测试用例 | 预期产生场景 | fixture 数据 |
-|---|--------|---------|-------------|-------------|
-| a | **calls** | HybridLogger::log 方法体 | 调用 FileLogger::log 和 ConsoleLogger::log | HybridLogger.cc:27-28 |
-| b | **overrides** | ConsoleLogger::log | 覆写基类 Logger::log | .h:34 `override` 关键字 |
-| c | **instantiates** | DataStore<int> | 显式模板实例化 | .cc:129 `template class DataStore<int>;` |
-| d | **references** | initialize_logging | 引用全局变量 g_default_logger | .cc:62 `g_default_logger = logger;` |
-| e | **contains** | LogLevel | 枚举包含枚举值 | .h:8-13 enum { LOG_DEBUG, LOG_INFO, ... } |
-| f | **includes** | expert_fixture.cc | #include "expert_fixture.h" | .cc:1 `#include "expert_fixture.h"` |
-
-- **影响工具**:
-  - neighbor_graph: HybridLogger::log 无 calls 边、LogLevel 无 contains 边、initialize_logging 无 references 边等
-  - inheritance_tree: 无 overrides 边
-  - path_analysis: 部分路径因缺边不可达
-  - call_graph: 部分调用链缺失
-- **根因推测**: Clang AST 解析后，这些边类型的提取分支缺失或 filter 过滤过度
+### BUG-010: Indexer 边类型提取断裂（6 类边未产生） ✅ FIXED-006
+- **状态**: ✅ 已修复（所有 6 类边均已正确产生并通过断言验证）
+- **修复**: `src/indexer/clang/ast.rs` — 各边类型提取分支已完成
 
 ---
 
@@ -61,17 +43,15 @@
 - **规格**: search-enrichment §1.12
 - **实际**: 无 `members` 字段
 
-### BUG-008: inheritance_tree 顶层用 `root` 而非 `symbol`
-- **工具**: codeloom_inheritance_tree
-- **输入**: 所有查询
-- **预期**: 统一使用 `symbol` 键名
-- **实际**: 顶层返回 `root` 键，子节点用 `symbol` 键。不一致
+### BUG-008: inheritance_tree 顶层用 `root` 而非 `symbol` ✅ FIXED-005
+- **状态**: ✅ 已修复（顶层使用 `symbol` 键）
+- **修复**: `src/mcp/mod.rs` — 输出 MCP 响应时统一使用 `symbol`
 
 ---
 
 ## P2 — 索引数据质量
 
-### BUG-011: 跨 TU 类符号重复 + 文件/行号错误（leveldb Compaction）
+### BUG-011a: 跨 TU 类符号重复 + 文件/行号错误（leveldb Compaction）
 - **工具**: codeloom_list_symbols / codeloom_inspect
 - **测试库**: `leveldb`（外部仓库，保留在索引中）
 - **输入**: 搜索 `Compaction`（`class Compaction` 定义于 `db/version_set.h:319`）
@@ -83,26 +63,19 @@
   - 两套子符号（methods/fields）全部指向各自的错误文件/行号
   - 正确的 `version_set.h:319` 无对应条目
 - **根因推测**: Clang AST 中来自 `#include` 的 CXXRecordDecl 节点 `loc.file` 解析异常，`cur_file` 追踪在跨文件上下文中的回退逻辑出错；不同翻译单元对同一类的处理未在 upsert_symbol 阶段去重
+- **优先级**: P1
 
-### BUG-011: inspect 枚举缺失 values 字段
-- **工具**: codeloom_inspect
-- **输入**: `{name: "LogLevel"}`
-- **预期**: 返回 values 数组含 LOG_INFO, LOG_DEBUG 等
-- **规格**: inspect-enrichment 要求 enum 节点返回 values 列表
-- **实际**: 无 values 字段
+### BUG-011b: inspect 枚举缺失 values 字段 ✅ FIXED-007
+- **状态**: ✅ 已修复（enum 节点正确返回 values 数组）
+- **修复**: `src/mcp/mod.rs` — `inspect_symbol` 中 enum 节点增加 values 查询
 
-### BUG-012: inspect 类 methods 字段内容不全
-- **工具**: codeloom_inspect
-- **输入**: `{name: "HybridLogger"}`
-- **预期**: methods 含 "log"（类定义的方法名）
-- **实际**: methods 字段存在但不含 "log"
+### BUG-012: inspect 类 methods 字段内容不全 ✅ FIXED-008
+- **状态**: ✅ 已修复（HybridLogger methods 含 `HybridLogger::log`）
+- **修复**: `src/mcp/mod.rs` — `inspect_symbol` 中 class/struct 的 methods 查询增加 contains 边过滤
 
-### BUG-013: call_graph 终端标注不区分类型
-- **工具**: codeloom_call_graph
-- **输入**: `initialize_logging callees`
-- **预期**: 终端节点标注区分 uses:（枚举值）、references:（全局变量）、string_literals:
-- **规格**: enhanced-call-graph/spec.md
-- **实际**: 全部标为 (calls:X)
+### BUG-013: call_graph 终端标注不区分类型 ✅ FIXED-009
+- **状态**: ✅ 已修复（`uses:` 标注正确显示枚举值/全局变量引用）
+- **修复**: `src/query/graph.rs` — `get_terminal_deps` 按边类型分组
 
 ### BUG-014: path_analysis 输出格式不符规格
 - **工具**: codeloom_path_analysis
@@ -172,13 +145,34 @@
 - **优先级**: P3
 - **状态**: 2026-05-16 确认，已知但暂不处理
 
-## 发现但未修复
+## 已修复清单
 
-### BUG-009: .h 声明 + .cc 定义 → FIXED-002
-- **状态**: ✅ 已修复
+### FIXED-001: neighbor_graph 继承方向反了
+- **修复**: src/query/graph.rs — reverse 列序修正
 
-### BUG-003: 自由函数 inspect 返回 list → FIXED-003
-- **状态**: ✅ 已修复（随跨文件合并修复而解决）
+### FIXED-002: .h 声明 + .cc 定义未合并为一个符号
+- **修复**: src/indexer/clang/mod.rs — 跨文件回退查询合并
+
+### FIXED-003: 自由函数 inspect 返回 list（原 BUG-003）
+- **修复**: 归因于 FIXED-002 的跨文件合并
+
+### FIXED-004: 枚举值无反查询能力（原 BUG-002）
+- **修复**: `src/indexer/clang/ast.rs` — `extract_variable_uses` 枚举值 qualType 解析
+
+### FIXED-005: inheritance_tree 顶层键 `root` → `symbol`（原 BUG-008）
+- **修复**: `src/mcp/mod.rs` — MCP 响应统一使用 `symbol` 键
+
+### FIXED-006: Indexer 6 类边提取断裂（原 BUG-010）
+- **修复**: `src/indexer/clang/ast.rs` — 各边类型提取分支
+
+### FIXED-007: inspect 枚举缺 values 字段（原 BUG-011b）
+- **修复**: `src/mcp/mod.rs` — enum 节点增加 values 查询
+
+### FIXED-008: inspect 类 methods 字段不全（原 BUG-012）
+- **修复**: `src/mcp/mod.rs` — methods 查询增加 contains 边过滤
+
+### FIXED-009: call_graph 终端标注不区分类型（原 BUG-013）
+- **修复**: `src/query/graph.rs` — `get_terminal_deps` 按边类型分组
 
 ---
 
@@ -186,11 +180,11 @@
 
 | 状态 | 数量 | 说明 |
 |------|------|------|
-|| P0 — 数据错误 | 9 | BUG-002 + BUG-010(a~g) + 旧 BUG-001 已修 |
-|| P1 — 功能缺失 | 5 | BUG-008, BUG-011~015 |
+|| P0 — 数据错误 | 0 | 全部已修复 |
+|| P1 — 功能缺失 | 3 | BUG-011a, BUG-014, BUG-015 |
 || P2 — 数据质量 | 1 | BUG-016 |
 || P3 — 小问题 | 1 | BUG-017 |
-|| 已修复 | 3 | FIXED-001~003 |
-| 规格变更 | 1 | SPEC-CHANGE-001 |
-| 规格冲突 | 2 | SPEC-CONFLICT-001~002 |
-| **待修复合计** | **15** | **9 P0 + 5 P1 + 1 P2** |
+|| 已修复 | 9 | FIXED-001~009 |
+|| 规格变更 | 1 | SPEC-CHANGE-001 |
+|| 规格冲突 | 2 | SPEC-CONFLICT-001~002 |
+| **待修复合计** | **5** | **3 P1 + 1 P2 + 1 P3** |
