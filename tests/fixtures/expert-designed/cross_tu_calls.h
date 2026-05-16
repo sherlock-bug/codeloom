@@ -28,6 +28,20 @@ public:
 
 }  // namespace cross_tu
 
+// Abstract interface — pure virtual method called via pointer.
+// Reproduces the leveldb pattern: env_->GetChildren() where Env
+// is abstract and the MemberExpr resolves to Interface::method.
+class AbstractWorker {
+public:
+    virtual ~AbstractWorker() = default;
+    virtual int DoOp(int value) const = 0;
+};
+
+class RealWorker : public AbstractWorker {
+public:
+    int DoOp(int value) const override;
+};
+
 // A class used via pointer calls — reproduces the pattern of
 // env_->GetChildren() in leveldb where the MemberExpr's type.qualType
 // includes the namespace (e.g. "leveldb::Env *"), producing

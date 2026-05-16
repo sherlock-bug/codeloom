@@ -23,3 +23,7 @@ int Client::process(int value) {
 int cross_tu::Handler::handle(int value) {
     return value + 1;
 }
+
+int RealWorker::DoOp(int value) const {
+    return value * 10;
+}

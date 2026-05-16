@@ -40,3 +40,11 @@ int call_handler(Handler* h, int val) {
 }
 
 }  // namespace cross_tu
+
+// Abstract interface call — reproduces the env_->GetChildren() pattern.
+// ptr is AbstractWorker*, DoOp is pure virtual. The MemberExpr in Clang
+// resolves to AbstractWorker::DoOp (the static type).
+int call_abstract_worker(AbstractWorker* w, int v) {
+    int result = w->DoOp(v);
+    return result;
+}

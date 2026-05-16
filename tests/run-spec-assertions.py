@@ -1068,7 +1068,40 @@ cg4_text = cg4 if isinstance(cg4, str) else json.dumps(cg4, ensure_ascii=False)
 check("G17k: call_handler → cross_tu::Handler::handle (跨 TU, 带 namespace 指针调用, FQN)",
       "cross_tu::Handler::handle" in cg4_text, True)
 
-# ================================================================
+# ============================================================
+# G18: 抽象接口指针调用 — 纯虚函数通过指针调用
+# 复制 leveldb env_->GetChildren() 场景：AbstractWorker* w; w->DoOp(v)
+# Clang MemberExpr 解析到 AbstractWorker::DoOp（静态类型）而非 RealWorker::DoOp
+# ============================================================
+print(f"\n═══ 18. 抽象接口跨 TU 指针调用 — abstract-ptr-call ═══")
+
+info = run_mcp("codeloom_inspect", {"name": "call_abstract_worker", "repo": REPO, "branch": BRANCH})
+check("G18a: call_abstract_worker 存在",
+      isinstance(info, dict) and info.get("kind") == "function", True)
+
+info = run_mcp("codeloom_inspect", {"name": "RealWorker::DoOp", "repo": REPO, "branch": BRANCH})
+rw_entries = info if isinstance(info, list) else [info]
+rw_def = next((e for e in rw_entries if isinstance(e, dict) and e.get("file", "").endswith(".cc")), {})
+check("G18b: RealWorker::DoOp 存在（具象实现）",
+      rw_def.get("kind") == "method", True)
+
+info = run_mcp("codeloom_inspect", {"name": "AbstractWorker::DoOp", "repo": REPO, "branch": BRANCH})
+aw_entries = info if isinstance(info, list) else [info]
+aw_exists = any(isinstance(e, dict) for e in aw_entries)
+check("G18c: AbstractWorker::DoOp 存在（纯虚声明）",
+      aw_exists, True)
+
+# 关键测试：call_abstract_worker 是否有跨 TU 调用边
+cg5 = run_mcp("codeloom_get_call_graph", {
+    "name": "call_abstract_worker", "repo": REPO, "branch": BRANCH,
+    "direction": "callees", "max_depth": 1})
+cg5_text = cg5 if isinstance(cg5, str) else json.dumps(cg5, ensure_ascii=False)
+has_aw = "AbstractWorker::DoOp" in cg5_text
+has_rw = "RealWorker::DoOp" in cg5_text
+check("G18d: call_abstract_worker → AbstractWorker::DoOp（静态类型, 纯虚）",
+      has_aw, True)
+check("G18e: call_abstract_worker → RealWorker::DoOp（动态类型, 具象）",
+      has_rw, True)
 print(f"\n{'='*50}")
 total = passed + errors + skipped
 print(f"总计: {passed} 通过, {errors} 失败, {skipped} 跳过 (共 {total})")
